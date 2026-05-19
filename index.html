@@ -446,6 +446,94 @@ footer {
 .footer-r a { color: var(--gold); text-decoration: none; font-weight: 600; }
 .footer-r a:hover { text-decoration: underline; }
 
+/* ── SCORE BAR (시세 카드) ── */
+.stk-score { border-top: 1px solid var(--border); padding-top: 10px; margin-top: 10px; }
+.stk-score-hd { display: flex; justify-content: space-between; align-items: center; font-size: 11px; font-weight: 600; margin-bottom: 6px; }
+.stk-score-hd .lbl { color: var(--t2); }
+.stk-score-hd .sval { color: var(--gold); font-weight: 800; }
+.stk-grade { font-size: 10px; font-weight: 800; padding: 1px 7px; border-radius: 4px; margin-left: 5px; }
+.stk-grade.s, .stk-grade.a { background: var(--up-dim); color: var(--up); border: 1px solid rgba(0,209,140,.2); }
+.stk-grade.b { background: rgba(240,165,0,.1); color: var(--gold); border: 1px solid rgba(240,165,0,.2); }
+.stk-grade.c, .stk-grade.d { background: var(--dn-dim); color: var(--down); border: 1px solid rgba(255,62,91,.2); }
+.score-bar-bg { background: var(--border); border-radius: 4px; height: 4px; }
+.score-bar-fill { height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--gold), var(--gold2)); transition: width .6s ease; }
+.stk-no-analysis { border-top: 1px solid var(--border); padding-top: 10px; margin-top: 10px; font-size: 11px; color: var(--t3); }
+
+/* ── ANALYSIS PAGE ── */
+.analysis-hero { padding: 52px 48px 32px; border-bottom: 1px solid var(--border); }
+.analysis-hero h2 { font-size: 30px; font-weight: 800; letter-spacing: -.03em; margin-bottom: 6px; }
+.analysis-hero p  { font-size: 14px; color: var(--t2); font-weight: 400; }
+.analysis-filter { display: flex; gap: 10px; align-items: center; padding: 14px 48px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.af-label { font-size: 10px; font-weight: 700; color: var(--t3); letter-spacing: .15em; }
+.af-select {
+  background: var(--s1); border: 1px solid var(--border2);
+  border-radius: 6px; font-family: var(--font); font-size: 12px; font-weight: 600;
+  color: var(--t2); padding: 6px 12px; cursor: pointer; outline: none;
+}
+.af-select:focus { border-color: var(--gold); }
+.af-meta { margin-left: auto; font-size: 11px; color: var(--t3); }
+.analysis-body { display: flex; min-height: 72vh; }
+.analysis-tbl-wrap { flex: 1; overflow-y: auto; border-right: 1px solid var(--border); }
+.analysis-tbl { width: 100%; border-collapse: collapse; }
+.analysis-tbl th {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--bg); padding: 11px 16px;
+  text-align: left; font-size: 10px; font-weight: 700;
+  color: var(--t3); letter-spacing: .1em; text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+}
+.analysis-tbl th.r { text-align: right; }
+.analysis-tbl td { padding: 13px 16px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.analysis-tbl td.r { text-align: right; }
+.analysis-tbl tr { cursor: pointer; transition: background .15s; }
+.analysis-tbl tr:hover { background: var(--s2); }
+.analysis-tbl tr.selected { background: var(--s2); }
+.analysis-tbl tr.selected td:first-child { border-left: 2px solid var(--gold); }
+.a-corp { font-size: 14px; font-weight: 700; }
+.a-sub  { font-size: 10px; color: var(--t3); margin-top: 2px; font-weight: 600; }
+.a-score { font-size: 16px; font-weight: 800; color: var(--gold); font-variant-numeric: tabular-nums; }
+.a-tgt  { font-size: 13px; font-weight: 700; color: var(--up); font-variant-numeric: tabular-nums; }
+.a-tgt-pct { font-size: 10px; color: var(--up); opacity: .75; }
+.a-grade { font-size: 11px; font-weight: 800; padding: 3px 9px; border-radius: 5px; }
+.a-grade.s,.a-grade.a { background: var(--up-dim); color: var(--up); border: 1px solid rgba(0,209,140,.25); }
+.a-grade.b { background: rgba(240,165,0,.1); color: var(--gold); border: 1px solid rgba(240,165,0,.2); }
+.a-grade.c,.a-grade.d { background: var(--dn-dim); color: var(--down); border: 1px solid rgba(255,62,91,.2); }
+/* 상세 패널 */
+.analysis-detail { flex: 1; background: var(--s1); padding: 32px; overflow-y: auto; }
+.ad-empty { display: flex; align-items: center; justify-content: center; min-height: 200px; font-size: 13px; color: var(--t3); }
+.ad-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 24px; }
+.ad-corp { font-size: 22px; font-weight: 800; letter-spacing: -.03em; }
+.ad-sub  { font-size: 11px; color: var(--t3); margin-top: 4px; font-weight: 600; letter-spacing: .04em; }
+.ad-block { background: var(--s2); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 14px; }
+.ad-block-lbl { font-size: 10px; font-weight: 700; letter-spacing: .15em; text-transform: uppercase; color: var(--t3); margin-bottom: 14px; }
+.ad-price-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 14px; }
+.adp-lbl { font-size: 11px; color: var(--t2); margin-bottom: 6px; }
+.adp-val { font-size: 22px; font-weight: 800; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+.adp-pct { font-size: 11px; font-weight: 700; margin-top: 2px; }
+.ad-rec  { font-size: 13px; color: var(--t1); line-height: 1.75; font-weight: 400; }
+.ad-scores { display: flex; gap: 10px; margin-bottom: 14px; }
+.ad-sc { flex: 1; background: var(--s2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; text-align: center; }
+.ad-sc .sc-lbl { font-size: 9px; color: var(--t3); letter-spacing: .1em; text-transform: uppercase; margin-bottom: 5px; }
+.ad-sc .sc-val { font-size: 24px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.ad-sc.total { background: rgba(240,165,0,.08); border-color: rgba(240,165,0,.2); }
+.ad-sc.total .sc-val { color: var(--gold); }
+.ad-det-row .det-top { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 5px; }
+.ad-det-row .det-name { color: var(--t2); font-weight: 500; }
+.ad-det-row .det-score { font-weight: 700; font-variant-numeric: tabular-nums; }
+.ad-det-row .det-note { font-size: 10px; color: var(--t3); margin-top: 3px; line-height: 1.5; }
+.ad-det-row { margin-bottom: 12px; }
+.det-bar-bg { background: var(--border); border-radius: 3px; height: 5px; }
+.det-bar-fill { height: 100%; border-radius: 3px; transition: width .5s ease; }
+.det-bar-fill.good { background: var(--up); }
+.det-bar-fill.mid  { background: var(--gold); }
+.det-bar-fill.bad  { background: var(--down); }
+@media (max-width: 900px) {
+  .analysis-body { flex-direction: column; }
+  .analysis-tbl-wrap { border-right: none; border-bottom: 1px solid var(--border); }
+  .analysis-filter { padding: 14px 20px; }
+  .analysis-hero { padding: 40px 20px 24px; }
+}
+
 /* ── RESPONSIVE ── */
 @media (max-width: 1100px) {
   .hero-float { display: none; }
@@ -488,6 +576,7 @@ footer {
     <button class="nav-link"        data-pg="quote"  onclick="go('quote')">시세 조회</button>
     <button class="nav-link"        data-pg="market" onclick="go('market')">시장 현황</button>
     <button class="nav-link"        data-pg="about"  onclick="go('about')">소개</button>
+    <button class="nav-link"        data-pg="analysis" onclick="go('analysis')">종목 분석</button>
   </div>
   <div class="nav-right">
     <span class="live-badge"><span class="pulse"></span>LIVE</span>
@@ -752,6 +841,47 @@ footer {
   </div>
 </div>
 
+<!-- ══════════ ANALYSIS ══════════ -->
+<div class="page" id="page-analysis">
+  <div class="analysis-hero">
+    <h2>종목 분석</h2>
+    <p>단기·중장기 채점 기준 기반 분석 결과입니다 — 투자 참고용으로만 활용하세요</p>
+  </div>
+  <div class="analysis-filter">
+    <span class="af-label">FILTER</span>
+    <select class="af-select" id="afGrade" onchange="renderAnalysis()">
+      <option value="">전체 등급</option>
+      <option value="S">S등급</option>
+      <option value="A">A등급</option>
+      <option value="B">B등급</option>
+      <option value="C">C등급</option>
+      <option value="D">D등급</option>
+    </select>
+    <span class="af-meta" id="afMeta">데이터 로딩 중...</span>
+  </div>
+  <div class="analysis-body">
+    <div class="analysis-tbl-wrap">
+      <table class="analysis-tbl">
+        <thead>
+          <tr>
+            <th style="width:36px">#</th>
+            <th>종목</th>
+            <th class="r">현재가</th>
+            <th class="r">단기목표</th>
+            <th class="r">중기목표</th>
+            <th class="r">종합점수</th>
+            <th class="r">등급</th>
+          </tr>
+        </thead>
+        <tbody id="analysisTbody"></tbody>
+      </table>
+    </div>
+    <div class="analysis-detail" id="analysisDetail">
+      <div class="ad-empty">종목을 선택하면 상세 분석이 표시됩니다</div>
+    </div>
+  </div>
+</div>
+
 <!-- FOOTER -->
 <footer>
   <div class="footer-l">
@@ -766,6 +896,36 @@ footer {
 </footer>
 
 <script>
+/* ── SUPABASE CONFIG ── */
+const SUPABASE_URL      = 'https://onxkbuecwbcueuhwnowx.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_nfKK4yLElw--Orr2ZRZmDw_GLVucIrl';
+let analysisMap = {}; // { stock_code: row }
+
+/* ── 등급 계산 ── */
+function getGrade(score) {
+  if (score >= 85) return 'S';
+  if (score >= 70) return 'A';
+  if (score >= 55) return 'B';
+  if (score >= 40) return 'C';
+  return 'D';
+}
+
+/* ── Supabase 분석 데이터 로딩 ── */
+async function loadAnalysis() {
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/stock_analysis?select=*&order=total_score.desc`,
+      { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` } }
+    );
+    if (!res.ok) return;
+    const data = await res.json();
+    data.forEach(row => { analysisMap[row.stock_code] = row; });
+    renderStocks('homeGrid', STOCKS);
+    renderStocks('quoteGrid', STOCKS);
+    renderAnalysis();
+  } catch(e) { /* Supabase 없어도 사이트는 정상 동작 */ }
+}
+
 /* ── DATA (API 실제 제공 필드만 사용) ── */
 /* 필드: itmsNm, srtnCd, mrktCtg, clpr(종가), vs(전일비), fltRt(등락률),
          mkp(시가), hipr(고가), lopr(저가), trqu(거래량), trPrc(거래대금), mrktTotAmt(시가총액) */
@@ -795,6 +955,7 @@ function go(pg) {
   const lnk = document.querySelector(`[data-pg="${pg}"]`);
   if (lnk) lnk.classList.add('active');
   window.scrollTo({top:0, behavior:'smooth'});
+  if (pg === 'analysis') renderAnalysis();
   setTimeout(observeAll, 80);
 }
 
@@ -851,6 +1012,16 @@ function renderIdxGrid(containerId) {
 function renderStocks(containerId, list) {
   document.getElementById(containerId).innerHTML = list.map((s,i)=>{
     const up = s.fltRt >= 0;
+    const a  = analysisMap[s.srtnCd];
+    const scoreBar = a
+      ? `<div class="stk-score">
+           <div class="stk-score-hd">
+             <span class="lbl">분석 점수</span>
+             <div><span class="sval">${a.total_score}</span><span class="stk-grade ${getGrade(a.total_score).toLowerCase()}">${getGrade(a.total_score)}</span></div>
+           </div>
+           <div class="score-bar-bg"><div class="score-bar-fill" style="width:${Math.min(a.total_score,100)}%"></div></div>
+         </div>`
+      : `<div class="stk-no-analysis">분석 데이터 없음</div>`;
     return `<div class="stk-card" style="animation-delay:${i*.055}s" onclick="openDetail('${s.srtnCd}')">
       <div class="stk-top">
         <div>
@@ -865,6 +1036,7 @@ function renderStocks(containerId, list) {
         <span class="stk-pct ${up?'up':'dn'}">${up?'+':''}${s.fltRt}%</span>
       </div>
       <div class="stk-vol">거래량 <span>${s.trqu.toLocaleString('ko-KR')}</span></div>
+      ${scoreBar}
     </div>`;
   }).join('');
 }
@@ -943,6 +1115,96 @@ function renderMktTable() {
   }).join('');
 }
 
+/* ── ANALYSIS PAGE ── */
+function renderAnalysis() {
+  const grade = document.getElementById('afGrade')?.value || '';
+  let rows = Object.values(analysisMap)
+    .filter(r => !grade || getGrade(r.total_score) === grade)
+    .sort((a,b) => (b.total_score||0) - (a.total_score||0));
+
+  const meta = document.getElementById('afMeta');
+  if (meta) {
+    const genAt = rows[0]?.generated_at
+      ? new Date(rows[0].generated_at).toLocaleDateString('ko-KR')
+      : '—';
+    meta.textContent = `갱신: ${genAt} · ${rows.length}종목`;
+  }
+
+  document.getElementById('analysisTbody').innerHTML = rows.length
+    ? rows.map((r,i) => {
+        const g = getGrade(r.total_score).toLowerCase();
+        const hasTgt = r.short_target_price != null;
+        return `<tr onclick="openAnalysisDetail('${r.stock_code}')" id="arow-${r.stock_code}">
+          <td style="color:var(--t3);font-weight:700;font-variant-numeric:tabular-nums">${i+1}</td>
+          <td><div class="a-corp">${r.corp_name}</div><div class="a-sub">${r.stock_code}</div></td>
+          <td class="r" style="font-weight:700;font-variant-numeric:tabular-nums">${r.current_price ? r.current_price.toLocaleString('ko-KR')+'원' : '—'}</td>
+          <td class="r">${hasTgt
+            ? `<div class="a-tgt">${r.short_target_price.toLocaleString('ko-KR')}원</div><div class="a-tgt-pct">+${r.short_target_pct}%</div>`
+            : `<span style="color:var(--t3)">—</span>`}</td>
+          <td class="r">${r.mid_target_price != null
+            ? `<div class="a-tgt">${r.mid_target_price.toLocaleString('ko-KR')}원</div><div class="a-tgt-pct">+${r.mid_target_pct}%</div>`
+            : `<span style="color:var(--t3)">—</span>`}</td>
+          <td class="r a-score">${r.total_score ?? '—'}</td>
+          <td class="r"><span class="a-grade ${g}">${getGrade(r.total_score)}</span></td>
+        </tr>`;
+      }).join('')
+    : `<tr><td colspan="7" style="text-align:center;padding:48px;color:var(--t3)">
+         분석 데이터 없음 — push 스크립트를 실행하세요
+       </td></tr>`;
+}
+
+function openAnalysisDetail(code) {
+  const r = analysisMap[code]; if (!r) return;
+  const g = getGrade(r.total_score).toLowerCase();
+
+  document.querySelectorAll('.analysis-tbl tr').forEach(tr => tr.classList.remove('selected'));
+  const row = document.getElementById('arow-' + code);
+  if (row) row.classList.add('selected');
+
+  const hasTgt = r.short_target_price != null;
+  const pxBlock = hasTgt
+    ? `<div class="ad-price-grid">
+         <div><div class="adp-lbl">현재가</div><div class="adp-val">${(r.current_price||0).toLocaleString('ko-KR')}</div><div class="adp-pct" style="color:var(--t3)">원</div></div>
+         <div><div class="adp-lbl">단기목표 <span style="font-size:10px;opacity:.6">1~3개월</span></div><div class="adp-val" style="color:var(--up)">${r.short_target_price.toLocaleString('ko-KR')}</div><div class="adp-pct" style="color:var(--up)">+${r.short_target_pct}%</div></div>
+         <div><div class="adp-lbl">중기목표 <span style="font-size:10px;opacity:.6">6~12개월</span></div><div class="adp-val" style="color:var(--up)">${r.mid_target_price.toLocaleString('ko-KR')}</div><div class="adp-pct" style="color:var(--up)">+${r.mid_target_pct}%</div></div>
+       </div>`
+    : `<div style="font-size:13px;color:var(--t3)">목표가 없음 — 분석 워크플로우 업데이트 후 갱신 예정</div>`;
+
+  const detRows = r.detail
+    ? Object.entries(r.detail).map(([key, d]) => {
+        const pct = d.max > 0 ? (d.score / d.max * 100) : 0;
+        const cls = pct >= 70 ? 'good' : pct >= 45 ? 'mid' : 'bad';
+        return `<div class="ad-det-row">
+          <div class="det-top"><span class="det-name">${key.replace(/_/g,' ')}</span><span class="det-score">${d.score}/${d.max}</span></div>
+          <div class="det-bar-bg"><div class="det-bar-fill ${cls}" style="width:${pct.toFixed(0)}%"></div></div>
+          ${d.note ? `<div class="det-note">${d.note}</div>` : ''}
+        </div>`;
+      }).join('')
+    : `<div style="color:var(--t3);font-size:13px">세부 채점 없음</div>`;
+
+  document.getElementById('analysisDetail').innerHTML = `
+    <div class="ad-header">
+      <div><div class="ad-corp">${r.corp_name}</div><div class="ad-sub">${r.stock_code}</div></div>
+      <span class="a-grade ${g}">${getGrade(r.total_score)}등급</span>
+    </div>
+    <div class="ad-block">
+      <div class="ad-block-lbl">가격 목표</div>${pxBlock}
+    </div>
+    <div class="ad-block">
+      <div class="ad-block-lbl">추천 이유</div>
+      <div class="ad-rec">${r.recommendation || '—'}</div>
+    </div>
+    <div class="ad-scores">
+      <div class="ad-sc"><div class="sc-lbl">단기</div><div class="sc-val">${r.short_score ?? '—'}</div></div>
+      <div class="ad-sc"><div class="sc-lbl">중장기</div><div class="sc-val">${r.long_score ?? '—'}</div></div>
+      <div class="ad-sc total"><div class="sc-lbl">종합</div><div class="sc-val">${r.total_score ?? '—'}</div></div>
+    </div>
+    <div class="ad-block">
+      <div class="ad-block-lbl">세부 채점</div>
+      <div>${detRows}</div>
+    </div>`;
+}
+
 /* ── INTERSECTION OBSERVER ── */
 const io = new IntersectionObserver(entries=>{
   entries.forEach(e=>{ if(e.isIntersecting) e.target.classList.add('in'); });
@@ -963,6 +1225,7 @@ renderMktTable();
 observeAll();
 clock();
 setInterval(clock, 1000);
+loadAnalysis(); // Supabase에서 분석 데이터 비동기 로딩
 </script>
 </body>
 </html>
