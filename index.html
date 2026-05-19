@@ -470,7 +470,6 @@ footer {
   <div class="nav-links">
     <button class="nav-link active" data-pg="home"     onclick="go('home')">홈</button>
     <button class="nav-link"        data-pg="analysis" onclick="go('analysis')">기업 분석</button>
-    <button class="nav-link"        data-pg="quote"    onclick="go('quote')">시세 조회</button>
     <button class="nav-link"        data-pg="about"    onclick="go('about')">소개</button>
   </div>
   <div class="nav-right">
@@ -498,7 +497,7 @@ footer {
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           기업 분석 보기
         </button>
-        <button class="btn-secondary" onclick="go('quote')">시세 조회 →</button>
+        <button class="btn-secondary" onclick="go('about')">서비스 소개 →</button>
       </div>
       <div class="hero-stats">
         <div class="hstat">
@@ -592,21 +591,6 @@ footer {
 </div>
 
 <!-- ══════════ QUOTE ══════════ -->
-<div class="page" id="page-quote">
-  <div class="quote-hero">
-    <div class="qh-inner">
-      <h2>시세 조회</h2>
-      <p>샘플 데이터 · 실 서비스에서는 금융위원회 API 연동</p>
-    </div>
-  </div>
-  <div class="quote-body">
-    <div class="sample-banner">
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-      샘플 데이터 · 실 서비스에서는 금융위원회 OpenAPI를 통해 실시간 시세가 연동됩니다.
-    </div>
-    <div class="stocks-grid" id="quoteGrid"></div>
-  </div>
-</div>
 
 <!-- ══════════ ABOUT ══════════ -->
 <div class="page" id="page-about">
@@ -729,7 +713,6 @@ async function loadAnalysis() {
 
     renderGradeDist();
     renderTopStocks();
-    renderStocks('quoteGrid', STOCKS);
     renderAnalysis();
   } catch(e) { /* Supabase 없어도 사이트는 정상 동작 */ }
 }
@@ -966,7 +949,6 @@ function observeAll() {
 }
 
 /* ── INIT ── */
-renderStocks('quoteGrid', STOCKS);
 observeAll();
 clock();
 setInterval(clock, 1000);
