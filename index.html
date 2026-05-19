@@ -329,7 +329,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--t1); overfl
 .a-grade.b { background: var(--gold-dim); color: var(--gold); border: 1px solid rgba(245,166,35,.2); }
 .a-grade.c,.a-grade.d { background: var(--dn-dim); color: var(--down); border: 1px solid rgba(255,69,96,.2); }
 /* 분석 상세 패널 */
-.analysis-detail { flex: 1; background: var(--s1); padding: 32px; overflow-y: auto; min-width: 340px; max-width: 420px; }
+.analysis-detail { flex: 1; background: var(--s1); padding: 32px; overflow-y: auto; }
 .ad-empty { display: flex; align-items: center; justify-content: center; min-height: 200px; font-size: 13px; color: var(--t3); }
 .ad-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 24px; }
 .ad-corp { font-size: 22px; font-weight: 800; letter-spacing: -.03em; }
@@ -913,6 +913,9 @@ function openAnalysisDetail(code) {
 
   const mcap = r.market_cap_tril != null ? `<div style="font-size:11px;color:var(--t3);margin-top:3px">${r.market_cap_tril.toFixed(1)}조원${r.mrkt_ctg ? ' · '+r.mrkt_ctg : ''}</div>` : '';
 
+  const fmt = v => v != null ? v.toLocaleString('ko-KR') + '원' : '—';
+  const fmtPct = v => v != null ? `<span style="color:var(--up);font-size:12px;font-weight:700">+${v}%</span>` : '';
+
   document.getElementById('analysisDetail').innerHTML = `
     <div class="ad-header">
       <div>
@@ -922,16 +925,29 @@ function openAnalysisDetail(code) {
       </div>
       <span class="a-grade ${g}">${getGrade(r.total_score)}등급</span>
     </div>
-    <div class="ad-scores">
-      <div class="ad-sc"><div class="sc-lbl">단기</div><div class="sc-val" style="color:var(--blue)">${r.short_score ?? '—'}</div></div>
-      <div class="ad-sc"><div class="sc-lbl">중장기</div><div class="sc-val" style="color:var(--up)">${r.long_score ?? '—'}</div></div>
-      <div class="ad-sc total"><div class="sc-lbl">종합</div><div class="sc-val">${r.total_score ?? '—'}</div></div>
-    </div>
-    ${r.recommendation ? `
     <div class="ad-block">
-      <div class="ad-block-lbl">분석 요약</div>
-      <div class="ad-rec">${r.recommendation}</div>
-    </div>` : ''}
+      <div class="ad-block-lbl">목표 단가</div>
+      <div class="ad-price-grid">
+        <div>
+          <div class="adp-lbl">현재가</div>
+          <div class="adp-val">${fmt(r.current_price)}</div>
+        </div>
+        <div>
+          <div class="adp-lbl">단기 목표 <span style="font-size:10px;opacity:.6">1~3개월</span></div>
+          <div class="adp-val" style="color:var(--up)">${fmt(r.short_target_price)}</div>
+          <div>${fmtPct(r.short_target_pct)}</div>
+        </div>
+        <div>
+          <div class="adp-lbl">중장기 목표 <span style="font-size:10px;opacity:.6">6~12개월</span></div>
+          <div class="adp-val" style="color:var(--up)">${fmt(r.mid_target_price)}</div>
+          <div>${fmtPct(r.mid_target_pct)}</div>
+        </div>
+      </div>
+    </div>
+    <div class="ad-block">
+      <div class="ad-block-lbl">추천 요약</div>
+      <div class="ad-rec">${r.recommendation || '—'}</div>
+    </div>
     <div class="ad-block">
       <div class="ad-block-lbl">세부 채점</div>
       <div>${detRows}</div>
