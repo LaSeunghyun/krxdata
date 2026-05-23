@@ -223,12 +223,12 @@ async function computeAndSaveRankings() {
         )
         -- 하드 필터: 영업이익률 > 2% (적자 직전 제거)
         AND sf.op_margin > 2
-        -- 하드 필터: 시총 200억 미만 극소형 제거
-        AND sa.market_cap_tril >= 0.002
-        -- 하드 필터: 52주 고점 90% 초과(과매수) 제거
+        -- 하드 필터: 시총 500억 미만 제거 (소형주 유동성 트랩 방어)
+        AND sa.market_cap_tril >= 0.05
+        -- 하드 필터: 52주 위치 70% 초과(모멘텀 하락 구간) 제거
         AND (
           sa.high_52w IS NULL OR sa.low_52w IS NULL OR sa.high_52w = sa.low_52w
-          OR (sa.current_price - sa.low_52w)::NUMERIC / NULLIF(sa.high_52w - sa.low_52w, 0) < 0.9
+          OR (sa.current_price - sa.low_52w)::NUMERIC / NULLIF(sa.high_52w - sa.low_52w, 0) < 0.7
         )
     )
     SELECT
@@ -256,13 +256,43 @@ async function computeAndSaveRankings() {
   return r;
 }
 
-// 목표가 계산 (Codex 개선안 A: 저평가점수 연동)
-// score 74.5 → 1M: +14.9%, 3M: +29.8%, 1Y: +59.6%
-// score 64   → 1M: +12.8%, 3M: +25.6%, 1Y: +51.2%
+// 목표가 계산 (Codex v4: 1M 계수 보수화 0.20→0.10, 달성률 제고)
+// score 80 → 1M: +8.0%, 3M: +32.0%, 1Y: +64.0%
+// score 60 → 1M: +6.0%, 3M: +24.0%, 1Y: +48.0%
 function calcTargetPrice(currentPrice, undervalueScore, period = '1m') {
   if (!currentPrice || !undervalueScore || undervalueScore <= 0) return null;
-  const coeff = period === '1y' ? 0.80 : period === '3m' ? 0.40 : 0.20;
+  const coeff = period === '1y' ? 0.80 : period === '3m' ? 0.40 : 0.10;
   return Math.round(currentPrice * (1 + (undervalueScore / 100) * coeff));
+}
+
+// 매크로 레짐 게이트: 삼성전자(005930) KOSPI 프록시 기준 시장 상태 판단
+// ETF API 미지원으로 삼성전자(KOSPI 비중 ~30%) 사용
+async function checkMarketRegime() {
+  try {
+    const url = new URL(`${PUBLIC_BASE}/getStockPriceInfo`);
+    url.searchParams.set("serviceKey", decodeURIComponent(PUBLIC_KEY));
+    url.searchParams.set("resultType", "json");
+    url.searchParams.set("numOfRows", "25");
+    url.searchParams.set("pageNo", "1");
+    url.searchParams.set("beginBasDt", daysAgo(30));
+    url.searchParams.set("endBasDt", today());
+    url.searchParams.set("likeIsinCd", "KR7005930");
+    const r = await fetch(url.toString());
+    const data = await r.json();
+    const items = data?.response?.body?.items?.item ?? [];
+    const arr = (Array.isArray(items) ? items : [items])
+      .filter(i => i.srtnCd === '005930')
+      .sort((a, b) => b.basDt.localeCompare(a.basDt));
+    if (arr.length < 6) return { status: 'unknown', warn: false };
+    const latest  = parseInt(arr[0].clpr, 10);
+    const day5ago = parseInt(arr[5].clpr, 10);
+    const ma20    = arr.slice(0, Math.min(arr.length, 20))
+                       .reduce((s, i) => s + parseInt(i.clpr, 10), 0) / Math.min(arr.length, 20);
+    const ret5d   = ((latest - day5ago) / day5ago) * 100;
+    const belowMA = latest < ma20;
+    const warn    = belowMA && ret5d < -3;
+    return { latest, ma20: Math.round(ma20), ret5d: ret5d.toFixed(2), belowMA, warn };
+  } catch { return { status: 'error', warn: false }; }
 }
 
 // STEP 3: 순위 변동 리포트 출력
@@ -367,6 +397,17 @@ try {
     console.log("[가격 업데이트 스킵]");
     patchStatus({ progress: 10, current: '가격 업데이트 스킵됨' });
   }
+  // 매크로 레짐 게이트 체크
+  const regime = await checkMarketRegime();
+  if (regime.warn) {
+    console.log("\n⚠️  [매크로 경고] 시장 위험 구간 감지!");
+    console.log(`   KODEX200: ${regime.latest?.toLocaleString()}원 / 20MA: ${regime.ma20?.toLocaleString()}원 (MA 하향)`);
+    console.log(`   5일 수익률: ${regime.ret5d}% (임계값 -3% 초과)`);
+    console.log("   → 신규 진입 보류 권고. 기존 보유 종목 스톱로스 확인 필요.\n");
+  } else if (regime.latest) {
+    console.log(`[시장 체크] KODEX200 ${regime.latest?.toLocaleString()}원 / 20MA ${regime.ma20?.toLocaleString()}원 / 5일수익률 ${regime.ret5d}% — 정상`);
+  }
+
   await computeAndSaveRankings();
   await printChangeReport();
   const now = new Date().toLocaleString('ko-KR');
