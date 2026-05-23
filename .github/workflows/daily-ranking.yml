@@ -33,9 +33,7 @@ jobs:
           node-version: '22'
 
       - name: Install dependencies
-        run: |
-          cd files
-          npm install 2>/dev/null || true
+        run: npm install 2>/dev/null || true
 
       - name: Determine mode
         id: mode
@@ -64,7 +62,7 @@ jobs:
           SUPABASE_MANAGEMENT_KEY: ${{ secrets.SUPABASE_MANAGEMENT_KEY }}
         run: |
           echo "=== 가격+랭킹 업데이트 시작 ($(TZ='Asia/Seoul' date)) ==="
-          node files/daily-ranking.js
+          node daily-ranking.js
 
       - name: Run ranking only (ranking mode)
         if: steps.mode.outputs.mode == 'ranking'
@@ -76,7 +74,7 @@ jobs:
           SUPABASE_MANAGEMENT_KEY: ${{ secrets.SUPABASE_MANAGEMENT_KEY }}
         run: |
           echo "=== 랭킹 재계산 시작 ($(TZ='Asia/Seoul' date)) ==="
-          node files/daily-ranking.js --skip-price
+          node daily-ranking.js --skip-price
 
       - name: Report summary
         if: always()
