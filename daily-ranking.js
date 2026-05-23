@@ -69,33 +69,40 @@ async function upsert(table, rows, onConflict) {
   return res.json();
 }
 
-// 공공데이터 API 현재가 조회
-async function getPublicDataQuote(stockCode) {
+// 공공데이터 API 현재가 + 52주 고저가 조회
+async function getPublicDataQuote(stockCode, fetch52w = false) {
   try {
     const url = new URL(`${PUBLIC_BASE}/getStockPriceInfo`);
     url.searchParams.set("serviceKey", decodeURIComponent(PUBLIC_KEY));
     url.searchParams.set("resultType", "json");
-    url.searchParams.set("numOfRows", "5");
+    url.searchParams.set("numOfRows", fetch52w ? "260" : "5");
     url.searchParams.set("pageNo", "1");
-    url.searchParams.set("beginBasDt", daysAgo(7));
+    url.searchParams.set("beginBasDt", fetch52w ? daysAgo(365) : daysAgo(7));
     url.searchParams.set("endBasDt", today());
     url.searchParams.set("likeIsinCd", `KR7${stockCode}`);
     const r = await fetch(url.toString());
     const data = await r.json();
     const items = data?.response?.body?.items?.item ?? [];
     const arr = Array.isArray(items) ? items : [items];
-    const item = arr.filter(r => r.srtnCd === stockCode).sort((a, b) => b.basDt.localeCompare(a.basDt))[0];
+    const filtered = arr.filter(r => r.srtnCd === stockCode).sort((a, b) => b.basDt.localeCompare(a.basDt));
+    const item = filtered[0];
     if (!item) return null;
-    return {
+    const result = {
       price: parseInt(item.clpr, 10),
       market_cap: parseInt(item.mrktTotAmt, 10),
       base_date: item.basDt
     };
+    if (fetch52w && filtered.length > 1) {
+      const prices = filtered.map(i => parseInt(i.clpr, 10)).filter(p => p > 0);
+      result.high_52w = Math.max(...prices);
+      result.low_52w  = Math.min(...prices);
+    }
+    return result;
   } catch { return null; }
 }
 
 // STEP 1: 전체 종목 현재가 업데이트 (순차, 300ms 딜레이)
-async function updatePrices() {
+async function updatePrices(skipPrice = false) {
   const stocks = await dbQuery(`SELECT stock_code FROM stock_analysis WHERE market_cap_tril >= 0`);
   const codes = stocks.map(s => s.stock_code);
   console.log(`[가격 업데이트] ${codes.length}개 종목 시작`);
@@ -103,15 +110,26 @@ async function updatePrices() {
 
   let updated = 0, skipped = 0;
   const BATCH = 50; // 50개씩 처리 후 로그
+  // 52주 고저가: 월요일 또는 전체 실행 모드에서만 갱신 (API 부하 최소화)
+  const isMonday = new Date().getDay() === 1;
+  const fetch52w = isMonday || !skipPrice;
+  if (fetch52w) console.log(`  [52주 고저가 갱신 모드]`);
+
   for (const code of codes) {
-    const q = await getPublicDataQuote(code);
+    const q = await getPublicDataQuote(code, fetch52w);
     if (q && q.price > 0) {
-      await upsert('stock_analysis', [{
+      const row = {
         stock_code: code,
         current_price: q.price,
         market_cap_tril: parseFloat((q.market_cap / 1e12).toFixed(4)),
         updated_at: new Date().toISOString()
-      }], 'stock_code');
+      };
+      if (fetch52w && q.high_52w) {
+        row.high_52w = q.high_52w;
+        row.low_52w  = q.low_52w;
+        row.week52_updated_at = new Date().toISOString();
+      }
+      await upsert('stock_analysis', [row], 'stock_code');
       updated++;
     } else {
       skipped++;
@@ -132,6 +150,9 @@ async function updatePrices() {
 async function computeAndSaveRankings() {
   console.log(`[랭킹 계산] 시작`);
   patchStatus({ progress: 60, current: '랭킹 계산 중...' });
+  // 오늘 데이터 초기화 후 재삽입 (이전 실행 잔여 데이터 제거)
+  await dbQuery(`DELETE FROM daily_rankings WHERE rank_date = CURRENT_DATE`);
+
   const r = await dbQuery(`
     INSERT INTO daily_rankings (
       rank_date, rank, stock_code, corp_name, mrkt_ctg, sector,
@@ -154,10 +175,31 @@ async function computeAndSaveRankings() {
         sf.debt_ratio,
         ss.avg_pbr AS sector_avg_pbr,
         ss.avg_per AS sector_avg_per,
+        -- 52주 위치 (0~1, 높을수록 고점에 가까움)
+        CASE
+          WHEN sa.high_52w > sa.low_52w
+          THEN (sa.current_price - sa.low_52w)::NUMERIC / NULLIF(sa.high_52w - sa.low_52w, 0)
+          ELSE 0.5
+        END AS price_position_52w,
         ROUND((
-          GREATEST(0, (1.0 - sf.pbr / NULLIF(ss.avg_pbr, 0)) * 40)
-          + GREATEST(0, (1.0 - sf.per / NULLIF(ss.avg_per, 0)) * 30)
-          + LEAST(30, sf.roe * 1.5)
+          -- 가치: 섹터 PBR 할인율 (30점)
+          GREATEST(0, (1.0 - sf.pbr / NULLIF(ss.avg_pbr, 0)) * 30)
+          -- 가치: 섹터 PER 할인율 (20점)
+          + GREATEST(0, (1.0 - sf.per / NULLIF(ss.avg_per, 0)) * 20)
+          -- 수익성: ROE (최대 20점)
+          + LEAST(20, sf.roe * 1.0)
+          -- 모멘텀: 52주 위치 기반 (최대 20점)
+          + CASE
+              WHEN sa.high_52w > sa.low_52w AND sa.low_52w > 0 THEN
+                CASE
+                  WHEN (sa.current_price - sa.low_52w)::NUMERIC / NULLIF(sa.high_52w - sa.low_52w, 0) > 0.6 THEN 20
+                  WHEN (sa.current_price - sa.low_52w)::NUMERIC / NULLIF(sa.high_52w - sa.low_52w, 0) > 0.3 THEN 10
+                  ELSE 0
+                END
+              ELSE 0
+            END
+          -- 품질: 영업이익률 (최대 10점)
+          + LEAST(10, GREATEST(0, sf.op_margin * 0.5))
         )::NUMERIC, 1) AS undervalue_score
       FROM stock_analysis sa
       JOIN stock_financials sf ON sa.stock_code = sf.stock_code AND sf.analysis_year = 2025
@@ -165,6 +207,17 @@ async function computeAndSaveRankings() {
       WHERE sa.current_price > 0
         AND sf.pbr > 0 AND sf.pbr < 100
         AND ss.avg_pbr IS NOT NULL
+        -- 하드 필터: 부채비율 300% 초과 제거
+        AND (sf.debt_ratio IS NULL OR sf.debt_ratio < 300)
+        -- 하드 필터: ROE 음수(적자) 제거
+        AND sf.roe > 0
+        -- 하드 필터: 시총 200억 미만 극소형 제거
+        AND sa.market_cap_tril >= 0.002
+        -- 하드 필터: 52주 고점 90% 초과(과매수) 제거
+        AND (
+          sa.high_52w IS NULL OR sa.low_52w IS NULL OR sa.high_52w = sa.low_52w
+          OR (sa.current_price - sa.low_52w)::NUMERIC / NULLIF(sa.high_52w - sa.low_52w, 0) < 0.9
+        )
     )
     SELECT
       CURRENT_DATE,
@@ -191,6 +244,15 @@ async function computeAndSaveRankings() {
   return r;
 }
 
+// 목표가 계산 (Codex 백테스트 보정 공식)
+function calcTargetPrice(currentPrice, pbr, sectorAvgPbr, period = '1m') {
+  if (!currentPrice || !pbr || !sectorAvgPbr || pbr <= 0 || sectorAvgPbr <= 0) return null;
+  const pbrRatio = Math.min(sectorAvgPbr / pbr, 2.0); // 상단 캡 2배
+  // 회귀계수: 1개월 0.18 / 3개월 0.54 (백테스트 실측치)
+  const coeff = period === '3m' ? 0.54 : 0.18;
+  return Math.round(currentPrice * pbrRatio * coeff + currentPrice);
+}
+
 // STEP 3: 순위 변동 리포트 출력
 async function printChangeReport() {
   const changes = await dbQuery(`
@@ -208,7 +270,8 @@ async function printChangeReport() {
       pbr,
       per,
       undervalue_score,
-      score_change
+      score_change,
+      sector_avg_pbr
     FROM rank_changes
     WHERE rank_today <= 50
     ORDER BY rank_today
@@ -216,31 +279,55 @@ async function printChangeReport() {
 
   if (!Array.isArray(changes)) { console.log("변동 데이터 없음"); return; }
 
-  console.log("\n========== 저평가 랭킹 TOP 50 ==========");
+  console.log("\n========== 저평가 랭킹 TOP 20 (매수 포트폴리오) ==========");
   console.log(`기준일: ${new Date().toLocaleDateString('ko-KR')}`);
-  console.log("순위  변동  종목명              시장     섹터            현재가     PBR   PER   저평가점수  점수변동");
-  console.log("─".repeat(100));
+  console.log("순위  변동  종목명              시장   섹터          현재가    단기목표(1M)  중기목표(3M)   PBR   PER  점수  비중");
+  console.log("─".repeat(120));
 
-  for (const c of changes) {
+  const top20 = changes.filter(c => c.rank_today <= 20);
+  for (const c of top20) {
     const change = c.rank_change === null ? "NEW" :
       c.rank_change > 0 ? `▲${c.rank_change}` :
       c.rank_change < 0 ? `▼${Math.abs(c.rank_change)}` : "─";
-    const scoreChange = c.score_change !== null && c.score_change !== 0
-      ? (c.score_change > 0 ? `+${c.score_change}` : `${c.score_change}`)
-      : "";
+    const t1m = calcTargetPrice(c.current_price, c.pbr, c.sector_avg_pbr, '1m');
+    const t3m = calcTargetPrice(c.current_price, c.pbr, c.sector_avg_pbr, '3m');
+    const up1m = t1m ? `+${((t1m - c.current_price)/c.current_price*100).toFixed(1)}%` : '-';
+    const up3m = t3m ? `+${((t3m - c.current_price)/c.current_price*100).toFixed(1)}%` : '-';
+    const weight = c.rank_today <= 10 ? '10%' : ' 5%';
     const priceStr = c.current_price.toLocaleString('ko-KR');
+    const t1mStr = t1m ? t1m.toLocaleString('ko-KR') : '-';
+    const t3mStr = t3m ? t3m.toLocaleString('ko-KR') : '-';
     console.log(
-      `${String(c.rank_today).padStart(4)}  ${change.padEnd(5)}  ${c.corp_name.padEnd(18)}  ${c.mrkt_ctg.padEnd(7)}  ${(c.sector||'').slice(0,14).padEnd(14)}  ${priceStr.padStart(9)}원  ${String(c.pbr||'').padStart(5)}  ${String(c.per||'').padStart(6)}  ${String(c.undervalue_score||'').padStart(8)}  ${scoreChange}`
+      `${String(c.rank_today).padStart(3)}  ${change.padEnd(5)} ${c.corp_name.slice(0,14).padEnd(16)} ${c.mrkt_ctg.padEnd(6)} ${(c.sector||'').slice(0,12).padEnd(13)} ` +
+      `${priceStr.padStart(8)}  ${(t1mStr+'('+up1m+')').padStart(14)}  ${(t3mStr+'('+up3m+')').padStart(14)}  ` +
+      `${String(c.pbr||'').padStart(5)} ${String(c.per||'').padStart(5)} ${String(c.undervalue_score||'').padStart(5)}  ${weight}`
     );
   }
 
-  // 순위 급등/급락 TOP 5
+  // TOP 21~50 간략 표시
+  const rest = changes.filter(c => c.rank_today > 20 && c.rank_today <= 50);
+  if (rest.length > 0) {
+    console.log("\n---------- TOP 21~50 (관찰 대상) ----------");
+    console.log("순위  변동  종목명              시장   현재가     PBR   점수");
+    console.log("─".repeat(65));
+    for (const c of rest) {
+      const change = c.rank_change === null ? "NEW" :
+        c.rank_change > 0 ? `▲${c.rank_change}` :
+        c.rank_change < 0 ? `▼${Math.abs(c.rank_change)}` : "─";
+      console.log(
+        `${String(c.rank_today).padStart(3)}  ${change.padEnd(5)} ${c.corp_name.slice(0,14).padEnd(16)} ${c.mrkt_ctg.padEnd(6)} ` +
+        `${c.current_price.toLocaleString('ko-KR').padStart(8)}  ${String(c.pbr||'').padStart(5)} ${String(c.undervalue_score||'').padStart(5)}`
+      );
+    }
+  }
+
+  // 순위 급변동
   const bigMovers = changes.filter(c => c.rank_change !== null && Math.abs(c.rank_change) >= 10);
   if (bigMovers.length > 0) {
     console.log("\n========== 순위 급변동 (±10위 이상) ==========");
     bigMovers.sort((a, b) => Math.abs(b.rank_change) - Math.abs(a.rank_change)).slice(0, 10).forEach(c => {
       const arrow = c.rank_change > 0 ? `▲${c.rank_change}위 상승` : `▼${Math.abs(c.rank_change)}위 하락`;
-      console.log(`  ${c.corp_name} (${c.stock_code}): ${arrow} | PBR ${c.prev_pbr}→${c.pbr} | 점수 ${c.score_change > 0 ? '+' : ''}${c.score_change}`);
+      console.log(`  ${c.corp_name} (${c.stock_code}): ${arrow} | PBR ${c.pbr} | 점수변동 ${c.score_change > 0 ? '+' : ''}${c.score_change}`);
     });
   }
 }
@@ -263,7 +350,7 @@ if (!prevStatus.running) {
 
 try {
   if (!skipPrice) {
-    await updatePrices();
+    await updatePrices(skipPrice);
   } else {
     console.log("[가격 업데이트 스킵]");
     patchStatus({ progress: 10, current: '가격 업데이트 스킵됨' });
