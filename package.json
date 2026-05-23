@@ -1,0 +1,37 @@
+{
+  "name": "dart-mcp",
+  "version": "2.3.0",
+  "description": "OpenDart, public stock data, SQLite batch collection, scoring, and MCP tools",
+  "type": "module",
+  "main": "mcp-server.js",
+  "scripts": {
+    "start": "node mcp-server.js",
+    "dev": "node --watch mcp-server.js",
+    "batch": "node batch.js",
+    "score:kospi": "node score-kospi-full.js",
+    "score:kosdaq": "node score-kosdaq.js",
+    "score:top100": "node score-top100.js",
+    "filter:profitable": "node test-filter.js",
+    "patch:marketcap": "node patch-marketcap.js",
+    "db:upsert": "node db-upsert.js --both",
+    "db:upsert:kospi": "node db-upsert.js --kospi",
+    "db:upsert:kosdaq": "node db-upsert.js --kosdaq",
+    "db:populate-financials": "node populate-financials.js",
+    "check": "node scripts/check-syntax.js",
+    "test": "node --test tests/**/*.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "adm-zip": "^0.5.17",
+    "better-sqlite3": "^12.10.0",
+    "cheerio": "^1.2.0",
+    "dotenv": "^16.4.5",
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {
+    "pg": "^8.21.0"
+  }
+}

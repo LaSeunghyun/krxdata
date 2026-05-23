@@ -1,0 +1,39 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -e ':*)",
+      "mcp__plugin_supabase_supabase__execute_sql",
+      "Bash(curl -s 'https://onxkbuecwbcueuhwnowx.supabase.co/rest/v1/stock_analysis?select=mrkt_ctg,count&order=mrkt_ctg' -H 'apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9ueGtidWVjd2JjdWV1aHdub3d4Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3OTE5Mjc5MCwiZXhwIjoyMDk0NzY4NzkwfQ.3Wa1E9tyMmsqxN1xGJTFFmrczkurWk-TC-PD4JuPPlM' -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9ueGtidWVjd2JjdWV1aHdub3d4Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3OTE5Mjc5MCwiZXhwIjoyMDk0NzY4NzkwfQ.3Wa1E9tyMmsqxN1xGJTFFmrczkurWk-TC-PD4JuPPlM' -H 'Prefer: count=exact' -I)",
+      "Bash(curl -s 'https://onxkbuecwbcueuhwnowx.supabase.co/rest/v1/stock_analysis?select=stock_code&detail=is.null' -H 'apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9ueGtidWVjd2JjdWV1aHdub3d4Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3OTE5Mjc5MCwiZXhwIjoyMDk0NzY4NzkwfQ.3Wa1E9tyMmsqxN1xGJTFFmrczkurWk-TC-PD4JuPPlM' -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9ueGtidWVjd2JjdWV1aHdub3d4Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3OTE5Mjc5MCwiZXhwIjoyMDk0NzY4NzkwfQ.3Wa1E9tyMmsqxN1xGJTFFmrczkurWk-TC-PD4JuPPlM' -H 'Prefer: count=exact' -I)",
+      "Bash(node db-upsert.js --kosdaq)",
+      "Bash(curl -s 'https://onxkbuecwbcueuhwnowx.supabase.co/rest/v1/stock_analysis?select=stock_code,corp_name,mrkt_ctg,detail&stock_code=eq.032190' -H 'apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9ueGtidWVjd2JjdWV1aHdub3d4Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3OTE5Mjc5MCwiZXhwIjoyMDk0NzY4NzkwfQ.3Wa1E9tyMmsqxN1xGJTFFmrczkurWk-TC-PD4JuPPlM' -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9ueGtidWVjd2JjdWV1aHdub3d4Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3OTE5Mjc5MCwiZXhwIjoyMDk0NzY4NzkwfQ.3Wa1E9tyMmsqxN1xGJTFFmrczkurWk-TC-PD4JuPPlM')",
+      "mcp__plugin_supabase_supabase__apply_migration",
+      "mcp__supabase__apply_migration",
+      "Bash(supabase --version)",
+      "Bash(curl:*)",
+      "mcp__supabase__list_projects",
+      "Bash(node:*)",
+      "mcp__supabase__list_tables",
+      "Bash(where codex:*)",
+      "mcp__supabase__execute_sql",
+      "Bash(grep -n \"^codex$\\\\|^codex \" \"C:\\\\Users\\\\wisebirds\\\\.claude\\\\projects\\\\C--claudeT-files\\\\5cecf59a-6653-44da-a7fb-92483adc8a1e\\\\tool-results\\\\bcyvlrld0.txt\")",
+      "Bash(xargs grep:*)",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(json.dumps\\(list\\(d.get\\('mcpServers',{}\\).keys\\(\\)\\), indent=2\\)\\)\")",
+      "Read(//c/Users/wisebirds/AppData/Roaming/Claude/**)",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(k,':', json.dumps\\(v\\)[:100]\\) for k,v in d.get\\('mcpServers',{}\\).items\\(\\)]\")",
+      "Skill(update-config)",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(json.dumps\\(d, indent=2\\)\\)\")",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(list\\(d.get\\('files',{}\\).keys\\(\\)\\)\\)\")",
+      "Bash(npm list:*)",
+      "Bash(npm install:*)",
+      "Bash(grep -v \"//\")",
+      "Bash(python3 -c ':*)",
+      "Bash(schtasks:*)",
+      "Bash(powershell:*)",
+      "Bash(git -C C:/claudeT/files remote -v)",
+      "Bash(git -C C:/claudeT/files log --oneline -3)",
+      "Bash(gh auth:*)",
+      "Bash(gh repo:*)"
+    ]
+  }
+}

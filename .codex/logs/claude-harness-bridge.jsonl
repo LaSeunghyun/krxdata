@@ -1,0 +1,4 @@
+{"ts":"2026-05-22T23:46:53.609Z","type":"trigger-match","matched":[],"message_preview":"# DB Schema Design Review Request\n\n## 현재 테이블 구조\n\n### stock_analysis (현재 최신 스코어, "}
+{"ts":"2026-05-22T23:46:53.635Z","type":"compound-suggest","conditions":["미매칭 메시지 35건","도구 호출 50회","반복 패턴 2개"]}
+{"ts":"2026-05-23T00:21:56.519Z","type":"trigger-match","matched":[],"message_preview":"# 주식 스코어링 스크립트 재설계 검토 요청\n\n## 현재 구조\n\n### 스크립트\n- `score-kospi-full.js`: KOSPI 672개"}
+{"ts":"2026-05-23T00:21:56.539Z","type":"compound-suggest","conditions":["미매칭 메시지 37건","도구 호출 50회","반복 패턴 1개"]}

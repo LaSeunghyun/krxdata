@@ -1,0 +1,86 @@
+name: KRXDATA Daily Ranking Update
+
+on:
+  # 매일 자동 실행 (KST 기준, UTC+9)
+  schedule:
+    - cron: '0 23 * * 0-4'   # 가격+랭킹: KST 08:00 (일~목 UTC 23:00 → 월~금 KST 08:00)
+    - cron: '3 0 * * 1-5'    # 랭킹만:   KST 09:03 (월~금 UTC 00:03)
+
+  # GitHub UI에서 수동 실행
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: '실행 모드'
+        required: true
+        default: 'ranking'
+        type: choice
+        options:
+          - full       # 가격 업데이트 + 랭킹 계산
+          - ranking    # 랭킹만 재계산 (빠름, ~5초)
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: |
+          cd files
+          npm install 2>/dev/null || true
+
+      - name: Determine mode
+        id: mode
+        run: |
+          # cron 트리거 시 시각으로 모드 결정
+          # workflow_dispatch 시 input 사용
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
+          else
+            HOUR=$(date -u +%H)
+            MINUTE=$(date -u +%M)
+            if [ "$HOUR" = "23" ]; then
+              echo "mode=full" >> $GITHUB_OUTPUT
+            else
+              echo "mode=ranking" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Run price update + ranking (full mode)
+        if: steps.mode.outputs.mode == 'full'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          PUBLIC_DATA_API_KEY: ${{ secrets.PUBLIC_DATA_API_KEY }}
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
+          SUPABASE_MANAGEMENT_KEY: ${{ secrets.SUPABASE_MANAGEMENT_KEY }}
+        run: |
+          echo "=== 가격+랭킹 업데이트 시작 ($(TZ='Asia/Seoul' date)) ==="
+          node files/daily-ranking.js
+
+      - name: Run ranking only (ranking mode)
+        if: steps.mode.outputs.mode == 'ranking'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          PUBLIC_DATA_API_KEY: ${{ secrets.PUBLIC_DATA_API_KEY }}
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
+          SUPABASE_MANAGEMENT_KEY: ${{ secrets.SUPABASE_MANAGEMENT_KEY }}
+        run: |
+          echo "=== 랭킹 재계산 시작 ($(TZ='Asia/Seoul' date)) ==="
+          node files/daily-ranking.js --skip-price
+
+      - name: Report summary
+        if: always()
+        run: |
+          echo "### 실행 결과" >> $GITHUB_STEP_SUMMARY
+          echo "- 모드: ${{ steps.mode.outputs.mode }}" >> $GITHUB_STEP_SUMMARY
+          echo "- 완료 시각: $(TZ='Asia/Seoul' date '+%Y-%m-%d %H:%M KST')" >> $GITHUB_STEP_SUMMARY

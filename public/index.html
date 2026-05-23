@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KRXDATA Monitor</title>
+  <style>
+    :root {
+      --bg: #0d0f14;
+      --surface: #141720;
+      --border: #252a38;
+      --border-bright: #343d54;
+      --text: #c8d0e0;
+      --text-dim: #5a6482;
+      --text-bright: #e8eaf0;
+      --accent: #4a9eff;
+      --accent-dim: #1c3a5e;
+      --green: #3ddc84;
+      --green-dim: #1a3d2a;
+      --yellow: #f0b429;
+      --red: #ff5a5a;
+      --progress-bg: #1e2436;
+      --progress-fill: #4a9eff;
+      --log-bg: #0a0c10;
+      --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+      --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-ui);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px 16px;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 860px;
+    }
+
+    /* Header */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 18px 24px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px 10px 0 0;
+      border-bottom: none;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logo {
+      font-family: var(--font-mono);
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: 0.08em;
+    }
+
+    .logo span {
+      color: var(--text-dim);
+      font-weight: 400;
+    }
+
+    .status-badge {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--text-dim);
+      transition: background 0.3s;
+    }
+
+    .status-dot.running {
+      background: var(--green);
+      box-shadow: 0 0 8px var(--green);
+      animation: pulse 1.2s ease-in-out infinite;
+    }
+
+    .status-dot.done {
+      background: var(--accent);
+      box-shadow: 0 0 6px var(--accent);
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    /* Main card */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .card:last-child {
+      border-radius: 0 0 10px 10px;
+    }
+
+    /* Divider */
+    .divider {
+      height: 1px;
+      background: var(--border);
+    }
+
+    /* Info row */
+    .info-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .info-label {
+      font-size: 11px;
+      color: var(--text-dim);
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .info-value {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: var(--text-bright);
+    }
+
+    /* Buttons */
+    .btn-row {
+      display: flex;
+      gap: 12px;
+    }
+
+    .btn {
+      flex: 1;
+      padding: 12px 20px;
+      border: 1px solid var(--border-bright);
+      border-radius: 7px;
+      background: transparent;
+      color: var(--text);
+      font-family: var(--font-ui);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .btn:hover:not(:disabled) {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: var(--accent-dim);
+    }
+
+    .btn:active:not(:disabled) {
+      transform: translateY(1px);
+    }
+
+    .btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .btn-primary {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .btn-stop {
+      flex: 0 0 auto;
+      border-color: var(--red);
+      color: var(--red);
+      padding: 12px 18px;
+    }
+
+    .btn-stop:hover:not(:disabled) {
+      background: rgba(255, 90, 90, 0.15);
+    }
+
+    .spinner {
+      width: 14px;
+      height: 14px;
+      border: 2px solid currentColor;
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      flex-shrink: 0;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Progress */
+    .progress-section {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .progress-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .progress-label {
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+
+    .progress-pct {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--accent);
+    }
+
+    .progress-bar-bg {
+      height: 8px;
+      background: var(--progress-bg);
+      border-radius: 4px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent) 0%, #66b3ff 100%);
+      border-radius: 4px;
+      transition: width 0.4s ease;
+      min-width: 2px;
+    }
+
+    .progress-bar-fill.complete {
+      background: linear-gradient(90deg, var(--green) 0%, #88ffc0 100%);
+    }
+
+    .progress-step {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+
+    .progress-step .step-text {
+      color: var(--text);
+    }
+
+    /* Log */
+    .log-section {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .log-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .log-title {
+      font-size: 11px;
+      color: var(--text-dim);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .log-title::before {
+      content: '';
+      display: block;
+      width: 2px;
+      height: 12px;
+      background: var(--accent);
+      border-radius: 1px;
+    }
+
+    .log-clear {
+      font-size: 10px;
+      color: var(--text-dim);
+      cursor: pointer;
+      border: none;
+      background: none;
+      padding: 2px 6px;
+      border-radius: 3px;
+    }
+
+    .log-clear:hover { color: var(--text); background: var(--border); }
+
+    .log-box {
+      background: var(--log-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 14px;
+      height: 280px;
+      overflow-y: auto;
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      line-height: 1.7;
+      scroll-behavior: smooth;
+    }
+
+    .log-box::-webkit-scrollbar { width: 5px; }
+    .log-box::-webkit-scrollbar-track { background: transparent; }
+    .log-box::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 3px; }
+
+    .log-entry {
+      display: block;
+      color: var(--text-dim);
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    .log-entry.highlight {
+      color: var(--text);
+    }
+
+    .log-entry.progress-line {
+      color: #a0c4ff;
+    }
+
+    .log-entry.done-line {
+      color: var(--green);
+    }
+
+    .log-entry.error-line {
+      color: var(--red);
+    }
+
+    .log-empty {
+      color: var(--text-dim);
+      font-style: italic;
+    }
+
+    /* Connection indicator */
+    .conn-indicator {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 10px;
+      color: var(--text-dim);
+    }
+
+    .conn-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--text-dim);
+    }
+
+    .conn-dot.connected { background: var(--green); }
+    .conn-dot.disconnected { background: var(--red); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <div class="header-left">
+        <div class="logo">KRXDATA<span> / Monitor</span></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:16px;">
+        <div class="conn-indicator">
+          <div class="conn-dot" id="connDot"></div>
+          <span id="connLabel">연결 중...</span>
+        </div>
+        <div class="status-badge">
+          <div class="status-dot" id="statusDot"></div>
+          <span id="statusLabel">IDLE</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main Card -->
+    <div class="card">
+      <!-- 마지막 업데이트 -->
+      <div class="info-row">
+        <span class="info-label">마지막 완료</span>
+        <span class="info-value" id="lastDone">—</span>
+      </div>
+
+      <div class="divider"></div>
+
+      <!-- 버튼 -->
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btnFull" onclick="runMode('full')">
+          <span id="btnFullIcon">▶</span>
+          <span id="btnFullText">가격 + 랭킹 업데이트</span>
+        </button>
+        <button class="btn" id="btnRanking" onclick="runMode('ranking')">
+          <span id="btnRankingIcon">▶</span>
+          <span id="btnRankingText">랭킹만 업데이트</span>
+        </button>
+        <button class="btn btn-stop" id="btnStop" onclick="stopRun()" style="display:none">
+          ■ 중단
+        </button>
+      </div>
+
+      <!-- 진행률 -->
+      <div class="progress-section">
+        <div class="progress-header">
+          <span class="progress-label">진행률</span>
+          <span class="progress-pct" id="progressPct">0%</span>
+        </div>
+        <div class="progress-bar-bg">
+          <div class="progress-bar-fill" id="progressBar" style="width:0%"></div>
+        </div>
+        <div class="progress-step">
+          단계: <span class="step-text" id="currentStep">대기 중</span>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <!-- 로그 -->
+      <div class="log-section">
+        <div class="log-header">
+          <div class="log-title">실시간 로그</div>
+          <button class="log-clear" onclick="clearLogDisplay()">지우기</button>
+        </div>
+        <div class="log-box" id="logBox">
+          <span class="log-entry log-empty">— 로그 없음 —</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let es = null;
+    let autoScroll = true;
+
+    // ---------- SSE 연결 ----------
+    function connect() {
+      if (es) es.close();
+      es = new EventSource('/api/stream');
+
+      es.onopen = () => {
+        setConn(true);
+      };
+
+      es.onmessage = (e) => {
+        try {
+          const status = JSON.parse(e.data);
+          renderStatus(status);
+        } catch {}
+      };
+
+      es.onerror = () => {
+        setConn(false);
+        // 5초 후 재연결
+        setTimeout(connect, 5000);
+      };
+    }
+
+    function setConn(ok) {
+      document.getElementById('connDot').className = 'conn-dot ' + (ok ? 'connected' : 'disconnected');
+      document.getElementById('connLabel').textContent = ok ? 'SSE 연결됨' : '연결 끊김';
+    }
+
+    // ---------- 상태 렌더 ----------
+    function renderStatus(s) {
+      // 배지
+      const dot = document.getElementById('statusDot');
+      const label = document.getElementById('statusLabel');
+      if (s.running) {
+        dot.className = 'status-dot running';
+        label.textContent = '실행 중';
+      } else if (s.progress === 100) {
+        dot.className = 'status-dot done';
+        label.textContent = '완료';
+      } else {
+        dot.className = 'status-dot';
+        label.textContent = 'IDLE';
+      }
+
+      // 마지막 완료
+      document.getElementById('lastDone').textContent = s.lastDone || '—';
+
+      // 버튼
+      const btnFull = document.getElementById('btnFull');
+      const btnRanking = document.getElementById('btnRanking');
+      const btnStop = document.getElementById('btnStop');
+
+      if (s.running) {
+        btnFull.disabled = true;
+        btnRanking.disabled = true;
+        btnStop.style.display = '';
+
+        // 실행 중인 버튼에 스피너
+        const spinHtml = '<div class="spinner"></div>';
+        if (s.mode === 'full') {
+          document.getElementById('btnFullIcon').outerHTML = '<div class="spinner" id="btnFullIcon"></div>';
+          document.getElementById('btnFullText').textContent = '업데이트 중...';
+        } else {
+          document.getElementById('btnRankingIcon').outerHTML = '<div class="spinner" id="btnRankingIcon"></div>';
+          document.getElementById('btnRankingText').textContent = '랭킹 계산 중...';
+        }
+      } else {
+        btnFull.disabled = false;
+        btnRanking.disabled = false;
+        btnStop.style.display = 'none';
+
+        // 아이콘 복원
+        resetBtnIcon('btnFull', 'btnFullIcon', 'btnFullText', '▶', '가격 + 랭킹 업데이트');
+        resetBtnIcon('btnRanking', 'btnRankingIcon', 'btnRankingText', '▶', '랭킹만 업데이트');
+      }
+
+      // 진행률
+      const pct = s.progress || 0;
+      const bar = document.getElementById('progressBar');
+      bar.style.width = pct + '%';
+      bar.className = 'progress-bar-fill' + (pct >= 100 ? ' complete' : '');
+      document.getElementById('progressPct').textContent = pct + '%';
+      document.getElementById('currentStep').textContent = s.current || '대기 중';
+
+      // 로그
+      renderLog(s.log || []);
+    }
+
+    function resetBtnIcon(btnId, iconId, textId, icon, text) {
+      const iconEl = document.getElementById(iconId);
+      if (!iconEl) {
+        // spinner였을 경우 재생성
+        const btn = document.getElementById(btnId);
+        const span = document.createElement('span');
+        span.id = iconId;
+        span.textContent = icon;
+        btn.insertBefore(span, btn.firstChild);
+      } else {
+        iconEl.textContent = icon;
+        iconEl.className = '';
+      }
+      const textEl = document.getElementById(textId);
+      if (textEl) textEl.textContent = text;
+    }
+
+    // ---------- 로그 렌더 ----------
+    function renderLog(lines) {
+      const box = document.getElementById('logBox');
+      if (!lines || lines.length === 0) {
+        box.innerHTML = '<span class="log-entry log-empty">— 로그 없음 —</span>';
+        return;
+      }
+
+      box.innerHTML = lines.map(line => {
+        let cls = 'log-entry';
+        if (line.includes('진행:')) cls += ' progress-line';
+        else if (line.includes('[완료]') || line.includes('완료]')) cls += ' done-line';
+        else if (line.includes('[오류]') || line.includes('STDERR')) cls += ' error-line';
+        else if (line.includes('시작') || line.includes('저장')) cls += ' highlight';
+        return `<span class="${cls}">${escHtml(line)}</span>`;
+      }).join('\n');
+
+      if (autoScroll) {
+        box.scrollTop = box.scrollHeight;
+      }
+    }
+
+    function escHtml(str) {
+      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function clearLogDisplay() {
+      document.getElementById('logBox').innerHTML = '<span class="log-entry log-empty">— 로그 지움 —</span>';
+    }
+
+    // 로그박스 스크롤 감지 (맨 아래에서 벗어나면 autoScroll 해제)
+    document.getElementById('logBox').addEventListener('scroll', (e) => {
+      const box = e.target;
+      autoScroll = box.scrollTop + box.clientHeight >= box.scrollHeight - 20;
+    });
+
+    // ---------- API ----------
+    async function runMode(mode) {
+      try {
+        const res = await fetch(`/api/run?mode=${mode}`, { method: 'POST' });
+        const data = await res.json();
+        if (data.error) alert(data.error);
+      } catch (e) {
+        alert('서버 오류: ' + e.message);
+      }
+    }
+
+    async function stopRun() {
+      if (!confirm('실행 중인 업데이트를 중단하시겠습니까?')) return;
+      try {
+        await fetch('/api/stop', { method: 'POST' });
+      } catch (e) {
+        alert('중단 오류: ' + e.message);
+      }
+    }
+
+    // ---------- 초기화 ----------
+    connect();
+
+    // 폴백: SSE 안 될 때를 대비해 3초마다 폴링
+    setInterval(async () => {
+      if (es && es.readyState === EventSource.OPEN) return;
+      try {
+        const res = await fetch('/api/status');
+        const status = await res.json();
+        renderStatus(status);
+      } catch {}
+    }, 3000);
+  </script>
+</body>
+</html>
