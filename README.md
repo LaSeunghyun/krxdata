@@ -1,68 +1,97 @@
-# dart-mcp
+# KRXDATA — 국내 주식 저평가 스코어링 시스템
 
-OpenDart, 공공데이터포털 주식 데이터, 네이버 금융 시세, 로컬 SQLite, Supabase를 연결한 국내 주식 분석 작업공간입니다. Claude Desktop MCP 서버로도 실행할 수 있고, 배치/스코어링 스크립트로 로컬 산출물을 만들 수도 있습니다.
+KOSPI·KOSDAQ 전 종목 재무 데이터를 수집해 섹터 대비 저평가 점수를 산정하고, 매일 자동으로 순위를 갱신하는 파이프라인입니다.
 
-## 구성
+## 아키텍처
+
+```
+공공데이터포털 API  ──►  daily-ranking.js  ──►  Supabase DB
+OpenDart API      ──►  (GitHub Actions)        daily_rankings 테이블
+                                                      │
+                                                      ▼
+                                          Claude에게 질문
+                                          "저평가 종목 추천해줘"
+```
+
+## 저평가 점수 계산식
+
+```
+저평가점수 (0~100점) =
+  섹터 PBR 대비 할인율 × 40점   ← PBR이 섹터 평균보다 낮을수록 고점
+  + 섹터 PER 대비 할인율 × 30점  ← PER이 섹터 평균보다 낮을수록 고점
+  + ROE × 1.5 (최대 30점)        ← 수익성
+```
+
+데이터 소스: `stock_financials` + `sector_stats` + `stock_analysis` (Supabase)
+
+## 자동화 스케줄 (GitHub Actions)
+
+| 시각 (KST) | 실행 내용 |
+|-----------|---------|
+| 월~금 08:00 | 공공데이터 API로 전 종목 현재가 갱신 + 저평가 순위 재계산 |
+| 월~금 09:03 | 현재가 생략, 저평가 순위만 재계산 (~5초) |
+
+워크플로우 파일: `.github/workflows/daily-ranking.yml`
+
+**수동 실행**: GitHub Actions 탭 → "KRXDATA Daily Ranking Update" → Run workflow
+
+## DB 테이블
+
+| 테이블 | 내용 |
+|--------|------|
+| `stock_analysis` | 종목 기본 정보 + 현재가 + 시총 |
+| `stock_financials` | 연간 재무제표 (PBR, PER, ROE, 영업이익률, 부채비율) |
+| `sector_stats` | 섹터별 평균 PBR, PER, ROE |
+| `daily_rankings` | 일자별 저평가 순위 (UNIQUE: rank_date + stock_code) |
+| `rank_changes` | 전일 대비 순위·점수·가격 변동 VIEW |
+
+## 주요 스크립트
 
 | 파일 | 역할 |
-| --- | --- |
-| `mcp-server.js` | Claude MCP 서버. 공시, 재무, 주가, 로컬 DB 조회 도구를 제공합니다. |
-| `batch.js` | `watchlist.json` 기준으로 최근 주가와 공시 목록을 `dart-data.db`에 저장합니다. |
-| `db.js` | SQLite DB 생성과 테이블 초기화를 담당합니다. |
-| `score-kospi-full.js` | KOSPI 흑자 기업 전체를 점수화해 `scored-kospi-full.json`을 만듭니다. |
-| `score-kosdaq.js` | KOSDAQ 흑자 기업 전체를 점수화해 `scored-kosdaq.json`을 만듭니다. |
-| `score-top100.js` | 영업이익 상위 100개 기업을 점수화해 `scored-stocks.json`을 만듭니다. |
-| `stock-utils.js` | 목표가 계산과 추천 문구 생성 공통 로직입니다. |
-| `db-upsert.js` | 점수 산출물을 Supabase `stock_analysis` 테이블에 upsert합니다. |
-| `config.js` | 분석 연도, 배치 크기, 지연 시간, 타임아웃 기본값을 중앙 관리합니다. |
+|------|------|
+| `daily-ranking.js` | 현재가 업데이트 + 저평가 순위 계산 + 변동 리포트 (GitHub Actions 진입점) |
+| `score-kospi-full.js` | KOSPI 전 종목 스코어링 JSON 생성 |
+| `score-kosdaq.js` | KOSDAQ 전 종목 스코어링 JSON 생성 |
+| `db-upsert.js` | 점수 JSON을 Supabase `stock_analysis`에 upsert |
+| `fetch-sectors.js` | 섹터별 평균 지표 계산 → `sector_stats` 갱신 |
+| `batch.js` | 관심 종목 주가·공시 로컬 SQLite 저장 |
+| `mcp-server.js` | Claude Desktop MCP 서버 (공시·재무·주가 도구) |
 
-## 설치
+## 환경 변수
 
-```powershell
-cd C:\claudeT\files
+```env
+DART_API_KEY=
+PUBLIC_DATA_API_KEY=
+SUPABASE_URL=
+SUPABASE_KEY=
+SUPABASE_MANAGEMENT_KEY=
+SUPABASE_PROJECT_REF=
+```
+
+GitHub Actions에서는 Repository Secrets로 관리됩니다.  
+로컬 실행 시 `.env` 파일 사용 (`.env.example` 참고).
+
+## 로컬 실행
+
+```bash
 npm ci
-Copy-Item .env.example .env
+
+# 순위만 재계산 (빠름, ~5초)
+node daily-ranking.js --skip-price
+
+# 가격 업데이트 + 순위 재계산 (전체, ~30분)
+node daily-ranking.js
 ```
 
-`.env`에 API 키를 입력합니다.
+## 조회 방법
 
-| 환경변수 | 설명 |
-| --- | --- |
-| `DART_API_KEY` | OpenDart API 키 |
-| `PUBLIC_DATA_API_KEY` | 공공데이터포털 Encoding 인증키 |
-| `SUPABASE_URL` | Supabase 프로젝트 URL |
-| `SUPABASE_SERVICE_KEY` | Supabase service role key |
-| `ANALYSIS_YEAR` | 기본 사업보고서 연도. 기본값 `2025` |
-| `ANALYSIS_YEAR_FALLBACK` | 기본 연도 데이터가 없을 때 조회할 연도. 기본값 `2024` |
-| `SCORE_BATCH_SIZE` | DART 다중 재무 조회 배치 크기. 기본값 `100` |
-| `SCORE_DELAY_MS` | 스코어링 루프 지연 시간. 기본값 `300` |
-| `TOP_STOCK_LIMIT` | `score:top100` 대상 수. 기본값 `100` |
+GitHub Actions로 `daily_rankings`가 갱신되면 Claude에게 직접 질문:
 
-## 주요 명령
+- `"저평가 종목 TOP 10 추천해줘"` → DB 조회 + 뉴스 + 의견 자동 제공
+- `"코스피 저평가 우량주 5개 알려줘"`
+- `"삼성전자 분석해줘"`
 
-```powershell
-npm.cmd run check
-npm.cmd test
-npm.cmd start
-npm.cmd run batch
-npm.cmd run score:kospi
-npm.cmd run score:kosdaq
-npm.cmd run score:top100
-npm.cmd run db:upsert
-```
-
-PowerShell 실행 정책 때문에 `npm`이 막히면 `npm.cmd`를 사용합니다.
-
-## 작업 흐름
-
-1. `npm.cmd run batch`로 관심 종목의 최근 주가와 공시를 `dart-data.db`에 저장합니다.
-2. `npm.cmd run filter:profitable`로 DART 기준 흑자 기업 목록을 갱신합니다.
-3. `npm.cmd run score:kospi` 또는 `npm.cmd run score:kosdaq`로 시장별 점수 JSON을 생성합니다.
-4. `npm.cmd run db:upsert`로 생성된 점수 데이터를 Supabase에 적재합니다.
-
-## MCP 서버
-
-Claude Desktop 설정 예시:
+## MCP 서버 (Claude Desktop)
 
 ```json
 {
@@ -71,38 +100,18 @@ Claude Desktop 설정 예시:
       "command": "node",
       "args": ["C:\\claudeT\\files\\mcp-server.js"],
       "env": {
-        "DART_API_KEY": "your_dart_api_key_here",
-        "PUBLIC_DATA_API_KEY": "your_public_data_api_key_here"
+        "DART_API_KEY": "your_dart_api_key",
+        "PUBLIC_DATA_API_KEY": "your_public_data_api_key"
       }
     }
   }
 }
 ```
 
-제공 도구:
+제공 도구: `get_corp_info`, `get_market_info`, `get_stock_price`, `get_stock_history`,
+`get_disclosures`, `get_disclosure_body`, `get_financials`, `get_major_shareholders`,
+`query_price`, `query_disclosures`
 
-| 도구 | 설명 |
-| --- | --- |
-| `query_price` | 로컬 SQLite에서 종목 주가 이력을 조회합니다. |
-| `query_disclosures` | 로컬 SQLite에서 공시 목록을 조회합니다. |
-| `get_disclosure_body` | OpenDart 공시 본문을 실시간으로 가져옵니다. |
-| `get_corp_info` | 종목코드로 OpenDart 기업 기본정보와 `corp_code`를 조회합니다. |
-| `get_disclosures` | OpenDart 최근 공시 목록을 조회합니다. |
-| `get_financials` | OpenDart 주요 재무 계정을 조회합니다. |
-| `get_major_shareholders` | OpenDart 주요 주주 정보를 조회합니다. |
-| `get_stock_price` | 공공데이터포털 최신 주가를 조회합니다. |
-| `get_stock_history` | 공공데이터포털 기간별 OHLCV를 조회합니다. |
-| `get_market_info` | KRX 상장종목 기본정보를 조회합니다. |
+## 데이터 산출물
 
-## 데이터 파일
-
-`dart-data.db`, `dart-data.db-shm`, `dart-data.db-wal`, `scored-*.json`, `profitable-stocks.json`은 실행 산출물입니다. 기본적으로 `.gitignore`에 포함되어 있으며, 필요할 때 다시 생성합니다.
-
-## 검증
-
-```powershell
-npm.cmd run check
-npm.cmd test
-```
-
-`check`는 주요 JavaScript 파일의 문법을 확인합니다. `test`는 설정과 프로젝트 실행 계약을 검증합니다. 외부 API 호출이 필요한 배치/스코어링 명령은 API 키와 네트워크 상태에 따라 별도로 실행합니다.
+`dart-data.db`, `scored-*.json`, `profitable-stocks.json`, `*.cache.json` 등은 실행 산출물로 `.gitignore`에 포함됩니다.
