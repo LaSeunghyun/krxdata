@@ -182,24 +182,31 @@ async function computeAndSaveRankings() {
           ELSE 0.5
         END AS price_position_52w,
         ROUND((
-          -- 가치: 섹터 PBR 할인율 (30점)
-          GREATEST(0, (1.0 - sf.pbr / NULLIF(ss.avg_pbr, 0)) * 30)
-          -- 가치: 섹터 PER 할인율 (20점)
-          + GREATEST(0, (1.0 - sf.per / NULLIF(ss.avg_per, 0)) * 20)
-          -- 수익성: ROE (최대 20점)
-          + LEAST(20, sf.roe * 1.0)
-          -- 모멘텀: 52주 위치 기반 (최대 20점)
+          -- [가치 25pt] 섹터 PBR 할인율: 백분위 기반 연속 점수
+          GREATEST(0, LEAST(25, (1.0 - sf.pbr / NULLIF(ss.avg_pbr, 0)) * 25))
+          -- [가치 15pt] 섹터 PER 할인율
+          + GREATEST(0, LEAST(15, (1.0 - sf.per / NULLIF(ss.avg_per, 0)) * 15))
+          -- [수익성 15pt] ROE
+          + LEAST(15, sf.roe * 0.75)
+          -- [모멘텀 15pt] 52주 위치 기반 연속 점수 (저점 근접 = 역발상 매수 신호)
           + CASE
               WHEN sa.high_52w > sa.low_52w AND sa.low_52w > 0 THEN
-                CASE
-                  WHEN (sa.current_price - sa.low_52w)::NUMERIC / NULLIF(sa.high_52w - sa.low_52w, 0) > 0.6 THEN 20
-                  WHEN (sa.current_price - sa.low_52w)::NUMERIC / NULLIF(sa.high_52w - sa.low_52w, 0) > 0.3 THEN 10
-                  ELSE 0
-                END
+                GREATEST(0, LEAST(15,
+                  (1.0 - (sa.current_price - sa.low_52w)::NUMERIC / NULLIF(sa.high_52w - sa.low_52w, 0)) * 15
+                ))
+              ELSE 7.5  -- 52주 데이터 없으면 중간값
+            END
+          -- [품질 10pt] 영업이익률
+          + LEAST(10, GREATEST(0, sf.op_margin * 0.5))
+          -- [성장성 20pt] 영업이익 YoY 성장률 (신규)
+          + CASE
+              WHEN sf.op_income_yoy IS NULL THEN 0
+              WHEN sf.op_income_yoy > 50  THEN 20
+              WHEN sf.op_income_yoy > 20  THEN 15
+              WHEN sf.op_income_yoy > 0   THEN 10
+              WHEN sf.op_income_yoy > -20 THEN 3
               ELSE 0
             END
-          -- 품질: 영업이익률 (최대 10점)
-          + LEAST(10, GREATEST(0, sf.op_margin * 0.5))
         )::NUMERIC, 1) AS undervalue_score
       FROM stock_analysis sa
       JOIN stock_financials sf ON sa.stock_code = sf.stock_code AND sf.analysis_year = 2025
@@ -209,8 +216,13 @@ async function computeAndSaveRankings() {
         AND ss.avg_pbr IS NOT NULL
         -- 하드 필터: 부채비율 300% 초과 제거
         AND (sf.debt_ratio IS NULL OR sf.debt_ratio < 300)
-        -- 하드 필터: ROE 음수(적자) 제거
-        AND sf.roe > 0
+        -- 하드 필터: ROE 음수(적자) 제거 / 바이오는 ROE > 5% 강화
+        AND (
+          (sa.sector NOT LIKE '%바이오%' AND sa.sector NOT LIKE '%의약%' AND sf.roe > 0)
+          OR (sa.sector LIKE '%바이오%' OR sa.sector LIKE '%의약%') AND sf.roe > 5
+        )
+        -- 하드 필터: 영업이익률 > 2% (적자 직전 제거)
+        AND sf.op_margin > 2
         -- 하드 필터: 시총 200억 미만 극소형 제거
         AND sa.market_cap_tril >= 0.002
         -- 하드 필터: 52주 고점 90% 초과(과매수) 제거
@@ -244,13 +256,13 @@ async function computeAndSaveRankings() {
   return r;
 }
 
-// 목표가 계산 (Codex 백테스트 보정 공식)
-function calcTargetPrice(currentPrice, pbr, sectorAvgPbr, period = '1m') {
-  if (!currentPrice || !pbr || !sectorAvgPbr || pbr <= 0 || sectorAvgPbr <= 0) return null;
-  const pbrRatio = Math.min(sectorAvgPbr / pbr, 2.0); // 상단 캡 2배
-  // 회귀계수: 1개월 0.18 / 3개월 0.54 (백테스트 실측치)
-  const coeff = period === '3m' ? 0.54 : 0.18;
-  return Math.round(currentPrice * pbrRatio * coeff + currentPrice);
+// 목표가 계산 (Codex 개선안 A: 저평가점수 연동)
+// score 74.5 → 1M: +14.9%, 3M: +29.8%, 1Y: +59.6%
+// score 64   → 1M: +12.8%, 3M: +25.6%, 1Y: +51.2%
+function calcTargetPrice(currentPrice, undervalueScore, period = '1m') {
+  if (!currentPrice || !undervalueScore || undervalueScore <= 0) return null;
+  const coeff = period === '1y' ? 0.80 : period === '3m' ? 0.40 : 0.20;
+  return Math.round(currentPrice * (1 + (undervalueScore / 100) * coeff));
 }
 
 // STEP 3: 순위 변동 리포트 출력
@@ -281,28 +293,28 @@ async function printChangeReport() {
 
   console.log("\n========== 저평가 랭킹 TOP 20 (매수 포트폴리오) ==========");
   console.log(`기준일: ${new Date().toLocaleDateString('ko-KR')}`);
-  console.log("순위  변동  종목명              시장   섹터          현재가    단기목표(1M)  중기목표(3M)   PBR   PER  점수  비중");
-  console.log("─".repeat(120));
+  console.log("순위  변동  종목명              시장   섹터          현재가   1M목표(+%)   3M목표(+%)   1Y목표(+%)  점수  비중");
+  console.log("─".repeat(125));
 
   const top20 = changes.filter(c => c.rank_today <= 20);
   for (const c of top20) {
     const change = c.rank_change === null ? "NEW" :
       c.rank_change > 0 ? `▲${c.rank_change}` :
       c.rank_change < 0 ? `▼${Math.abs(c.rank_change)}` : "─";
-    const t1m = calcTargetPrice(c.current_price, c.pbr, c.sector_avg_pbr, '1m');
-    const t3m = calcTargetPrice(c.current_price, c.pbr, c.sector_avg_pbr, '3m');
-    const up1m = t1m ? `+${((t1m - c.current_price)/c.current_price*100).toFixed(1)}%` : '-';
-    const up3m = t3m ? `+${((t3m - c.current_price)/c.current_price*100).toFixed(1)}%` : '-';
+    const t1m = calcTargetPrice(c.current_price, c.undervalue_score, '1m');
+    const t3m = calcTargetPrice(c.current_price, c.undervalue_score, '3m');
+    const t1y = calcTargetPrice(c.current_price, c.undervalue_score, '1y');
+    const fmt = (t, base) => t ? `${t.toLocaleString()}(+${((t-base)/base*100).toFixed(1)}%)` : '-';
     const weight = c.rank_today <= 10 ? '10%' : ' 5%';
-    const priceStr = c.current_price.toLocaleString('ko-KR');
-    const t1mStr = t1m ? t1m.toLocaleString('ko-KR') : '-';
-    const t3mStr = t3m ? t3m.toLocaleString('ko-KR') : '-';
     console.log(
       `${String(c.rank_today).padStart(3)}  ${change.padEnd(5)} ${c.corp_name.slice(0,14).padEnd(16)} ${c.mrkt_ctg.padEnd(6)} ${(c.sector||'').slice(0,12).padEnd(13)} ` +
-      `${priceStr.padStart(8)}  ${(t1mStr+'('+up1m+')').padStart(14)}  ${(t3mStr+'('+up3m+')').padStart(14)}  ` +
-      `${String(c.pbr||'').padStart(5)} ${String(c.per||'').padStart(5)} ${String(c.undervalue_score||'').padStart(5)}  ${weight}`
+      `${c.current_price.toLocaleString('ko-KR').padStart(8)}  ` +
+      `${fmt(t1m,c.current_price).padStart(14)}  ${fmt(t3m,c.current_price).padStart(14)}  ${fmt(t1y,c.current_price).padStart(14)}  ` +
+      `${String(c.undervalue_score||'').padStart(5)}  ${weight}`
     );
   }
+
+  console.log("\n  [리밸런싱 규칙] 스톱로스 -25% 즉시청산 | +100% 절반익절 | 반기(6개월) 전체 재스크리닝");
 
   // TOP 21~50 간략 표시
   const rest = changes.filter(c => c.rank_today > 20 && c.rank_today <= 50);
