@@ -1,0 +1,1260 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="안전한 자산관리를 위한 기업 분석 시스템">
+<meta property="og:title" content="KRXDATA — 기업 분석 시스템">
+<title>KRXDATA — 기업 분석 시스템</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css">
+<style>
+/* ══════════════════════════════════════
+   KRXDATA — 기업 분석 시스템
+   Design: Private Wealth Terminal
+   Palette: Warm dark + Antique Amber
+══════════════════════════════════════ */
+:root {
+  --bg:      #09090C;
+  --s1:      #101014;
+  --s2:      #16161C;
+  --s3:      #1C1C24;
+  --s4:      #22222C;
+  --bd:      #242430;
+  --bd2:     #2E2E3E;
+  --bd3:     #383848;
+  --amb:     #C89040;   /* antique amber — primary */
+  --amb2:    #E8B460;   /* bright amber */
+  --amb3:    #F8D090;   /* pale amber */
+  --amb-d:   rgba(200,144,64,.1);
+  --amb-d2:  rgba(200,144,64,.18);
+  --cob:     #5B8BF5;   /* cobalt blue — interactive */
+  --cob-d:   rgba(91,139,245,.12);
+  --up:      #2ECC8C;
+  --up-d:    rgba(46,204,140,.1);
+  --dn:      #F05060;
+  --dn-d:    rgba(240,80,96,.1);
+  --t1:      #E8E5EE;   /* near-white, barely lavender */
+  --t2:      #7878A0;   /* muted blue-gray */
+  --t3:      #3C3C58;   /* dark, barely visible */
+  --r6:      6px;
+  --r10:     10px;
+  --r14:     14px;
+  --font:    'Pretendard', sans-serif;
+}
+
+/* ── RESET ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--t1);
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── SCROLLBAR ── */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--bd3); border-radius: 4px; }
+
+/* ══════════ NAV ══════════ */
+.nav {
+  position: sticky; top: 0; z-index: 200;
+  height: 58px; padding: 0 40px;
+  display: flex; align-items: center; justify-content: space-between;
+  background: rgba(9,9,12,.92);
+  backdrop-filter: blur(28px) saturate(180%);
+  -webkit-backdrop-filter: blur(28px);
+  border-bottom: 1px solid var(--bd);
+}
+.nav-logo {
+  display: flex; align-items: center; gap: 12px;
+  cursor: pointer; text-decoration: none; user-select: none;
+}
+.nav-mark {
+  width: 30px; height: 30px;
+  border: 1.5px solid var(--amb);
+  border-radius: 7px;
+  display: grid; place-items: center;
+  transition: background .2s, box-shadow .2s;
+}
+.nav-logo:hover .nav-mark {
+  background: var(--amb-d2);
+  box-shadow: 0 0 12px rgba(200,144,64,.25);
+}
+.nav-mark svg { color: var(--amb); }
+.nav-brand {
+  font-size: 14px; font-weight: 800;
+  letter-spacing: .08em; color: var(--t1);
+}
+.nav-brand em {
+  color: var(--amb); font-style: normal;
+}
+.nav-divider {
+  width: 1px; height: 18px;
+  background: var(--bd2); margin: 0 4px;
+}
+.nav-sub {
+  font-size: 10px; font-weight: 600;
+  letter-spacing: .12em; text-transform: uppercase;
+  color: var(--t3);
+}
+.nav-links {
+  display: flex; gap: 2px;
+  background: var(--s2);
+  border: 1px solid var(--bd);
+  border-radius: 10px; padding: 4px;
+}
+.nav-link {
+  background: none; border: none; cursor: pointer;
+  font-family: var(--font); font-size: 13px; font-weight: 500;
+  color: var(--t2); padding: 6px 18px; border-radius: 7px;
+  transition: color .18s, background .18s;
+}
+.nav-link:hover { color: var(--t1); }
+.nav-link.active {
+  background: var(--s4); color: var(--t1);
+  font-weight: 700;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
+}
+.nav-right { display: flex; align-items: center; gap: 20px; }
+.nav-live {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 10px; font-weight: 700;
+  letter-spacing: .14em; color: var(--up);
+}
+.live-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--up);
+  box-shadow: 0 0 0 0 rgba(46,204,140,.4);
+  animation: ping 2.4s ease-in-out infinite;
+}
+@keyframes ping {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(46,204,140,.5); }
+  50%       { box-shadow: 0 0 0 6px rgba(46,204,140,0); }
+}
+.nav-time {
+  font-size: 11px; color: var(--t3);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .04em;
+}
+
+/* ══════════ PAGE SYSTEM ══════════ */
+.page { display: none; opacity: 0; transform: translateY(12px); transition: opacity .28s ease, transform .28s ease; }
+.page.active { display: block; opacity: 1; transform: none; }
+
+/* ══════════ ANIMATIONS ══════════ */
+@keyframes rise   { from { opacity:0; transform:translateY(18px); } to { opacity:1; transform:none; } }
+@keyframes fadein { from { opacity:0; } to { opacity:1; } }
+@keyframes slideR { from { opacity:0; transform:translateX(16px); } to { opacity:1; transform:none; } }
+@keyframes bob    { 0%,100%{transform:translateX(-50%) translateY(0);} 50%{transform:translateX(-50%) translateY(7px);} }
+
+/* ══════════ HERO ══════════ */
+.hero {
+  min-height: calc(100vh - 58px);
+  display: grid; grid-template-columns: 1fr 1fr;
+  position: relative; overflow: hidden;
+}
+/* ambient background */
+.hero::before {
+  content: '';
+  position: absolute; inset: 0; pointer-events: none;
+  background:
+    radial-gradient(ellipse 60% 70% at 20% 30%, rgba(200,144,64,.06) 0%, transparent 60%),
+    radial-gradient(ellipse 50% 50% at 80% 70%, rgba(91,139,245,.05) 0%, transparent 60%);
+}
+/* dot grid texture */
+.hero::after {
+  content: '';
+  position: absolute; inset: 0; pointer-events: none;
+  background-image: radial-gradient(circle, rgba(255,255,255,.04) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+.hero-left {
+  padding: 80px 56px 80px 40px;
+  display: flex; flex-direction: column; justify-content: center;
+  position: relative; z-index: 1;
+}
+.hero-eyebrow {
+  display: inline-flex; align-items: center; gap: 12px;
+  font-size: 10px; font-weight: 700; letter-spacing: .22em;
+  text-transform: uppercase; color: var(--amb);
+  margin-bottom: 32px;
+}
+.hero-eyebrow-line {
+  width: 28px; height: 1px; background: var(--amb); flex-shrink: 0;
+}
+.hero-h1 {
+  font-size: clamp(34px, 4.2vw, 58px);
+  font-weight: 900;
+  line-height: 1.1;
+  letter-spacing: -.04em;
+  margin-bottom: 24px;
+  word-break: keep-all;
+}
+.hero-h1 .l1 { display: block; color: var(--t2); font-size: .58em; font-weight: 600; letter-spacing: -.01em; margin-bottom: 8px; }
+.hero-h1 .l2 { display: block; }
+.hero-h1 .amb { color: var(--amb); }
+.hero-desc {
+  font-size: 15px; font-weight: 400; color: var(--t2);
+  line-height: 1.85; max-width: 420px; margin-bottom: 44px;
+}
+.hero-cta-group { display: flex; gap: 12px; flex-wrap: wrap; }
+.btn-primary {
+  display: inline-flex; align-items: center; gap: 9px;
+  background: var(--amb); color: #000;
+  border: none; cursor: pointer;
+  font-family: var(--font); font-size: 14px; font-weight: 700;
+  padding: 13px 28px; border-radius: var(--r10);
+  transition: background .18s, transform .15s, box-shadow .18s;
+}
+.btn-primary:hover {
+  background: var(--amb2);
+  transform: translateY(-2px);
+  box-shadow: 0 10px 28px rgba(200,144,64,.3);
+}
+.btn-ghost {
+  display: inline-flex; align-items: center; gap: 9px;
+  background: none; color: var(--t1);
+  border: 1px solid var(--bd2); cursor: pointer;
+  font-family: var(--font); font-size: 14px; font-weight: 500;
+  padding: 13px 28px; border-radius: var(--r10);
+  transition: border-color .18s, background .18s;
+}
+.btn-ghost:hover { border-color: var(--bd3); background: var(--s2); }
+
+/* hero stats row */
+.hero-stats {
+  display: flex; gap: 0;
+  margin-top: 52px;
+  border: 1px solid var(--bd);
+  border-radius: var(--r14);
+  overflow: hidden;
+  background: var(--s1);
+}
+.hstat {
+  flex: 1; padding: 18px 22px;
+  border-right: 1px solid var(--bd);
+  position: relative;
+}
+.hstat:last-child { border-right: none; }
+.hstat-lbl {
+  font-size: 9px; font-weight: 700; letter-spacing: .18em;
+  text-transform: uppercase; color: var(--t3); margin-bottom: 8px;
+}
+.hstat-val {
+  font-size: 21px; font-weight: 800;
+  font-variant-numeric: tabular-nums; color: var(--t1);
+  line-height: 1;
+}
+.hstat-val .unit {
+  font-size: 11px; font-weight: 500; color: var(--t2); margin-left: 3px;
+}
+
+/* ── hero right: live grade board ── */
+.hero-right {
+  padding: 48px 40px 48px 48px;
+  border-left: 1px solid var(--bd);
+  position: relative; z-index: 1;
+  display: flex; flex-direction: column; justify-content: center;
+  background: linear-gradient(135deg, rgba(200,144,64,.03) 0%, transparent 50%);
+}
+.hb-label {
+  font-size: 9px; font-weight: 700; letter-spacing: .2em;
+  text-transform: uppercase; color: var(--t3); margin-bottom: 24px;
+  display: flex; align-items: center; gap: 10px;
+}
+.hb-label::after { content: ''; flex: 1; height: 1px; background: var(--bd); }
+.grade-board { display: flex; flex-direction: column; gap: 10px; }
+.gb-row {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 18px;
+  background: var(--s1); border: 1px solid var(--bd);
+  border-radius: var(--r10);
+  transition: border-color .18s, background .18s;
+}
+.gb-row:hover { border-color: var(--bd2); background: var(--s2); }
+.gb-letter {
+  width: 38px; height: 38px; flex-shrink: 0;
+  border-radius: 9px; display: grid; place-items: center;
+  font-size: 16px; font-weight: 900; letter-spacing: -.02em;
+}
+.gb-letter.s { background: rgba(46,204,140,.12); color: var(--up);  border: 1px solid rgba(46,204,140,.25); }
+.gb-letter.a { background: rgba(200,144,64,.12);  color: var(--amb); border: 1px solid rgba(200,144,64,.28); }
+.gb-letter.b { background: rgba(91,139,245,.12);  color: var(--cob); border: 1px solid rgba(91,139,245,.25); }
+.gb-letter.c { background: rgba(120,120,160,.1);  color: var(--t2);  border: 1px solid rgba(120,120,160,.2); }
+.gb-letter.d { background: rgba(240,80,96,.1);    color: var(--dn);  border: 1px solid rgba(240,80,96,.22); }
+.gb-info { flex: 1; min-width: 0; }
+.gb-name { font-size: 13px; font-weight: 700; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gb-meta { font-size: 10px; color: var(--t3); font-weight: 600; }
+.gb-score {
+  font-size: 22px; font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  color: var(--amb); flex-shrink: 0;
+}
+.gb-score.dim { color: var(--t3); font-size: 16px; }
+.hb-footer {
+  margin-top: 20px; font-size: 11px; color: var(--t3);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.hb-footer .more-btn {
+  background: none; border: none; cursor: pointer;
+  font-family: var(--font); font-size: 11px; font-weight: 700;
+  color: var(--cob); padding: 0;
+}
+.hb-footer .more-btn:hover { opacity: .75; }
+
+/* scroll hint */
+.hero-scroll {
+  position: absolute; bottom: 28px; left: 50%;
+  transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  font-size: 9px; font-weight: 700; letter-spacing: .22em; color: var(--t3);
+  animation: bob 2.2s ease infinite; z-index: 2;
+}
+
+/* ══════════ DIVIDER ══════════ */
+.hr {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--bd), transparent);
+  margin: 0;
+}
+
+/* ══════════ SECTION ══════════ */
+.sec { padding: 64px 40px; }
+.sec-hd {
+  display: flex; align-items: baseline; justify-content: space-between;
+  margin-bottom: 32px;
+}
+.sec-title {
+  font-size: 10px; font-weight: 700; letter-spacing: .22em;
+  text-transform: uppercase; color: var(--t2);
+  display: flex; align-items: center; gap: 12px;
+}
+.sec-title::before {
+  content: ''; display: inline-block;
+  width: 3px; height: 14px;
+  background: var(--amb); border-radius: 2px;
+}
+.sec-action {
+  font-size: 12px; font-weight: 700; color: var(--cob);
+  background: none; border: none; cursor: pointer;
+  font-family: var(--font); transition: opacity .15s;
+}
+.sec-action:hover { opacity: .7; }
+
+/* ══════════ GRADE DIST (HOME) ══════════ */
+.grade-track { display: flex; flex-direction: column; gap: 8px; }
+.gt-row {
+  display: grid;
+  grid-template-columns: 40px 1fr 80px;
+  align-items: center; gap: 16px;
+  padding: 14px 20px;
+  background: var(--s1); border: 1px solid var(--bd);
+  border-radius: var(--r10);
+  transition: border-color .18s;
+}
+.gt-row:hover { border-color: var(--bd2); }
+.gt-grade {
+  font-size: 16px; font-weight: 900;
+  letter-spacing: -.02em;
+}
+.gt-grade.s { color: var(--up); }
+.gt-grade.a { color: var(--amb); }
+.gt-grade.b { color: var(--cob); }
+.gt-grade.c { color: var(--t2); }
+.gt-grade.d { color: var(--dn); }
+.gt-bar-wrap { position: relative; }
+.gt-bar-bg {
+  height: 7px; background: var(--s3);
+  border-radius: 4px; overflow: hidden;
+}
+.gt-bar-fill {
+  height: 100%; border-radius: 4px;
+  transition: width 1s cubic-bezier(.22,1,.36,1);
+}
+.gt-bar-fill.s { background: var(--up); }
+.gt-bar-fill.a { background: linear-gradient(90deg, var(--amb), var(--amb2)); }
+.gt-bar-fill.b { background: var(--cob); }
+.gt-bar-fill.c { background: var(--t3); }
+.gt-bar-fill.d { background: var(--dn); }
+.gt-count {
+  text-align: right;
+  font-size: 12px; font-weight: 700;
+  font-variant-numeric: tabular-nums; color: var(--t2);
+}
+.gt-count span { font-size: 10px; color: var(--t3); margin-left: 2px; }
+
+/* ══════════ TOP STOCKS GRID (HOME) ══════════ */
+.ts-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 14px; }
+.ts-card {
+  background: var(--s1); border: 1px solid var(--bd);
+  border-radius: var(--r14); padding: 24px 22px;
+  cursor: pointer; position: relative; overflow: hidden;
+  opacity: 0; transition: border-color .2s, transform .18s;
+}
+.ts-card::before {
+  content: ''; position: absolute; inset: 0;
+  background: radial-gradient(circle at 100% 0%, var(--amb-d) 0%, transparent 60%);
+  opacity: 0; transition: opacity .3s;
+}
+.ts-card:hover::before { opacity: 1; }
+.ts-card.in { animation: rise .4s ease both; }
+.ts-card:hover { border-color: var(--amb); transform: translateY(-3px); }
+/* grade accent line */
+.ts-card::after {
+  content: ''; position: absolute;
+  top: 0; left: 0; right: 0; height: 2px;
+  border-radius: var(--r14) var(--r14) 0 0;
+  opacity: 0; transition: opacity .2s;
+}
+.ts-card.s::after { background: var(--up);  opacity:1; }
+.ts-card.a::after { background: var(--amb); opacity:1; }
+.ts-card.b::after { background: var(--cob); opacity:1; }
+.ts-card.c::after { background: var(--t3);  opacity:1; }
+.ts-card.d::after { background: var(--dn);  opacity:1; }
+.ts-card-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.ts-rank { font-size: 10px; font-weight: 700; color: var(--t3); }
+.ts-badge {
+  font-size: 11px; font-weight: 800;
+  padding: 3px 10px; border-radius: 20px;
+}
+.ts-badge.s { background: var(--up-d);  color: var(--up);  border: 1px solid rgba(46,204,140,.25); }
+.ts-badge.a { background: var(--amb-d); color: var(--amb); border: 1px solid rgba(200,144,64,.28); }
+.ts-badge.b { background: var(--cob-d); color: var(--cob); border: 1px solid rgba(91,139,245,.25); }
+.ts-badge.c { background: rgba(120,120,160,.08); color: var(--t2); border: 1px solid rgba(120,120,160,.2); }
+.ts-badge.d { background: var(--dn-d);  color: var(--dn);  border: 1px solid rgba(240,80,96,.22); }
+.ts-name { font-size: 15px; font-weight: 800; margin-bottom: 2px; }
+.ts-code { font-size: 10px; color: var(--t3); font-weight: 600; margin-bottom: 18px; letter-spacing: .04em; }
+.ts-score-line {
+  display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px;
+}
+.ts-score-lbl { font-size: 10px; color: var(--t2); font-weight: 500; }
+.ts-score-num { font-size: 24px; font-weight: 900; color: var(--amb); font-variant-numeric: tabular-nums; line-height: 1; }
+.ts-bar { height: 4px; background: var(--bd); border-radius: 2px; margin-bottom: 16px; }
+.ts-bar-fill { height: 100%; border-radius: 2px; background: linear-gradient(90deg, var(--cob), var(--amb)); transition: width .7s cubic-bezier(.22,1,.36,1); }
+.ts-cta {
+  width: 100%; padding: 9px;
+  background: var(--s2); border: 1px solid var(--bd2);
+  border-radius: var(--r6); color: var(--t2);
+  font-family: var(--font); font-size: 12px; font-weight: 600;
+  cursor: pointer; transition: border-color .15s, color .15s, background .15s;
+}
+.ts-cta:hover { border-color: var(--amb); color: var(--amb); background: var(--amb-d); }
+
+/* ══════════ ANALYSIS PAGE ══════════ */
+.analysis-wrap { display: flex; flex-direction: column; height: calc(100vh - 58px); }
+.analysis-topbar {
+  padding: 20px 40px;
+  border-bottom: 1px solid var(--bd);
+  display: flex; align-items: center; justify-content: space-between;
+  flex-shrink: 0;
+  background: var(--s1);
+}
+.analysis-title-block {}
+.analysis-title-block h2 {
+  font-size: 20px; font-weight: 800; letter-spacing: -.03em;
+  margin-bottom: 2px;
+}
+.analysis-title-block p {
+  font-size: 11px; color: var(--t3); font-weight: 500;
+}
+.analysis-filters { display: flex; align-items: center; gap: 10px; }
+.af-sel {
+  background: var(--s2); border: 1px solid var(--bd2);
+  border-radius: var(--r6); font-family: var(--font); font-size: 12px; font-weight: 600;
+  color: var(--t2); padding: 7px 14px; cursor: pointer; outline: none;
+  transition: border-color .15s, color .15s;
+  appearance: none; -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6' fill='none' stroke='%23666' stroke-width='1.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 10px center;
+  padding-right: 28px;
+}
+.af-sel:focus { border-color: var(--amb); color: var(--t1); }
+.af-meta { font-size: 11px; color: var(--t3); padding: 7px 14px; }
+
+.analysis-body { display: flex; flex: 1; min-height: 0; }
+
+/* table pane */
+.an-tbl-pane { flex: 1; overflow-y: auto; border-right: 1px solid var(--bd); }
+.an-tbl { width: 100%; border-collapse: collapse; }
+.an-tbl thead { position: sticky; top: 0; z-index: 5; }
+.an-tbl th {
+  background: var(--bg);
+  padding: 10px 14px;
+  text-align: left; font-size: 9px; font-weight: 700;
+  color: var(--t3); letter-spacing: .14em; text-transform: uppercase;
+  border-bottom: 1px solid var(--bd);
+  white-space: nowrap;
+}
+.an-tbl th.r { text-align: right; }
+.an-tbl td {
+  padding: 12px 14px; border-bottom: 1px solid rgba(36,36,48,.6);
+  font-size: 13px; vertical-align: middle;
+}
+.an-tbl td.r { text-align: right; }
+.an-tbl tbody tr { cursor: pointer; transition: background .12s; }
+.an-tbl tbody tr:hover { background: var(--s1); }
+.an-tbl tbody tr.selected { background: var(--s2); }
+.an-tbl tbody tr.selected td:first-child {
+  box-shadow: inset 3px 0 0 var(--amb);
+}
+.an-corp { font-size: 13px; font-weight: 700; white-space: nowrap; }
+.an-code { font-size: 10px; color: var(--t3); font-weight: 600; margin-top: 1px; }
+.an-mkt {
+  display: inline-block; font-size: 8px; font-weight: 700;
+  letter-spacing: .08em; padding: 2px 7px; border-radius: 4px; margin-top: 2px;
+}
+.an-mkt.KOSPI  { background: var(--amb-d); color: var(--amb); }
+.an-mkt.KOSDAQ { background: var(--up-d);  color: var(--up); }
+.an-score { font-size: 15px; font-weight: 900; color: var(--amb); font-variant-numeric: tabular-nums; }
+.an-grade {
+  display: inline-block; font-size: 11px; font-weight: 800;
+  padding: 3px 10px; border-radius: 20px;
+}
+.an-grade.s { background: var(--up-d);  color: var(--up);  border: 1px solid rgba(46,204,140,.25); }
+.an-grade.a { background: var(--amb-d); color: var(--amb); border: 1px solid rgba(200,144,64,.28); }
+.an-grade.b { background: var(--cob-d); color: var(--cob); border: 1px solid rgba(91,139,245,.25); }
+.an-grade.c { background: rgba(120,120,160,.08); color: var(--t2); border: 1px solid rgba(120,120,160,.2); }
+.an-grade.d { background: var(--dn-d);  color: var(--dn);  border: 1px solid rgba(240,80,96,.22); }
+
+/* detail pane */
+.an-detail-pane {
+  flex: 1; overflow-y: auto;
+  background: var(--s1); padding: 28px;
+  min-width: 0;
+}
+.an-empty {
+  height: 100%; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 10px;
+  color: var(--t3);
+}
+.an-empty svg { opacity: .3; }
+.an-empty p { font-size: 12px; font-weight: 500; }
+
+/* detail header */
+.det-header {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  margin-bottom: 22px;
+}
+.det-corp { font-size: 24px; font-weight: 900; letter-spacing: -.04em; margin-bottom: 4px; }
+.det-meta { font-size: 11px; color: var(--t3); font-weight: 600; display: flex; gap: 8px; align-items: center; }
+.det-meta-dot { width: 3px; height: 3px; background: var(--t3); border-radius: 50%; }
+
+/* detail block */
+.det-block {
+  background: var(--s2); border: 1px solid var(--bd);
+  border-radius: var(--r10); padding: 18px 20px; margin-bottom: 12px;
+}
+.det-block-title {
+  font-size: 9px; font-weight: 700; letter-spacing: .18em;
+  text-transform: uppercase; color: var(--t3); margin-bottom: 14px;
+  display: flex; align-items: center; gap: 8px;
+}
+.det-block-title::after { content: ''; flex: 1; height: 1px; background: var(--bd); }
+
+/* target price grid */
+.tp-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 14px; }
+.tp-item {}
+.tp-lbl { font-size: 10px; color: var(--t2); font-weight: 500; margin-bottom: 6px; }
+.tp-lbl span { font-size: 9px; opacity: .6; margin-left: 3px; }
+.tp-val { font-size: 20px; font-weight: 900; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.tp-val.now   { color: var(--t1); }
+.tp-val.up    { color: var(--up); }
+.tp-val.dash  { color: var(--t3); }
+.tp-pct { font-size: 11px; font-weight: 700; color: var(--up); margin-top: 3px; }
+
+/* recommendation */
+.det-rec { font-size: 13px; color: var(--t1); line-height: 1.85; font-weight: 400; }
+
+/* scoring bars */
+.det-row { margin-bottom: 12px; }
+.det-row:last-child { margin-bottom: 0; }
+.det-row-top {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 12px; margin-bottom: 6px;
+}
+.det-row-name { color: var(--t2); font-weight: 500; }
+.det-row-score { font-weight: 700; font-variant-numeric: tabular-nums; font-size: 11px; }
+.det-bar-bg { height: 5px; background: var(--bd); border-radius: 3px; overflow: hidden; }
+.det-bar-fill { height: 100%; border-radius: 3px; transition: width .6s cubic-bezier(.22,1,.36,1); }
+.det-bar-fill.good { background: var(--up); }
+.det-bar-fill.mid  { background: var(--amb); }
+.det-bar-fill.bad  { background: var(--dn); }
+.det-note { font-size: 10px; color: var(--t3); margin-top: 4px; line-height: 1.6; }
+
+/* ══════════ ABOUT PAGE ══════════ */
+.about-hero {
+  padding: 80px 40px 72px;
+  position: relative; overflow: hidden;
+  border-bottom: 1px solid var(--bd);
+}
+.about-hero::before {
+  content: '';
+  position: absolute; inset: 0; pointer-events: none;
+  background-image: radial-gradient(circle, rgba(255,255,255,.03) 1px, transparent 1px);
+  background-size: 30px 30px;
+}
+.about-hero::after {
+  content: '';
+  position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(ellipse 50% 80% at 80% 50%, rgba(200,144,64,.05) 0%, transparent 60%);
+}
+.about-hero-inner { position: relative; z-index: 1; max-width: 680px; }
+.about-eyebrow {
+  font-size: 10px; font-weight: 700; letter-spacing: .22em;
+  text-transform: uppercase; color: var(--amb);
+  display: flex; align-items: center; gap: 12px; margin-bottom: 24px;
+}
+.about-eyebrow::before { content: ''; width: 28px; height: 1px; background: var(--amb); }
+.about-hero h2 {
+  font-size: clamp(32px,3.8vw,50px); font-weight: 900;
+  letter-spacing: -.04em; line-height: 1.12; margin-bottom: 20px;
+}
+.about-hero p { font-size: 15px; color: var(--t2); line-height: 1.85; font-weight: 400; }
+
+.about-body { padding: 0 40px 64px; }
+.about-grid { display: grid; grid-template-columns: repeat(2,1fr); gap: 16px; margin-top: 48px; margin-bottom: 40px; }
+.about-card {
+  background: var(--s1); border: 1px solid var(--bd);
+  border-radius: var(--r14); padding: 30px 28px;
+  opacity: 0; transition: border-color .2s;
+}
+.about-card.in { animation: rise .5s ease both; }
+.about-card:nth-child(2).in { animation-delay: .07s; }
+.about-card:nth-child(3).in { animation-delay: .13s; }
+.about-card:nth-child(4).in { animation-delay: .19s; }
+.about-card:hover { border-color: var(--bd2); }
+.ac-ico {
+  width: 46px; height: 46px; border-radius: 12px;
+  display: grid; place-items: center; margin-bottom: 20px;
+}
+.ac-ico.amb { background: var(--amb-d2); color: var(--amb); border: 1px solid rgba(200,144,64,.25); }
+.ac-ico.cob { background: var(--cob-d);  color: var(--cob); border: 1px solid rgba(91,139,245,.25); }
+.ac-ico.up  { background: var(--up-d);   color: var(--up);  border: 1px solid rgba(46,204,140,.25); }
+.ac-ico.dn  { background: var(--dn-d);   color: var(--dn);  border: 1px solid rgba(240,80,96,.22); }
+.about-card h3 { font-size: 15px; font-weight: 800; margin-bottom: 10px; }
+.about-card p  { font-size: 13px; color: var(--t2); line-height: 1.8; font-weight: 400; }
+
+.info-block {
+  background: var(--s1); border: 1px solid var(--bd);
+  border-radius: var(--r14); padding: 32px 36px;
+  margin-bottom: 16px;
+  display: grid; grid-template-columns: 60px 1fr; gap: 28px; align-items: flex-start;
+}
+.info-ico {
+  width: 56px; height: 56px; border-radius: 14px;
+  display: grid; place-items: center;
+  background: var(--amb-d2); color: var(--amb);
+  border: 1px solid rgba(200,144,64,.25); flex-shrink: 0;
+}
+.info-block h3 { font-size: 15px; font-weight: 800; margin-bottom: 10px; }
+.info-block p  { font-size: 13px; color: var(--t2); line-height: 1.85; }
+.info-block a  { color: var(--cob); text-decoration: none; font-weight: 600; }
+.info-block a:hover { text-decoration: underline; }
+.grade-legend {
+  display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap;
+}
+.gl-item {
+  font-size: 11px; font-weight: 700; padding: 3px 10px;
+  border-radius: 20px;
+}
+.gl-item.s { background: var(--up-d);  color: var(--up);  border: 1px solid rgba(46,204,140,.25); }
+.gl-item.a { background: var(--amb-d); color: var(--amb); border: 1px solid rgba(200,144,64,.28); }
+.gl-item.b { background: var(--cob-d); color: var(--cob); border: 1px solid rgba(91,139,245,.25); }
+.gl-item.c { background: rgba(120,120,160,.08); color: var(--t2); border: 1px solid rgba(120,120,160,.2); }
+.gl-item.d { background: var(--dn-d);  color: var(--dn);  border: 1px solid rgba(240,80,96,.22); }
+
+.disclaimer-block {
+  background: rgba(240,80,96,.04); border: 1px solid rgba(240,80,96,.15);
+  border-radius: var(--r10); padding: 18px 24px;
+  font-size: 12.5px; color: var(--t2); line-height: 1.8;
+}
+.disclaimer-block strong { color: var(--dn); }
+
+/* ══════════ FOOTER ══════════ */
+footer {
+  border-top: 1px solid var(--bd);
+  padding: 32px 40px;
+  display: flex; justify-content: space-between; align-items: center;
+}
+.ft-l { font-size: 12px; color: var(--t2); line-height: 2; }
+.ft-l strong { color: var(--t1); font-weight: 800; }
+.ft-r { text-align: right; font-size: 10px; color: var(--t3); line-height: 2; }
+.ft-r a { color: var(--cob); text-decoration: none; font-weight: 600; }
+.ft-r a:hover { text-decoration: underline; }
+
+/* ══════════ LOADING ══════════ */
+.ph { padding: 40px; text-align: center; font-size: 12px; color: var(--t3); }
+
+/* ══════════ RESPONSIVE ══════════ */
+@media (max-width: 1200px) {
+  .ts-grid { grid-template-columns: repeat(3,1fr); }
+}
+@media (max-width: 1024px) {
+  .hero { grid-template-columns: 1fr; }
+  .hero-right { border-left: none; border-top: 1px solid var(--bd); }
+  .ts-grid { grid-template-columns: repeat(2,1fr); }
+  .an-detail-pane { min-width: 320px; }
+}
+@media (max-width: 800px) {
+  .nav { padding: 0 16px; }
+  .nav-sub, .nav-divider { display: none; }
+  .nav-links .nav-link { padding: 6px 12px; font-size: 12px; }
+  .hero-left, .sec, .about-hero, .about-body { padding-left: 20px; padding-right: 20px; }
+  .about-grid { grid-template-columns: 1fr; }
+  .ts-grid { grid-template-columns: 1fr; }
+  .info-block { grid-template-columns: 1fr; }
+  .analysis-body { flex-direction: column; }
+  .an-detail-pane { min-width: unset; }
+  footer { flex-direction: column; gap: 16px; }
+  .ft-r { text-align: left; }
+  .tp-grid { grid-template-columns: 1fr 1fr; }
+  .analysis-topbar { flex-direction: column; align-items: flex-start; gap: 14px; }
+  .hero-stats { flex-direction: column; }
+  .hero-stats .hstat { border-right: none; border-bottom: 1px solid var(--bd); }
+  .hero-stats .hstat:last-child { border-bottom: none; }
+}
+</style>
+</head>
+<body>
+
+<!-- ══════════════════ NAV ══════════════════ -->
+<nav class="nav">
+  <a class="nav-logo" onclick="go('home')">
+    <div class="nav-mark">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="3,17 8,11 13,14 18,7 21,9"/>
+      </svg>
+    </div>
+    <span class="nav-brand">KRX<em>DATA</em></span>
+    <span class="nav-divider"></span>
+    <span class="nav-sub">기업 분석 시스템</span>
+  </a>
+  <div class="nav-links">
+    <button class="nav-link active" data-pg="home"     onclick="go('home')">홈</button>
+    <button class="nav-link"        data-pg="analysis" onclick="go('analysis')">기업 분석</button>
+    <button class="nav-link"        data-pg="about"    onclick="go('about')">소개</button>
+  </div>
+  <div class="nav-right">
+    <span class="nav-live"><span class="live-dot"></span>LIVE</span>
+    <span class="nav-time" id="navTime">—</span>
+  </div>
+</nav>
+
+<!-- ══════════════════ HOME ══════════════════ -->
+<div class="page active" id="page-home">
+
+  <section class="hero">
+    <!-- LEFT: title + cta + stats -->
+    <div class="hero-left">
+      <div class="hero-eyebrow">
+        <span class="hero-eyebrow-line"></span>
+        안전한 자산관리
+      </div>
+      <h1 class="hero-h1">
+        <span class="l1">데이터 기반 기업 분석</span>
+        <span class="l2">감정이 아닌<br><span class="amb">숫자</span>로 판단합니다</span>
+      </h1>
+      <p class="hero-desc">
+        심리·뉴스·여론을 배제하고 재무지표와 모멘텀만으로<br>
+        100개 기업을 정량 채점합니다.
+        단기 + 중장기 이중 분석으로<br>
+        투자 기간에 맞는 균형 잡힌 시각을 제공합니다.
+      </p>
+      <div class="hero-cta-group">
+        <button class="btn-primary" onclick="go('analysis')">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          기업 분석 보기
+        </button>
+        <button class="btn-ghost" onclick="go('about')">서비스 소개</button>
+      </div>
+      <div class="hero-stats">
+        <div class="hstat">
+          <div class="hstat-lbl">분석 종목</div>
+          <div class="hstat-val" id="statCount">—<span class="unit">개</span></div>
+        </div>
+        <div class="hstat">
+          <div class="hstat-lbl">채점 기준</div>
+          <div class="hstat-val" style="font-size:15px">단기 + 중장기</div>
+        </div>
+        <div class="hstat">
+          <div class="hstat-lbl">데이터 출처</div>
+          <div class="hstat-val" style="font-size:13px">공공데이터포털</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: grade leaderboard -->
+    <div class="hero-right">
+      <div class="hb-label">실시간 분석 랭킹</div>
+      <div class="grade-board" id="heroBoardTop">
+        <div class="gb-row" style="justify-content:center"><span style="color:var(--t3);font-size:12px">로딩 중...</span></div>
+      </div>
+      <div class="hb-footer">
+        <span>상위 5개 종목</span>
+        <button class="more-btn" onclick="go('analysis')">전체 보기 →</button>
+      </div>
+    </div>
+
+    <div class="hero-scroll">
+      SCROLL
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" opacity=".5"><polyline points="6 9 12 15 18 9"/></svg>
+    </div>
+  </section>
+
+  <div class="hr"></div>
+
+  <!-- 등급 분포 -->
+  <section class="sec">
+    <div class="sec-hd">
+      <span class="sec-title">등급 분포</span>
+    </div>
+    <div id="gradeDist"><div class="ph">분석 데이터 로딩 중...</div></div>
+  </section>
+
+  <div class="hr"></div>
+
+  <!-- 상위 종목 -->
+  <section class="sec">
+    <div class="sec-hd">
+      <span class="sec-title">상위 종목 — A등급 이상</span>
+      <button class="sec-action" onclick="go('analysis')">전체 분석 보기 →</button>
+    </div>
+    <div class="ts-grid" id="topGrid">
+      <div class="ph" style="grid-column:1/-1">분석 데이터 로딩 중...</div>
+    </div>
+  </section>
+
+</div>
+
+<!-- ══════════════════ ANALYSIS ══════════════════ -->
+<div class="page" id="page-analysis">
+  <div class="analysis-wrap">
+    <!-- 상단 바 -->
+    <div class="analysis-topbar">
+      <div class="analysis-title-block">
+        <h2>기업 분석</h2>
+        <p>단기·중장기 채점 기준 기반 · 투자 참고용으로만 활용하세요</p>
+      </div>
+      <div class="analysis-filters">
+        <select class="af-sel" id="afGrade" onchange="renderAnalysis()">
+          <option value="">전체 등급</option>
+          <option value="S">S등급</option>
+          <option value="A">A등급</option>
+          <option value="B">B등급</option>
+          <option value="C">C등급</option>
+          <option value="D">D등급</option>
+        </select>
+        <select class="af-sel" id="afMrkt" onchange="renderAnalysis()">
+          <option value="">전체 시장</option>
+          <option value="KOSPI">KOSPI</option>
+          <option value="KOSDAQ">KOSDAQ</option>
+        </select>
+        <span class="af-meta" id="afMeta">로딩 중...</span>
+      </div>
+    </div>
+
+    <!-- 본문: 테이블 + 상세 -->
+    <div class="analysis-body">
+      <div class="an-tbl-pane">
+        <table class="an-tbl">
+          <thead>
+            <tr>
+              <th style="width:38px">#</th>
+              <th>종목</th>
+              <th class="r">현재가</th>
+              <th class="r">시총</th>
+              <th class="r">단기</th>
+              <th class="r">중장기</th>
+              <th class="r">종합</th>
+              <th class="r">등급</th>
+            </tr>
+          </thead>
+          <tbody id="analysisTbody"></tbody>
+        </table>
+      </div>
+
+      <div class="an-detail-pane" id="analysisDetail">
+        <div class="an-empty">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <p>종목을 선택하면 상세 분석이 표시됩니다</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════ ABOUT ══════════════════ -->
+<div class="page" id="page-about">
+
+  <div class="about-hero">
+    <div class="about-hero-inner">
+      <div class="about-eyebrow">서비스 소개</div>
+      <h2>무감정 채점으로<br>안전한 자산관리를</h2>
+      <p>KRXDATA는 심리·뉴스·여론을 배제하고 재무지표와 모멘텀만으로 기업을 채점합니다. 단기 모멘텀과 중장기 펀더멘털을 독립적으로 측정해 어떤 시장 상황에서도 흔들리지 않는 분석 기준을 제공합니다.</p>
+    </div>
+  </div>
+
+  <div class="about-body">
+    <div class="about-grid">
+      <div class="about-card">
+        <div class="ac-ico amb">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        </div>
+        <h3>무감정 채점 시스템</h3>
+        <p>뉴스·여론·시장 심리를 배제합니다. 재무지표·밸류에이션·모멘텀 등 정량 데이터만으로 0~100점을 산출해 감정에 흔들리지 않는 분석을 제공합니다.</p>
+      </div>
+      <div class="about-card">
+        <div class="ac-ico cob">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+        </div>
+        <h3>단기 + 중장기 이중 분석</h3>
+        <p>단기 점수(재무·모멘텀·밸류에이션)와 중장기 점수(기업경쟁력·성장성·안정성)를 분리 측정합니다. 투자 기간에 맞는 맞춤형 판단 기준을 제공합니다.</p>
+      </div>
+      <div class="about-card">
+        <div class="ac-ico up">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        </div>
+        <h3>100개 종목 커버리지</h3>
+        <p>KOSPI·KOSDAQ 주요 종목 100개를 정기적으로 분석합니다. S~D 5등급으로 직관적으로 확인하고, 세부 채점 항목을 상세 패널에서 열람할 수 있습니다.</p>
+      </div>
+      <div class="about-card">
+        <div class="ac-ico dn">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        </div>
+        <h3>공공데이터 기반 신뢰성</h3>
+        <p>금융위원회가 공공데이터포털을 통해 개방한 KRX 주식시세 데이터 기반입니다. 출처가 명확하고 검증된 공식 정부 데이터만 사용합니다.</p>
+      </div>
+    </div>
+
+    <div class="info-block">
+      <div class="info-ico">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      </div>
+      <div>
+        <h3>채점 방법론</h3>
+        <p>
+          <strong style="color:var(--t1)">단기 채점 (0~50점)</strong> — 재무건전성, 단기 모멘텀, PER·PBR 밸류에이션 과소평가 여부<br>
+          <strong style="color:var(--t1)">중장기 채점 (0~50점)</strong> — 기업경쟁력, 성장성, 배당안정성, 섹터 포지셔닝<br>
+          <strong style="color:var(--t1)">종합점수</strong> = 단기 + 중장기 합산
+        </p>
+        <div class="grade-legend" style="margin-top:16px">
+          <span class="gl-item s">S 85점+</span>
+          <span class="gl-item a">A 70~84</span>
+          <span class="gl-item b">B 55~69</span>
+          <span class="gl-item c">C 40~54</span>
+          <span class="gl-item d">D 39이하</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="info-block">
+      <div class="info-ico">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 20h16M4 4h16M9 4v16M15 4v16M4 9h5M4 15h5M15 9h5M15 15h5"/></svg>
+      </div>
+      <div>
+        <h3>데이터 출처</h3>
+        <p>
+          시세 데이터: <a href="https://www.data.go.kr" target="_blank">공공데이터포털 (data.go.kr)</a> — 금융위원회_주식시세정보_20211116<br>
+          분석 데이터: Supabase stock_analysis 테이블 (자체 채점 파이프라인 운영)
+        </p>
+      </div>
+    </div>
+
+    <div class="disclaimer-block">
+      <strong>면책 고지</strong> — 본 서비스의 분석 결과 및 점수는 투자 참고용 정보입니다. 실제 매매 및 투자 결정은 공식 증권사 HTS/MTS 및 전문가 상담을 통해 직접 판단하시기 바랍니다. 본 서비스는 투자 손실에 대한 어떠한 책임도 지지 않습니다.
+    </div>
+  </div>
+
+  <footer>
+    <div class="ft-l">
+      <strong>KRXDATA</strong> — 안전한 자산관리를 위한 기업 분석 시스템<br>
+      공공데이터포털 금융위원회 주식시세 OpenAPI 활용 · 분석 결과는 투자 참고용입니다
+    </div>
+    <div class="ft-r">
+      DATA SOURCE<br>
+      <a href="https://www.data.go.kr" target="_blank">공공데이터포털 data.go.kr</a><br>
+      금융위원회_주식시세정보_20211116
+    </div>
+  </footer>
+</div>
+
+<script>
+/* ── SUPABASE CONFIG ── */
+const SUPABASE_URL      = 'https://onxkbuecwbcueuhwnowx.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9ueGtidWVjd2JjdWV1aHdub3d4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkxOTI3OTAsImV4cCI6MjA5NDc2ODc5MH0.E0Da8atMZUDt6krwVn_NDDBNV9CfhuCEh1jL4LrIlkE';
+let analysisMap = {};
+
+/* ── 등급 ── */
+function getGrade(score) {
+  if (score >= 85) return 'S';
+  if (score >= 70) return 'A';
+  if (score >= 55) return 'B';
+  if (score >= 40) return 'C';
+  return 'D';
+}
+function gradeClass(score) { return getGrade(score).toLowerCase(); }
+
+/* ── LOAD ── */
+async function loadAnalysis() {
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/stock_analysis?select=*&order=total_score.desc`,
+      { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` } }
+    );
+    if (!res.ok) return;
+    const data = await res.json();
+    data.forEach(r => { analysisMap[r.stock_code] = r; });
+
+    const cnt = document.getElementById('statCount');
+    if (cnt) cnt.innerHTML = `${data.length}<span class="unit">개</span>`;
+
+    renderHeroBoard();
+    renderGradeDist();
+    renderTopStocks();
+    renderAnalysis();
+  } catch(e) {}
+}
+
+/* ── HERO BOARD: 상위 5 ── */
+function renderHeroBoard() {
+  const top5 = Object.values(analysisMap)
+    .sort((a,b) => b.total_score - a.total_score)
+    .slice(0, 5);
+  const el = document.getElementById('heroBoardTop');
+  if (!el || !top5.length) return;
+  el.innerHTML = top5.map((r,i) => {
+    const g = gradeClass(r.total_score);
+    return `<div class="gb-row">
+      <div class="gb-letter ${g}">${getGrade(r.total_score)}</div>
+      <div class="gb-info">
+        <div class="gb-name">${r.corp_name}</div>
+        <div class="gb-meta">${r.stock_code}${r.mrkt_ctg ? ' · '+r.mrkt_ctg : ''}</div>
+      </div>
+      <div class="gb-score">${r.total_score}</div>
+    </div>`;
+  }).join('');
+}
+
+/* ── GRADE DIST ── */
+function renderGradeDist() {
+  const grades = ['S','A','B','C','D'];
+  const counts = {};
+  grades.forEach(g => counts[g] = 0);
+  Object.values(analysisMap).forEach(r => { const g = getGrade(r.total_score); counts[g]++; });
+  const total = Object.values(counts).reduce((s,v) => s+v, 0) || 1;
+
+  document.getElementById('gradeDist').innerHTML = `<div class="grade-track">` +
+    grades.map(g => {
+      const cnt = counts[g] || 0;
+      const pct = (cnt / total * 100).toFixed(0);
+      return `<div class="gt-row">
+        <div class="gt-grade ${g.toLowerCase()}">${g}</div>
+        <div class="gt-bar-wrap">
+          <div class="gt-bar-bg">
+            <div class="gt-bar-fill ${g.toLowerCase()}" style="width:0%" data-w="${pct}"></div>
+          </div>
+        </div>
+        <div class="gt-count">${cnt}<span>종목</span></div>
+      </div>`;
+    }).join('') + `</div>`;
+
+  /* animate bars after paint */
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    document.querySelectorAll('.gt-bar-fill[data-w]').forEach(el => {
+      el.style.width = el.dataset.w + '%';
+    });
+  }));
+}
+
+/* ── TOP STOCKS ── */
+function renderTopStocks() {
+  const top = Object.values(analysisMap)
+    .filter(r => r.total_score >= 70)
+    .sort((a,b) => b.total_score - a.total_score);
+
+  const el = document.getElementById('topGrid');
+  if (!top.length) { el.innerHTML = '<div class="ph" style="grid-column:1/-1">A등급 이상 종목 없음</div>'; return; }
+  el.innerHTML = top.map((r, i) => {
+    const g = gradeClass(r.total_score);
+    return `<div class="ts-card ${g}" style="animation-delay:${i*.05}s" onclick="go('analysis');setTimeout(()=>openAnalysisDetail('${r.stock_code}'),120)">
+      <div class="ts-card-top">
+        <span class="ts-rank">#${i+1}</span>
+        <span class="ts-badge ${g}">${getGrade(r.total_score)}</span>
+      </div>
+      <div class="ts-name">${r.corp_name}</div>
+      <div class="ts-code">${r.stock_code}${r.mrkt_ctg ? ' · '+r.mrkt_ctg : ''}</div>
+      <div class="ts-score-line">
+        <span class="ts-score-lbl">종합점수</span>
+        <span class="ts-score-num">${r.total_score}</span>
+      </div>
+      <div class="ts-bar"><div class="ts-bar-fill" style="width:${Math.min(r.total_score,100)}%"></div></div>
+      <button class="ts-cta">상세 분석 보기 →</button>
+    </div>`;
+  }).join('');
+  observeAll();
+}
+
+/* ── ANALYSIS TABLE ── */
+function renderAnalysis() {
+  const grade = document.getElementById('afGrade')?.value || '';
+  const mrkt  = document.getElementById('afMrkt')?.value  || '';
+  const rows = Object.values(analysisMap)
+    .filter(r => !grade || getGrade(r.total_score) === grade)
+    .filter(r => !mrkt  || (r.mrkt_ctg || '') === mrkt)
+    .sort((a,b) => (b.total_score||0) - (a.total_score||0));
+
+  const meta = document.getElementById('afMeta');
+  if (meta) {
+    const genAt = rows[0]?.generated_at
+      ? new Date(rows[0].generated_at).toLocaleDateString('ko-KR')
+      : '—';
+    meta.textContent = `갱신: ${genAt} · ${rows.length}종목`;
+  }
+
+  document.getElementById('analysisTbody').innerHTML = rows.length
+    ? rows.map((r, i) => {
+        const g = gradeClass(r.total_score);
+        const mcap = r.market_cap_tril != null ? `${r.market_cap_tril.toFixed(1)}조` : '—';
+        const mktBadge = r.mrkt_ctg ? `<div class="an-mkt ${r.mrkt_ctg}">${r.mrkt_ctg}</div>` : '';
+        return `<tr onclick="openAnalysisDetail('${r.stock_code}')" id="arow-${r.stock_code}">
+          <td style="color:var(--t3);font-weight:700;font-variant-numeric:tabular-nums;font-size:12px">${i+1}</td>
+          <td>
+            <div class="an-corp">${r.corp_name}</div>
+            <div class="an-code">${r.stock_code}</div>
+            ${mktBadge}
+          </td>
+          <td class="r" style="font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap">${r.current_price ? r.current_price.toLocaleString('ko-KR')+'원' : '—'}</td>
+          <td class="r" style="color:var(--t2);font-size:12px;font-variant-numeric:tabular-nums">${mcap}</td>
+          <td class="r" style="font-weight:700;color:var(--cob);font-variant-numeric:tabular-nums">${r.short_score ?? '—'}</td>
+          <td class="r" style="font-weight:700;color:var(--up);font-variant-numeric:tabular-nums">${r.long_score ?? '—'}</td>
+          <td class="r"><span class="an-score">${r.total_score ?? '—'}</span></td>
+          <td class="r"><span class="an-grade ${g}">${getGrade(r.total_score)}</span></td>
+        </tr>`;
+      }).join('')
+    : `<tr><td colspan="8" style="text-align:center;padding:56px;color:var(--t3);font-size:13px">분석 데이터 없음</td></tr>`;
+}
+
+/* ── ANALYSIS DETAIL ── */
+function openAnalysisDetail(code) {
+  const r = analysisMap[code]; if (!r) return;
+  const g = gradeClass(r.total_score);
+
+  document.querySelectorAll('.an-tbl tbody tr').forEach(tr => tr.classList.remove('selected'));
+  const row = document.getElementById('arow-' + code);
+  if (row) { row.classList.add('selected'); row.scrollIntoView({block:'nearest'}); }
+
+  const fmt = v => v != null ? v.toLocaleString('ko-KR') + '원' : null;
+  const fmtPct = v => v != null ? `+${v}%` : null;
+
+  const detRows = r.detail
+    ? Object.entries(r.detail).map(([key, d]) => {
+        const pct = d.max > 0 ? (d.score / d.max * 100) : 0;
+        const cls = pct >= 70 ? 'good' : pct >= 45 ? 'mid' : 'bad';
+        return `<div class="det-row">
+          <div class="det-row-top">
+            <span class="det-row-name">${key.replace(/_/g,' ')}</span>
+            <span class="det-row-score">${d.score} / ${d.max}</span>
+          </div>
+          <div class="det-bar-bg"><div class="det-bar-fill ${cls}" style="width:0%" data-w="${pct.toFixed(0)}"></div></div>
+          ${d.note ? `<div class="det-note">${d.note}</div>` : ''}
+        </div>`;
+      }).join('')
+    : `<div style="color:var(--t3);font-size:12px">세부 채점 없음</div>`;
+
+  const mcapText = r.market_cap_tril != null
+    ? `${r.market_cap_tril.toFixed(1)}조원`
+    : null;
+
+  document.getElementById('analysisDetail').innerHTML = `
+    <div class="det-header">
+      <div>
+        <div class="det-corp">${r.corp_name}</div>
+        <div class="det-meta">
+          <span>${r.stock_code}</span>
+          ${r.mrkt_ctg ? `<span class="det-meta-dot"></span><span>${r.mrkt_ctg}</span>` : ''}
+          ${mcapText ? `<span class="det-meta-dot"></span><span>${mcapText}</span>` : ''}
+        </div>
+      </div>
+      <span class="an-grade ${g}" style="font-size:14px;padding:5px 14px">${getGrade(r.total_score)}등급</span>
+    </div>
+
+    <div class="det-block">
+      <div class="det-block-title">목표 단가</div>
+      <div class="tp-grid">
+        <div class="tp-item">
+          <div class="tp-lbl">현재가</div>
+          <div class="tp-val ${fmt(r.current_price) ? 'now' : 'dash'}">${fmt(r.current_price) || '—'}</div>
+        </div>
+        <div class="tp-item">
+          <div class="tp-lbl">단기 목표<span>1~3개월</span></div>
+          <div class="tp-val ${fmt(r.short_target_price) ? 'up' : 'dash'}">${fmt(r.short_target_price) || '—'}</div>
+          ${fmtPct(r.short_target_pct) ? `<div class="tp-pct">${fmtPct(r.short_target_pct)}</div>` : ''}
+        </div>
+        <div class="tp-item">
+          <div class="tp-lbl">중장기 목표<span>6~12개월</span></div>
+          <div class="tp-val ${fmt(r.mid_target_price) ? 'up' : 'dash'}">${fmt(r.mid_target_price) || '—'}</div>
+          ${fmtPct(r.mid_target_pct) ? `<div class="tp-pct">${fmtPct(r.mid_target_pct)}</div>` : ''}
+        </div>
+      </div>
+    </div>
+
+    <div class="det-block">
+      <div class="det-block-title">추천 요약</div>
+      <div class="det-rec">${r.recommendation || '—'}</div>
+    </div>
+
+    <div class="det-block">
+      <div class="det-block-title">세부 채점</div>
+      <div id="detRows">${detRows}</div>
+    </div>`;
+
+  /* animate bars */
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    document.querySelectorAll('#detRows .det-bar-fill[data-w]').forEach(el => {
+      el.style.width = el.dataset.w + '%';
+    });
+  }));
+}
+
+/* ── ROUTER ── */
+function go(pg) {
+  document.querySelectorAll('.page').forEach(p => { p.classList.remove('active'); p.style.display='none'; });
+  document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+  const el = document.getElementById('page-'+pg);
+  el.style.display = 'block';
+  requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add('active')));
+  const lnk = document.querySelector(`[data-pg="${pg}"]`);
+  if (lnk) lnk.classList.add('active');
+  window.scrollTo({top:0, behavior:'smooth'});
+  if (pg === 'analysis') renderAnalysis();
+  setTimeout(observeAll, 80);
+}
+
+/* ── CLOCK ── */
+function clock() {
+  const n = new Date(), p = x => String(x).padStart(2,'0');
+  document.getElementById('navTime').textContent =
+    `${p(n.getHours())}:${p(n.getMinutes())}:${p(n.getSeconds())}`;
+}
+
+/* ── INTERSECTION OBSERVER ── */
+const io = new IntersectionObserver(entries => {
+  entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('in'); });
+}, { threshold: .08 });
+function observeAll() {
+  document.querySelectorAll('.ts-card,.about-card').forEach(el => {
+    el.classList.remove('in'); io.observe(el);
+  });
+}
+
+/* ── INIT ── */
+observeAll();
+clock();
+setInterval(clock, 1000);
+loadAnalysis();
+</script>
+</body>
+</html>
