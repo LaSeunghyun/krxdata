@@ -5,6 +5,7 @@ on:
   schedule:
     - cron: '0 23 * * 0-4'   # 가격+랭킹: KST 08:00 (일~목 UTC 23:00 → 월~금 KST 08:00)
     - cron: '3 0 * * 1-5'    # 랭킹만:   KST 09:03 (월~금 UTC 00:03)
+    - cron: '0 20 * * 0'     # 재무 backfill: KST 일요일 05:00 (UTC 일 20:00)
 
   # GitHub UI에서 수동 실행
   workflow_dispatch:
@@ -17,6 +18,7 @@ on:
         options:
           - full       # 가격 업데이트 + 랭킹 계산
           - ranking    # 랭킹만 재계산 (빠름, ~5초)
+          - backfill   # 재무 데이터 backfill only (2024,2025)
 
 jobs:
   update:
@@ -38,14 +40,14 @@ jobs:
       - name: Determine mode
         id: mode
         run: |
-          # cron 트리거 시 시각으로 모드 결정
-          # workflow_dispatch 시 input 사용
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
           else
             HOUR=$(date -u +%H)
-            MINUTE=$(date -u +%M)
-            if [ "$HOUR" = "23" ]; then
+            DAY=$(date -u +%u)   # 1=Mon … 7=Sun
+            if [ "$HOUR" = "20" ] && [ "$DAY" = "7" ]; then
+              echo "mode=backfill" >> $GITHUB_OUTPUT
+            elif [ "$HOUR" = "23" ]; then
               echo "mode=full" >> $GITHUB_OUTPUT
             else
               echo "mode=ranking" >> $GITHUB_OUTPUT
@@ -74,6 +76,17 @@ jobs:
           SUPABASE_MANAGEMENT_KEY: ${{ secrets.SUPABASE_MANAGEMENT_KEY }}
         run: |
           echo "=== 랭킹 재계산 시작 ($(TZ='Asia/Seoul' date)) ==="
+          node daily-ranking.js --skip-price
+
+      - name: Run backfill (backfill mode)
+        if: steps.mode.outputs.mode == 'backfill'
+        env:
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
+          SUPABASE_MANAGEMENT_KEY: ${{ secrets.SUPABASE_MANAGEMENT_KEY }}
+        run: |
+          echo "=== 재무 backfill 시작 ($(TZ='Asia/Seoul' date)) ==="
+          node dart-financials-backfill.js --years 2023,2024,2025
+          echo "=== backfill 완료 — 랭킹 재계산 ==="
           node daily-ranking.js --skip-price
 
       - name: Report summary

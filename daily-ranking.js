@@ -101,47 +101,68 @@ async function getPublicDataQuote(stockCode, fetch52w = false) {
   } catch { return null; }
 }
 
-// STEP 1: 전체 종목 현재가 업데이트 (순차, 300ms 딜레이)
-async function updatePrices(skipPrice = false) {
+// STEP 1: 전체 종목 현재가 + 52주 고저가 업데이트
+// 수정: REST API(anon key) → management API(dbQuery) SQL 방식으로 전환
+// 이유: anon key 만료 시 upsert 401 → 52주 데이터 미갱신 문제 해결
+async function updatePrices() {
   const stocks = await dbQuery(`SELECT stock_code FROM stock_analysis WHERE market_cap_tril >= 0`);
   const codes = stocks.map(s => s.stock_code);
-  console.log(`[가격 업데이트] ${codes.length}개 종목 시작`);
+  console.log(`[가격 업데이트] ${codes.length}개 종목 시작 (52주 고저가 항상 갱신)`);
   patchStatus({ progress: 0, total: codes.length, current: `가격 업데이트 시작 (${codes.length}개)` });
 
   let updated = 0, skipped = 0;
-  const BATCH = 50; // 50개씩 처리 후 로그
-  // 52주 고저가: 월요일 또는 전체 실행 모드에서만 갱신 (API 부하 최소화)
-  const isMonday = new Date().getDay() === 1;
-  const fetch52w = isMonday || !skipPrice;
-  if (fetch52w) console.log(`  [52주 고저가 갱신 모드]`);
+  const BATCH     = 50;   // 진행 로그 주기
+  const SQL_BATCH = 200;  // SQL upsert 묶음 크기
+
+  const buffer = []; // { code, price, cap, high, low }
+
+  async function flushBuffer() {
+    if (!buffer.length) return;
+    const vals = buffer.map(r =>
+      `('${r.code}', ${r.price}, ${r.cap}` +
+      (r.high != null ? `, ${r.high}, ${r.low}, NOW()` : `, NULL, NULL, NOW()`) +
+      `)`
+    ).join(',\n');
+    await dbQuery(`
+      INSERT INTO stock_analysis
+        (stock_code, current_price, market_cap_tril, high_52w, low_52w, week52_updated_at)
+      VALUES ${vals}
+      ON CONFLICT (stock_code) DO UPDATE SET
+        current_price     = EXCLUDED.current_price,
+        market_cap_tril   = EXCLUDED.market_cap_tril,
+        high_52w          = COALESCE(EXCLUDED.high_52w, stock_analysis.high_52w),
+        low_52w           = COALESCE(EXCLUDED.low_52w,  stock_analysis.low_52w),
+        week52_updated_at = COALESCE(EXCLUDED.week52_updated_at, stock_analysis.week52_updated_at),
+        updated_at        = NOW()
+    `);
+    buffer.length = 0;
+  }
 
   for (const code of codes) {
-    const q = await getPublicDataQuote(code, fetch52w);
+    const q = await getPublicDataQuote(code, true); // 항상 52주 갱신
     if (q && q.price > 0) {
-      const row = {
-        stock_code: code,
-        current_price: q.price,
-        market_cap_tril: parseFloat((q.market_cap / 1e12).toFixed(4)),
-        updated_at: new Date().toISOString()
-      };
-      if (fetch52w && q.high_52w) {
-        row.high_52w = q.high_52w;
-        row.low_52w  = q.low_52w;
-        row.week52_updated_at = new Date().toISOString();
-      }
-      await upsert('stock_analysis', [row], 'stock_code');
+      buffer.push({
+        code,
+        price: q.price,
+        cap: parseFloat((q.market_cap / 1e12).toFixed(4)),
+        high: q.high_52w ?? null,
+        low:  q.low_52w  ?? null,
+      });
       updated++;
     } else {
       skipped++;
     }
     await sleep(300);
-    if ((updated + skipped) % BATCH === 0) {
-      const done = updated + skipped;
-      const pct = Math.round((done / codes.length) * 50); // 가격=0~50%
+
+    const done = updated + skipped;
+    if (buffer.length >= SQL_BATCH) await flushBuffer();
+    if (done % BATCH === 0) {
+      const pct = Math.round((done / codes.length) * 50);
       console.log(`  진행: ${done}/${codes.length} (업데이트 ${updated}, 스킵 ${skipped})`);
       patchStatus({ progress: pct, current: `가격 업데이트 중 (${done}/${codes.length})` });
     }
   }
+  await flushBuffer(); // 나머지 flush
   console.log(`[가격 업데이트 완료] 업데이트 ${updated}, 스킵 ${skipped}`);
   patchStatus({ progress: 50, current: '가격 업데이트 완료' });
 }
@@ -262,6 +283,45 @@ async function computeAndSaveRankings() {
   console.log(`[랭킹 저장 완료] ${r.length}건`);
   patchStatus({ progress: 90, current: `랭킹 저장 완료 (${r.length}건)` });
   return r;
+}
+
+// STEP 2.1: op_income_yoy 계산 — 2024/2025 op_income 교차 업데이트
+async function calcOpIncomeYoy() {
+  const r = await dbQuery(`
+    UPDATE stock_financials f25
+    SET op_income_yoy = ROUND(
+      (f25.op_income - f24.op_income)::NUMERIC / NULLIF(ABS(f24.op_income), 0) * 100,
+      1
+    )
+    FROM stock_financials f24
+    WHERE f25.stock_code     = f24.stock_code
+      AND f25.analysis_year  = 2025
+      AND f24.analysis_year  = 2024
+      AND f25.op_income      IS NOT NULL
+      AND f24.op_income      IS NOT NULL
+      AND f24.op_income     != 0
+      AND f25.op_income_yoy  IS NULL
+  `);
+  // 2023→2024도 동일 처리
+  await dbQuery(`
+    UPDATE stock_financials f24
+    SET op_income_yoy = ROUND(
+      (f24.op_income - f23.op_income)::NUMERIC / NULLIF(ABS(f23.op_income), 0) * 100,
+      1
+    )
+    FROM stock_financials f23
+    WHERE f24.stock_code     = f23.stock_code
+      AND f24.analysis_year  = 2024
+      AND f23.analysis_year  = 2023
+      AND f24.op_income      IS NOT NULL
+      AND f23.op_income      IS NOT NULL
+      AND f23.op_income     != 0
+      AND f24.op_income_yoy  IS NULL
+  `);
+  const remaining = await dbQuery(
+    `SELECT COUNT(*) cnt FROM stock_financials WHERE analysis_year=2025 AND op_income_yoy IS NULL`
+  );
+  console.log(`[YoY 계산 완료] 남은 NULL: ${remaining[0]?.cnt ?? '?'}건 (2024 데이터 없는 종목)`);
 }
 
 // 목표가 계산 (Codex v4: 1M 계수 보수화 0.20→0.10, 달성률 제고)
@@ -527,6 +587,9 @@ try {
   } else if (regime.latest) {
     console.log(`[시장 체크] KODEX200 ${regime.latest?.toLocaleString()}원 / 20MA ${regime.ma20?.toLocaleString()}원 / 5일수익률 ${regime.ret5d}% — 정상`);
   }
+
+  // op_income_yoy 계산 (데이터 있는 경우 자동 갱신)
+  await calcOpIncomeYoy();
 
   await computeAndSaveRankings();
   await printChangeReport();

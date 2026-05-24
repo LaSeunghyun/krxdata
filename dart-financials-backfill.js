@@ -5,7 +5,7 @@
  * 실행: node dart-financials-backfill.js [--years 2022,2023,2024]
  *       (기본값: 2022, 2023, 2024)
  *
- * 환경변수: DART_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_KEY (.env)
+ * 환경변수: DART_API_KEY, SUPABASE_MANAGEMENT_KEY (.env)
  */
 
 import fetch from "node-fetch";
@@ -17,13 +17,24 @@ import { fileURLToPath } from "url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, ".env") });
 
-const DART_KEY     = process.env.DART_API_KEY;
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
-const DART_BASE    = "https://opendart.fss.or.kr/api";
+const DART_KEY    = process.env.DART_API_KEY;
+const MGMT_KEY    = process.env.SUPABASE_MANAGEMENT_KEY;
+const PROJECT_REF = process.env.SUPABASE_PROJECT_REF || "onxkbuecwbcueuhwnowx";
+const DART_BASE   = "https://opendart.fss.or.kr/api";
 
-if (!DART_KEY)     { console.error("DART_API_KEY 미설정"); process.exit(1); }
-if (!SUPABASE_URL || !SUPABASE_KEY) { console.error("SUPABASE 환경변수 미설정"); process.exit(1); }
+if (!DART_KEY)  { console.error("DART_API_KEY 미설정"); process.exit(1); }
+if (!MGMT_KEY)  { console.error("SUPABASE_MANAGEMENT_KEY 미설정"); process.exit(1); }
+
+async function dbQuery(sql) {
+  const res = await fetch(`https://api.supabase.com/v1/projects/${PROJECT_REF}/database/query`, {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${MGMT_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ query: sql }),
+  });
+  const data = await res.json();
+  if (!Array.isArray(data)) throw new Error(data?.message ?? "DB 쿼리 오류");
+  return data;
+}
 
 // ── 인수 파싱 ────────────────────────────────────────────────
 const args = process.argv.slice(2);
@@ -102,26 +113,54 @@ function parseFinancials(rows) {
   };
 }
 
-// ── Supabase upsert ───────────────────────────────────────────
+// ── Supabase upsert (Management API SQL 방식) ─────────────────
+function esc(v) {
+  if (v === null || v === undefined) return "NULL";
+  if (typeof v === "number") return String(v);
+  return `'${String(v).replace(/'/g, "''")}'`;
+}
+
 async function upsertRows(rows) {
   const BATCH = UPSERT_BATCH;
   let done = 0;
   for (let i = 0; i < rows.length; i += BATCH) {
     const chunk = rows.slice(i, i + BATCH);
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/stock_financials`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        apikey:          SUPABASE_KEY,
-        Authorization:   `Bearer ${SUPABASE_KEY}`,
-        Prefer:          "resolution=merge-duplicates,return=minimal",
-      },
-      body: JSON.stringify(chunk),
-    });
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`Supabase upsert 실패 ${res.status}: ${body}`);
-    }
+    const vals = chunk.map(r =>
+      `(${esc(r.stock_code)},${esc(r.corp_name)},${esc(r.mrkt_ctg)},${esc(r.analysis_year)},` +
+      `${esc(r.revenue)},${esc(r.op_income)},${esc(r.net_income)},${esc(r.total_equity)},` +
+      `${esc(r.total_debt)},${esc(r.total_asset)},${esc(r.cf_ops)},` +
+      `${esc(r.debt_ratio)},${esc(r.cur_ratio)},${esc(r.op_margin)},` +
+      `${esc(r.revenue_yoy)},${esc(r.op_income_yoy)},` +
+      `${esc(r.per)},${esc(r.pbr)},${esc(r.roe)},${esc(r.market_cap)},NOW())`
+    ).join(",\n");
+
+    await dbQuery(`
+      INSERT INTO stock_financials
+        (stock_code,corp_name,mrkt_ctg,analysis_year,
+         revenue,op_income,net_income,total_equity,
+         total_debt,total_asset,cf_ops,
+         debt_ratio,cur_ratio,op_margin,
+         revenue_yoy,op_income_yoy,
+         per,pbr,roe,market_cap,updated_at)
+      VALUES ${vals}
+      ON CONFLICT (stock_code, analysis_year) DO UPDATE SET
+        corp_name     = EXCLUDED.corp_name,
+        mrkt_ctg      = EXCLUDED.mrkt_ctg,
+        revenue       = COALESCE(EXCLUDED.revenue,       stock_financials.revenue),
+        op_income     = COALESCE(EXCLUDED.op_income,     stock_financials.op_income),
+        net_income    = COALESCE(EXCLUDED.net_income,    stock_financials.net_income),
+        total_equity  = COALESCE(EXCLUDED.total_equity,  stock_financials.total_equity),
+        total_debt    = COALESCE(EXCLUDED.total_debt,    stock_financials.total_debt),
+        total_asset   = COALESCE(EXCLUDED.total_asset,   stock_financials.total_asset),
+        cf_ops        = COALESCE(EXCLUDED.cf_ops,        stock_financials.cf_ops),
+        debt_ratio    = COALESCE(EXCLUDED.debt_ratio,    stock_financials.debt_ratio),
+        cur_ratio     = COALESCE(EXCLUDED.cur_ratio,     stock_financials.cur_ratio),
+        op_margin     = COALESCE(EXCLUDED.op_margin,     stock_financials.op_margin),
+        revenue_yoy   = COALESCE(EXCLUDED.revenue_yoy,   stock_financials.revenue_yoy),
+        op_income_yoy = COALESCE(EXCLUDED.op_income_yoy, stock_financials.op_income_yoy),
+        roe           = COALESCE(EXCLUDED.roe,           stock_financials.roe),
+        updated_at    = NOW()
+    `);
     done += chunk.length;
     process.stdout.write(`\r    ${done}/${rows.length} upsert 완료`);
   }
