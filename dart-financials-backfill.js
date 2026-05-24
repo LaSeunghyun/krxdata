@@ -23,10 +23,13 @@ const MGMT_KEY    = process.env.SUPABASE_MANAGEMENT_KEY;
 const PROJECT_REF = process.env.SUPABASE_PROJECT_REF || "onxkbuecwbcueuhwnowx";
 const DART_BASE   = "https://opendart.fss.or.kr/api";
 
-if (!DART_KEY)  { console.error("DART_API_KEY 미설정"); process.exit(1); }
-if (!MGMT_KEY)  { console.error("SUPABASE_MANAGEMENT_KEY 미설정"); process.exit(1); }
+function ensureEnv() {
+  if (!DART_KEY) throw new Error("DART_API_KEY 미설정");
+  if (!MGMT_KEY) throw new Error("SUPABASE_MANAGEMENT_KEY 미설정");
+}
 
 async function dbQuery(sql) {
+  ensureEnv();
   const res = await fetch(`https://api.supabase.com/v1/projects/${PROJECT_REF}/database/query`, {
     method: "POST",
     headers: { "Authorization": `Bearer ${MGMT_KEY}`, "Content-Type": "application/json" },
@@ -53,6 +56,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ── 유틸 ─────────────────────────────────────────────────────
 async function fetchJson(url) {
+  ensureEnv();
   const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, timeout: 30000 });
   if (!res.ok) throw new Error(`HTTP ${res.status} — ${url}`);
   return res.json();
@@ -85,7 +89,7 @@ async function fetchYearFinancials(corpCodes, year) {
 }
 
 // ── 재무 파싱 ────────────────────────────────────────────────
-function parseFinancials(rows) {
+export function parseFinancials(rows) {
   const get = (...names) => {
     for (const nm of names) {
       // 공백 정규화 비교: 계정과목명 공백 변형에 대응
@@ -107,7 +111,7 @@ function parseFinancials(rows) {
     return row ? Number(String(row.thstrm_amount ?? "0").replace(/,/g, "")) : null;
   };
   return {
-    revenue:     get("매출액", "영업수익", "수익(매출액)", "매출"),
+    revenue:     get("매출액", "영업수익", "수익(매출액)", "매출", "이자수익", "보험영업수익", "순이자손익", "순수수료손익"),
     opIncome:    get("영업이익", "영업이익(손실)"),
     netIncome:   get("당기순이익", "당기순이익(손실)", "분기순이익"),
     totalAsset:  get("자산총계", "자산 총계"),
@@ -348,6 +352,7 @@ async function processYear(year, companies) {
 
 // ── 메인 ─────────────────────────────────────────────────────
 async function main() {
+  ensureEnv();
   console.log(`\n=== DART 다년도 재무 백필 ===`);
   console.log(`대상 연도: ${YEARS.join(", ")}\n`);
 
@@ -362,4 +367,6 @@ async function main() {
   console.log("\n✅ 모든 연도 백필 완료");
 }
 
-main().catch(e => { console.error("\n오류:", e.message); process.exit(1); });
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch(e => { console.error("\n오류:", e.message); process.exit(1); });
+}

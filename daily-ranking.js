@@ -7,9 +7,11 @@ import { readFileSync } from 'fs';
 import { writeFileSync, existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import dotenv from 'dotenv';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STATUS_FILE = join(__dirname, '.update-status.json');
+dotenv.config({ path: join(__dirname, '.env') });
 
 function loadStatus() {
   try {
@@ -37,6 +39,14 @@ function daysAgo(n) {
   return d.toISOString().slice(0,10).replace(/-/g,'');
 }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+export function shouldRefresh52w(argv = process.argv.slice(2)) {
+  const skipPrice = argv.includes('--skip-price');
+  return !skipPrice || argv.includes('--refresh-52w');
+}
+
+export function shouldRunPriceUpdate(argv = process.argv.slice(2)) {
+  return !argv.includes('--skip-price') || argv.includes('--refresh-52w');
+}
 
 const SUPABASE_MANAGEMENT_KEY = process.env.SUPABASE_MANAGEMENT_KEY;
 const SUPABASE_PROJECT_REF = process.env.SUPABASE_PROJECT_REF || "onxkbuecwbcueuhwnowx";
@@ -50,7 +60,9 @@ async function dbQuery(sql) {
     },
     body: JSON.stringify({ query: sql })
   });
-  return res.json();
+  const data = await res.json();
+  if (!Array.isArray(data)) throw new Error(data?.message ?? 'DB 쿼리 오류');
+  return data;
 }
 
 async function upsert(table, rows, onConflict) {
@@ -116,15 +128,15 @@ async function withConcurrency(tasks, limit) {
 
 // STEP 1: 전체 종목 현재가 + 52주 고저가 업데이트
 // 수정: 순차 for-of → withConcurrency(10) 병렬화로 30분→3분 목표
-// 52주 갱신: 일간은 skip, --refresh-52w 플래그 또는 일요일에만 실행
+// 52주 갱신: full 모드는 항상 실행, ranking 모드는 --refresh-52w일 때만 강제 실행
 async function updatePrices() {
   const stocks = await dbQuery(`SELECT stock_code FROM stock_analysis WHERE market_cap_tril >= 0`);
   const codes = stocks.map(s => s.stock_code);
 
   const skipPrice = process.argv.includes('--skip-price');
-  const refresh52w = !skipPrice || process.argv.includes('--refresh-52w');
+  const refresh52w = shouldRefresh52w(process.argv.slice(2));
   // full 모드(--skip-price 없음)에서는 항상 52w 갱신
-  // ranking 모드(--skip-price)에서는 52w 갱신 안 함 (가격 자체를 건너뜀)
+  // ranking 모드(--skip-price)에서는 --refresh-52w일 때만 별도 갱신
   console.log(`[가격 업데이트] ${codes.length}개 종목 시작 (52주 갱신: ${refresh52w ? 'ON' : 'OFF'}, concurrency=10)`);
   patchStatus({ progress: 0, total: codes.length, current: `가격 업데이트 시작 (${codes.length}개)` });
 
@@ -141,20 +153,21 @@ async function updatePrices() {
     const rows = buffer.splice(0, buffer.length);
     const vals = rows.map(r =>
       `('${r.code}', ${r.price}, ${r.cap}` +
-      (r.high != null ? `, ${r.high}, ${r.low}, NOW()` : `, NULL, NULL, NOW()`) +
+      (r.high != null ? `, ${r.high}, ${r.low}, TRUE` : `, NULL, NULL, FALSE`) +
       `)`
     ).join(',\n');
     await dbQuery(`
-      INSERT INTO stock_analysis
-        (stock_code, current_price, market_cap_tril, high_52w, low_52w, week52_updated_at)
-      VALUES ${vals}
-      ON CONFLICT (stock_code) DO UPDATE SET
-        current_price     = EXCLUDED.current_price,
-        market_cap_tril   = EXCLUDED.market_cap_tril,
-        high_52w          = COALESCE(EXCLUDED.high_52w, stock_analysis.high_52w),
-        low_52w           = COALESCE(EXCLUDED.low_52w,  stock_analysis.low_52w),
-        week52_updated_at = COALESCE(EXCLUDED.week52_updated_at, stock_analysis.week52_updated_at),
-        updated_at        = NOW()
+      UPDATE stock_analysis AS sa
+      SET current_price     = v.current_price,
+          market_cap_tril   = v.market_cap_tril,
+          high_52w          = COALESCE(v.high_52w, sa.high_52w),
+          low_52w           = COALESCE(v.low_52w, sa.low_52w),
+          week52_updated_at = CASE WHEN v.refreshed THEN NOW() ELSE sa.week52_updated_at END,
+          updated_at        = NOW()
+      FROM (
+        VALUES ${vals}
+      ) AS v(stock_code, current_price, market_cap_tril, high_52w, low_52w, refreshed)
+      WHERE sa.stock_code = v.stock_code
     `);
     bufferLock.flushing = false;
   }
@@ -512,8 +525,7 @@ async function printChangeReport() {
       pbr,
       per,
       undervalue_score,
-      score_change,
-      sector_avg_pbr
+      score_change
     FROM rank_changes
     WHERE rank_today <= 50
     ORDER BY rank_today
@@ -575,61 +587,68 @@ async function printChangeReport() {
 }
 
 // MAIN
-const args           = process.argv.slice(2);
-const skipPrice      = args.includes('--skip-price');
-const enableRecovery = args.includes('--enable-recovery'); // Stage 3: 3개월 백테스트 완료 후 활성화
+async function main() {
+  const args           = process.argv.slice(2);
+  const skipPrice      = args.includes('--skip-price');
+  const enableRecovery = args.includes('--enable-recovery'); // Stage 3: 3개월 백테스트 완료 후 활성화
+  const runPriceUpdate = shouldRunPriceUpdate(args);
 
-// 상태 파일이 없거나 서버 외부에서 직접 실행할 때 초기화
-const prevStatus = loadStatus();
-if (!prevStatus.running) {
-  patchStatus({
-    running: true,
-    mode: skipPrice ? 'ranking' : 'full',
-    progress: 0,
-    current: skipPrice ? '랭킹 업데이트 시작...' : '가격+랭킹 업데이트 시작...',
-    startedAt: new Date().toISOString()
-  });
+  // 상태 파일이 없거나 서버 외부에서 직접 실행할 때 초기화
+  const prevStatus = loadStatus();
+  if (!prevStatus.running) {
+    patchStatus({
+      running: true,
+      mode: runPriceUpdate ? 'full' : 'ranking',
+      progress: 0,
+      current: runPriceUpdate ? '가격+랭킹 업데이트 시작...' : '랭킹 업데이트 시작...',
+      startedAt: new Date().toISOString()
+    });
+  }
+
+  try {
+    if (runPriceUpdate) {
+      await updatePrices();
+    } else {
+      console.log("[가격 업데이트 스킵]");
+      patchStatus({ progress: 10, current: '가격 업데이트 스킵됨' });
+    }
+    // 매크로 레짐 게이트 체크
+    const regime = await checkMarketRegime();
+    if (regime.warn) {
+      console.log("\n⚠️  [매크로 경고] 시장 위험 구간 감지!");
+      console.log(`   KODEX200: ${regime.latest?.toLocaleString()}원 / 20MA: ${regime.ma20?.toLocaleString()}원 (MA 하향)`);
+      console.log(`   5일 수익률: ${regime.ret5d}% (임계값 -3% 초과)`);
+      console.log("   → 신규 진입 보류 권고. 기존 보유 종목 스톱로스 확인 필요.\n");
+    } else if (regime.latest) {
+      console.log(`[시장 체크] KODEX200 ${regime.latest?.toLocaleString()}원 / 20MA ${regime.ma20?.toLocaleString()}원 / 5일수익률 ${regime.ret5d}% — 정상`);
+    }
+
+    // op_income_yoy 계산 (데이터 있는 경우 자동 갱신)
+    await calcOpIncomeYoy();
+
+    await computeAndSaveRankings();
+    await printChangeReport();
+
+    // Stage 1: 빅배스 턴어라운드 감시 (항상 실행)
+    console.log('\n[턴어라운드 감시] 빅배스 후보 탐색 중...');
+    const recoveryWatch = await detectBigBathRecovery();
+    printRecoveryWatch(recoveryWatch);
+
+    if (enableRecovery) {
+      // Stage 3: --enable-recovery 플래그 활성 시 경고 (아직 SQL 미구현 — 백테스트 후 적용)
+      console.log('\n⚠️  [--enable-recovery] Stage 3 플래그 감지. 백테스트 검증 완료 후 SQL 필터 완화 적용 예정.');
+    }
+
+    const now = new Date().toLocaleString('ko-KR');
+    console.log("\n[완료]", now);
+    patchStatus({ running: false, progress: 100, current: '완료', lastDone: now });
+  } catch (e) {
+    console.error("[오류]", e);
+    patchStatus({ running: false, current: `오류: ${e.message}` });
+    process.exit(1);
+  }
 }
 
-try {
-  if (!skipPrice) {
-    await updatePrices(skipPrice);
-  } else {
-    console.log("[가격 업데이트 스킵]");
-    patchStatus({ progress: 10, current: '가격 업데이트 스킵됨' });
-  }
-  // 매크로 레짐 게이트 체크
-  const regime = await checkMarketRegime();
-  if (regime.warn) {
-    console.log("\n⚠️  [매크로 경고] 시장 위험 구간 감지!");
-    console.log(`   KODEX200: ${regime.latest?.toLocaleString()}원 / 20MA: ${regime.ma20?.toLocaleString()}원 (MA 하향)`);
-    console.log(`   5일 수익률: ${regime.ret5d}% (임계값 -3% 초과)`);
-    console.log("   → 신규 진입 보류 권고. 기존 보유 종목 스톱로스 확인 필요.\n");
-  } else if (regime.latest) {
-    console.log(`[시장 체크] KODEX200 ${regime.latest?.toLocaleString()}원 / 20MA ${regime.ma20?.toLocaleString()}원 / 5일수익률 ${regime.ret5d}% — 정상`);
-  }
-
-  // op_income_yoy 계산 (데이터 있는 경우 자동 갱신)
-  await calcOpIncomeYoy();
-
-  await computeAndSaveRankings();
-  await printChangeReport();
-
-  // Stage 1: 빅배스 턴어라운드 감시 (항상 실행)
-  console.log('\n[턴어라운드 감시] 빅배스 후보 탐색 중...');
-  const recoveryWatch = await detectBigBathRecovery();
-  printRecoveryWatch(recoveryWatch);
-
-  if (enableRecovery) {
-    // Stage 3: --enable-recovery 플래그 활성 시 경고 (아직 SQL 미구현 — 백테스트 후 적용)
-    console.log('\n⚠️  [--enable-recovery] Stage 3 플래그 감지. 백테스트 검증 완료 후 SQL 필터 완화 적용 예정.');
-  }
-
-  const now = new Date().toLocaleString('ko-KR');
-  console.log("\n[완료]", now);
-  patchStatus({ running: false, progress: 100, current: '완료', lastDone: now });
-} catch (e) {
-  console.error("[오류]", e);
-  patchStatus({ running: false, current: `오류: ${e.message}` });
-  process.exit(1);
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  await main();
 }

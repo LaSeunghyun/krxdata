@@ -19,6 +19,11 @@ on:
           - full       # 가격 업데이트 + 랭킹 계산
           - ranking    # 랭킹만 재계산 (빠름, ~5초)
           - backfill   # 재무 데이터 backfill only (2024,2025)
+      refresh_52w:
+        description: '랭킹 모드에서도 52주 고저가를 강제 갱신할지'
+        required: true
+        default: false
+        type: boolean
 
 jobs:
   update:
@@ -64,7 +69,7 @@ jobs:
           SUPABASE_MANAGEMENT_KEY: ${{ secrets.SUPABASE_MANAGEMENT_KEY }}
         run: |
           echo "=== 가격+랭킹 업데이트 시작 ($(TZ='Asia/Seoul' date)) ==="
-          node daily-ranking.js
+          node daily-ranking.js${{ github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_52w == 'true' && ' --refresh-52w' || '' }}
 
       - name: Run ranking only (ranking mode)
         if: steps.mode.outputs.mode == 'ranking'
@@ -76,7 +81,7 @@ jobs:
           SUPABASE_MANAGEMENT_KEY: ${{ secrets.SUPABASE_MANAGEMENT_KEY }}
         run: |
           echo "=== 랭킹 재계산 시작 ($(TZ='Asia/Seoul' date)) ==="
-          node daily-ranking.js --skip-price
+          node daily-ranking.js --skip-price${{ github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_52w == 'true' && ' --refresh-52w' || '' }}
 
       - name: Run backfill (backfill mode)
         if: steps.mode.outputs.mode == 'backfill'
