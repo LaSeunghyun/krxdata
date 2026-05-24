@@ -121,7 +121,10 @@ async function updatePrices() {
   const stocks = await dbQuery(`SELECT stock_code FROM stock_analysis WHERE market_cap_tril >= 0`);
   const codes = stocks.map(s => s.stock_code);
 
-  const refresh52w = process.argv.includes('--refresh-52w') || new Date().getDay() === 0;
+  const skipPrice = process.argv.includes('--skip-price');
+  const refresh52w = !skipPrice || process.argv.includes('--refresh-52w');
+  // full 모드(--skip-price 없음)에서는 항상 52w 갱신
+  // ranking 모드(--skip-price)에서는 52w 갱신 안 함 (가격 자체를 건너뜀)
   console.log(`[가격 업데이트] ${codes.length}개 종목 시작 (52주 갱신: ${refresh52w ? 'ON' : 'OFF'}, concurrency=10)`);
   patchStatus({ progress: 0, total: codes.length, current: `가격 업데이트 시작 (${codes.length}개)` });
 

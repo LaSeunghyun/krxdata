@@ -87,7 +87,12 @@ async function fetchYearFinancials(corpCodes, year) {
 function parseFinancials(rows) {
   const get = (...names) => {
     for (const nm of names) {
-      const row = rows.find(r => r.account_nm?.trim() === nm && r.sj_div !== "CF");
+      // 공백 정규화 비교: 계정과목명 공백 변형에 대응
+      const row = rows.find(r =>
+        r.sj_div !== "CF" &&
+        (r.account_nm?.trim() === nm ||
+         r.account_nm?.replace(/\s/g, "") === nm.replace(/\s/g, ""))
+      );
       if (row) return {
         current:  Number(String(row.thstrm_amount   ?? "0").replace(/,/g, "")),
         previous: Number(String(row.frmtrm_amount   ?? "0").replace(/,/g, "")),
@@ -101,12 +106,12 @@ function parseFinancials(rows) {
     return row ? Number(String(row.thstrm_amount ?? "0").replace(/,/g, "")) : null;
   };
   return {
-    revenue:     get("매출액"),
+    revenue:     get("매출액", "영업수익", "수익(매출액)", "매출"),
     opIncome:    get("영업이익", "영업이익(손실)"),
-    netIncome:   get("당기순이익", "당기순이익(손실)"),
-    totalAsset:  get("자산총계"),
-    totalEquity: get("자본총계"),
-    totalDebt:   get("부채총계"),
+    netIncome:   get("당기순이익", "당기순이익(손실)", "분기순이익"),
+    totalAsset:  get("자산총계", "자산 총계"),
+    totalEquity: get("자본총계", "자본 총계"),
+    totalDebt:   get("부채총계", "부채 총계"),
     curAsset:    get("유동자산"),
     curLiab:     get("유동부채"),
     cfOps:       getCF("영업활동현금흐름"),
