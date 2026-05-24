@@ -207,6 +207,14 @@ async function computeAndSaveRankings() {
               WHEN sf.op_income_yoy > -20 THEN 3
               ELSE 0
             END
+          -- [부채비율 페널티 -15pt max] 보수적 리스크 조정
+          - CASE
+              WHEN sf.debt_ratio IS NULL   THEN 0
+              WHEN sf.debt_ratio > 200     THEN 15
+              WHEN sf.debt_ratio > 150     THEN 10
+              WHEN sf.debt_ratio > 100     THEN 5
+              ELSE 0
+            END
         )::NUMERIC, 1) AS undervalue_score
       FROM stock_analysis sa
       JOIN stock_financials sf ON sa.stock_code = sf.stock_code AND sf.analysis_year = 2025
@@ -223,8 +231,8 @@ async function computeAndSaveRankings() {
         )
         -- 하드 필터: 영업이익률 > 2% (적자 직전 제거)
         AND sf.op_margin > 2
-        -- 하드 필터: 시총 500억 미만 제거 (소형주 유동성 트랩 방어)
-        AND sa.market_cap_tril >= 0.05
+        -- 하드 필터: 시총 1,000억 미만 제거 (500억→1,000억 보수적 강화)
+        AND sa.market_cap_tril >= 0.1
         -- 하드 필터: 52주 위치 70% 초과(모멘텀 하락 구간) 제거
         AND (
           sa.high_52w IS NULL OR sa.low_52w IS NULL OR sa.high_52w = sa.low_52w
@@ -293,6 +301,117 @@ async function checkMarketRegime() {
     const warn    = belowMA && ret5d < -3;
     return { latest, ma20: Math.round(ma20), ret5d: ret5d.toFixed(2), belowMA, warn };
   } catch { return { status: 'error', warn: false }; }
+}
+
+// ─────────────────────────────────────────────────────────────
+// STEP 2.5: 빅배스 턴어라운드 감시 (Stage 1 — 모니터링 전용)
+// 합의된 3단계 로드맵:
+//   Stage 1 (현재): DART 잠정실적 감지 → 감시 목록 출력 (랭킹 미편입)
+//   Stage 2 (3개월 후): 감시 목록 백테스트 → 수익률 검증
+//   Stage 3 (검증 후): --enable-recovery 플래그로 Codex 4조건 필터 완화 활성화
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * 빅배스 후보 조건 (SQL):
+ *   Condition 1: 2025 op_margin < 0  (직전 연도 일회성 적자)
+ *   Condition 2: 2024 op_margin > 0  (전전 연도 흑자 — 구조적 부실 아님)
+ *   Condition 4: debt_ratio < 350%   (재무 붕괴 방어)
+ *
+ * 추가 조건 (DART):
+ *   Condition 3: 최근 6개월 내 잠정실적 공시 존재 → 회복 확인
+ *
+ * Stage 3 활성화 시 추가:
+ *   → 랭킹 편입 + 불확실성 페널티 -10pt 부과
+ */
+async function detectBigBathRecovery() {
+  try {
+    // Condition 1 + 2 + 4: DB에서 후보 추출
+    const candidates = await dbQuery(`
+      SELECT sa.stock_code, sa.corp_name, sa.mrkt_ctg, sa.sector,
+             sa.current_price, sa.market_cap_tril,
+             sf25.op_margin  AS op_margin_2025,
+             sf25.roe        AS roe_2025,
+             sf25.debt_ratio AS debt_ratio,
+             sf24.op_margin  AS op_margin_2024
+      FROM stock_analysis sa
+      JOIN stock_financials sf25 ON sa.stock_code = sf25.stock_code AND sf25.analysis_year = 2025
+      JOIN stock_financials sf24 ON sa.stock_code = sf24.stock_code AND sf24.analysis_year = 2024
+      WHERE sf25.op_margin < 0
+        AND sf24.op_margin > 0
+        AND (sf25.debt_ratio IS NULL OR sf25.debt_ratio < 350)
+        AND sa.market_cap_tril >= 0.1
+        AND sa.current_price > 0
+      ORDER BY sa.market_cap_tril DESC
+      LIMIT 50
+    `);
+
+    if (!Array.isArray(candidates) || candidates.length === 0) return [];
+
+    // Condition 3: DART 잠정실적 공시 체크 (순차, rate limit 주의)
+    const recovered = [];
+    for (const s of candidates) {
+      try {
+        const bgn = daysAgo(180);
+        const end = today();
+        const url = `https://opendart.fss.or.kr/api/list.json?crtfc_key=${DART_KEY}` +
+                    `&stock_code=${s.stock_code}&bgn_de=${bgn}&end_de=${end}&page_count=10`;
+        const r   = await fetch(url);
+        const d   = await r.json();
+        const items = d?.list ?? [];
+
+        const hit = items.find(i =>
+          i.report_nm.includes('잠정실적') ||
+          i.report_nm.includes('영업(잠정)') ||
+          i.report_nm.includes('잠정)실적')  ||
+          i.report_nm.includes('잠정 실적')
+        );
+
+        if (hit) {
+          recovered.push({
+            ...s,
+            disclosure_date:  hit.rcept_dt,
+            disclosure_title: hit.report_nm.trim(),
+          });
+        }
+        await sleep(150); // DART rate limit
+      } catch { /* 개별 오류 무시 */ }
+    }
+
+    return recovered;
+  } catch (e) {
+    console.error('[빅배스 감지 오류]', e.message);
+    return [];
+  }
+}
+
+function printRecoveryWatch(candidates) {
+  if (!candidates.length) {
+    console.log('\n[턴어라운드 감시] 해당 종목 없음 (Condition 1~4 미충족)');
+    return;
+  }
+
+  console.log('\n╔══════════════════════════════════════════════════════════════════════════════╗');
+  console.log('║  🔄 빅배스 턴어라운드 감시 목록  [Stage 1 — 모니터링 전용, 랭킹 미편입]       ║');
+  console.log('╚══════════════════════════════════════════════════════════════════════════════╝');
+  console.log('  ※ 2025 영업 적자(필터 탈락) + 2024 흑자 + 잠정실적 공시 확인 종목');
+  console.log('  ※ Stage 3 활성화(--enable-recovery) 전까지 관찰만 수행\n');
+  console.log('종목명            코드    시총(억)  2025이익률  2024이익률  부채비율  잠정실적 공시');
+  console.log('─'.repeat(105));
+
+  for (const c of candidates) {
+    const cap = (c.market_cap_tril * 1000).toFixed(0);
+    console.log(
+      `${c.corp_name.slice(0, 14).padEnd(16)} ${c.stock_code}  ` +
+      `${String(cap + '억').padStart(8)}  ` +
+      `${String((c.op_margin_2025 ?? '-') + '%').padStart(10)}  ` +
+      `${String((c.op_margin_2024 ?? '-') + '%').padStart(10)}  ` +
+      `${String((c.debt_ratio ?? '-') + '%').padStart(8)}  ` +
+      `${c.disclosure_date}: ${c.disclosure_title.slice(0, 25)}`
+    );
+  }
+
+  console.log(`\n  → 감지 ${candidates.length}건 | 3개월 백테스트 후 --enable-recovery 플래그로 편입 활성화`);
+  console.log('  → Stage 3 편입 시 스코어에 불확실성 페널티 -10pt 자동 부과');
 }
 
 // STEP 3: 순위 변동 리포트 출력
@@ -375,8 +494,9 @@ async function printChangeReport() {
 }
 
 // MAIN
-const args = process.argv.slice(2);
-const skipPrice = args.includes('--skip-price');
+const args           = process.argv.slice(2);
+const skipPrice      = args.includes('--skip-price');
+const enableRecovery = args.includes('--enable-recovery'); // Stage 3: 3개월 백테스트 완료 후 활성화
 
 // 상태 파일이 없거나 서버 외부에서 직접 실행할 때 초기화
 const prevStatus = loadStatus();
@@ -410,6 +530,17 @@ try {
 
   await computeAndSaveRankings();
   await printChangeReport();
+
+  // Stage 1: 빅배스 턴어라운드 감시 (항상 실행)
+  console.log('\n[턴어라운드 감시] 빅배스 후보 탐색 중...');
+  const recoveryWatch = await detectBigBathRecovery();
+  printRecoveryWatch(recoveryWatch);
+
+  if (enableRecovery) {
+    // Stage 3: --enable-recovery 플래그 활성 시 경고 (아직 SQL 미구현 — 백테스트 후 적용)
+    console.log('\n⚠️  [--enable-recovery] Stage 3 플래그 감지. 백테스트 검증 완료 후 SQL 필터 완화 적용 예정.');
+  }
+
   const now = new Date().toLocaleString('ko-KR');
   console.log("\n[완료]", now);
   patchStatus({ running: false, progress: 100, current: '완료', lastDone: now });
