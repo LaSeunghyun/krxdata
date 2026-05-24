@@ -13,6 +13,7 @@ import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import AdmZip from "adm-zip";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, ".env") });
@@ -121,7 +122,7 @@ function parseFinancials(rows) {
 // ── Supabase upsert (Management API SQL 방식) ─────────────────
 function esc(v) {
   if (v === null || v === undefined) return "NULL";
-  if (typeof v === "number") return String(v);
+  if (typeof v === "number") return (!isFinite(v) || isNaN(v)) ? "NULL" : String(v);
   return `'${String(v).replace(/'/g, "''")}'`;
 }
 
@@ -172,17 +173,62 @@ async function upsertRows(rows) {
   console.log("");
 }
 
+// ── DART corpCode.xml 다운로드 → stock_code→corp_code 매핑 ─────
+const CORP_CODE_CACHE = path.join(__dirname, ".corp_code_cache.json");
+const CORP_CODE_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7일
+
+async function buildCorpCodeMap() {
+  // 캐시 유효 시 재사용
+  if (fs.existsSync(CORP_CODE_CACHE)) {
+    try {
+      const { ts, map } = JSON.parse(fs.readFileSync(CORP_CODE_CACHE, "utf8"));
+      if (Date.now() - ts < CORP_CODE_CACHE_TTL_MS) {
+        console.log(`  corpCode 캐시 사용 (${Object.keys(map).length}개)`);
+        return map;
+      }
+    } catch {}
+  }
+
+  console.log("  DART corpCode.xml 다운로드 중...");
+  const res = await fetch(
+    `https://opendart.fss.or.kr/api/corpCode.xml?crtfc_key=${DART_KEY}`,
+    { headers: { "User-Agent": "Mozilla/5.0" } }
+  );
+  if (!res.ok) throw new Error(`corpCode 다운로드 실패: ${res.status}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  const zip = new AdmZip(buf);
+  const xmlEntry = zip.getEntries().find(e => e.entryName.endsWith(".xml"));
+  if (!xmlEntry) throw new Error("corpCode.zip에 XML 없음");
+  const xml = xmlEntry.getData().toString("utf8");
+
+  // XML 파싱: <stock_code>XXXXXX</stock_code> 와 <corp_code>XXXXXXXX</corp_code>
+  const map = {};
+  const re = /<list>[\s\S]*?<corp_code>(\d+)<\/corp_code>[\s\S]*?<stock_code>(\d+)<\/stock_code>[\s\S]*?<\/list>/g;
+  let m;
+  while ((m = re.exec(xml)) !== null) {
+    const [, corp_code, stock_code] = m;
+    if (stock_code && stock_code.trim()) map[stock_code.trim()] = corp_code.trim();
+  }
+  console.log(`  corpCode 매핑 완료: ${Object.keys(map).length}개`);
+  fs.writeFileSync(CORP_CODE_CACHE, JSON.stringify({ ts: Date.now(), map }));
+  return map;
+}
+
 // ── 회사 목록 로드 ───────────────────────────────────────────
-function loadCompanies() {
+// 1순위: 로컬 JSON 파일 (로컬 개발 환경)
+// 2순위: DB stock_analysis + DART corpCode.xml (GitHub Actions 등 CI 환경)
+async function loadCompanies() {
   const companies = [];
   const seen = new Set();
 
+  // 1순위: 로컬 JSON 파일
+  let localLoaded = false;
   for (const [file, mrkt] of [
     ["kospi-profitable.json",  "KOSPI"],
     ["kosdaq-profitable.json", "KOSDAQ"],
   ]) {
     const fp = path.join(__dirname, file);
-    if (!fs.existsSync(fp)) { console.warn(`  ${file} 없음 — 스킵`); continue; }
+    if (!fs.existsSync(fp)) continue;
     const data = JSON.parse(fs.readFileSync(fp, "utf8"));
     const list = data.profitable ?? data.results ?? [];
     for (const c of list) {
@@ -191,8 +237,31 @@ function loadCompanies() {
         companies.push({ corp_code: c.corp_code, stock_code: c.stockCode, corp_name: c.corp_name, mrkt_ctg: mrkt });
       }
     }
-    console.log(`  ${mrkt}: ${list.length}개 로드`);
+    if (list.length > 0) { localLoaded = true; console.log(`  ${mrkt}: ${list.length}개 로드 (로컬 JSON)`); }
   }
+
+  if (localLoaded && companies.length > 0) return companies;
+
+  // 2순위: DB + DART corpCode.xml
+  console.log("  로컬 JSON 없음 — DB + DART corpCode.xml 방식으로 전환");
+  const corpMap = await buildCorpCodeMap();
+
+  const rows = await dbQuery(`
+    SELECT sa.stock_code, sa.corp_name, sa.mrkt_ctg
+    FROM stock_analysis sa
+    WHERE sa.stock_code IS NOT NULL
+    ORDER BY sa.stock_code
+  `);
+
+  for (const r of rows) {
+    const corp_code = corpMap[r.stock_code];
+    if (!corp_code) continue;
+    if (!seen.has(corp_code)) {
+      seen.add(corp_code);
+      companies.push({ corp_code, stock_code: r.stock_code, corp_name: r.corp_name, mrkt_ctg: r.mrkt_ctg });
+    }
+  }
+  console.log(`  DB+corpCode 방식: ${companies.length}개 (매핑 실패: ${rows.length - companies.length}개)`);
   return companies;
 }
 
@@ -257,9 +326,9 @@ async function processYear(year, companies) {
       debt_ratio:    _td && _eq > 0 ? +(_td / _eq * 100).toFixed(2) : null,
       cur_ratio:     _ca && _cl > 0 ? +(_ca / _cl * 100).toFixed(2) : null,
       op_margin:     _op && _rev > 0 ? +(_op / _rev * 100).toFixed(2) : null,
-      revenue_yoy:   fin.revenue?.previous > 0
+      revenue_yoy:   (fin.revenue?.previous > 0 && isFinite(fin.revenue.previous))
                        ? +((_rev - fin.revenue.previous) / fin.revenue.previous * 100).toFixed(2) : null,
-      op_income_yoy: fin.opIncome?.previous != null && fin.opIncome.previous !== 0
+      op_income_yoy: (fin.opIncome?.previous != null && fin.opIncome.previous !== 0 && isFinite(fin.opIncome.previous))
                        ? +((_op - fin.opIncome.previous) / Math.abs(fin.opIncome.previous) * 100).toFixed(2) : null,
       per:           null,  // 시가총액 없어서 산출 불가
       pbr:           null,
@@ -283,7 +352,7 @@ async function main() {
   console.log(`대상 연도: ${YEARS.join(", ")}\n`);
 
   console.log("회사 목록 로드...");
-  const companies = loadCompanies();
+  const companies = await loadCompanies();
   console.log(`총 ${companies.length}개\n`);
 
   for (const year of YEARS) {
