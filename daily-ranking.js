@@ -101,24 +101,42 @@ async function getPublicDataQuote(stockCode, fetch52w = false) {
   } catch { return null; }
 }
 
+// 수동 세마포어: 최대 concurrency개 태스크를 동시 실행
+async function withConcurrency(tasks, limit) {
+  const results = [];
+  const executing = new Set();
+  for (const task of tasks) {
+    const p = Promise.resolve().then(task).finally(() => executing.delete(p));
+    executing.add(p);
+    results.push(p);
+    if (executing.size >= limit) await Promise.race(executing);
+  }
+  return Promise.allSettled(results);
+}
+
 // STEP 1: 전체 종목 현재가 + 52주 고저가 업데이트
-// 수정: REST API(anon key) → management API(dbQuery) SQL 방식으로 전환
-// 이유: anon key 만료 시 upsert 401 → 52주 데이터 미갱신 문제 해결
+// 수정: 순차 for-of → withConcurrency(10) 병렬화로 30분→3분 목표
+// 52주 갱신: 일간은 skip, --refresh-52w 플래그 또는 일요일에만 실행
 async function updatePrices() {
   const stocks = await dbQuery(`SELECT stock_code FROM stock_analysis WHERE market_cap_tril >= 0`);
   const codes = stocks.map(s => s.stock_code);
-  console.log(`[가격 업데이트] ${codes.length}개 종목 시작 (52주 고저가 항상 갱신)`);
+
+  const refresh52w = process.argv.includes('--refresh-52w') || new Date().getDay() === 0;
+  console.log(`[가격 업데이트] ${codes.length}개 종목 시작 (52주 갱신: ${refresh52w ? 'ON' : 'OFF'}, concurrency=10)`);
   patchStatus({ progress: 0, total: codes.length, current: `가격 업데이트 시작 (${codes.length}개)` });
 
-  let updated = 0, skipped = 0;
+  let updated = 0, skipped = 0, done = 0;
   const BATCH     = 50;   // 진행 로그 주기
   const SQL_BATCH = 200;  // SQL upsert 묶음 크기
 
   const buffer = []; // { code, price, cap, high, low }
+  const bufferLock = { flushing: false };
 
   async function flushBuffer() {
-    if (!buffer.length) return;
-    const vals = buffer.map(r =>
+    if (!buffer.length || bufferLock.flushing) return;
+    bufferLock.flushing = true;
+    const rows = buffer.splice(0, buffer.length);
+    const vals = rows.map(r =>
       `('${r.code}', ${r.price}, ${r.cap}` +
       (r.high != null ? `, ${r.high}, ${r.low}, NOW()` : `, NULL, NULL, NOW()`) +
       `)`
@@ -135,11 +153,11 @@ async function updatePrices() {
         week52_updated_at = COALESCE(EXCLUDED.week52_updated_at, stock_analysis.week52_updated_at),
         updated_at        = NOW()
     `);
-    buffer.length = 0;
+    bufferLock.flushing = false;
   }
 
-  for (const code of codes) {
-    const q = await getPublicDataQuote(code, true); // 항상 52주 갱신
+  const tasks = codes.map(code => async () => {
+    const q = await getPublicDataQuote(code, refresh52w);
     if (q && q.price > 0) {
       buffer.push({
         code,
@@ -152,16 +170,16 @@ async function updatePrices() {
     } else {
       skipped++;
     }
-    await sleep(300);
-
-    const done = updated + skipped;
+    done++;
     if (buffer.length >= SQL_BATCH) await flushBuffer();
     if (done % BATCH === 0) {
       const pct = Math.round((done / codes.length) * 50);
       console.log(`  진행: ${done}/${codes.length} (업데이트 ${updated}, 스킵 ${skipped})`);
       patchStatus({ progress: pct, current: `가격 업데이트 중 (${done}/${codes.length})` });
     }
-  }
+  });
+
+  await withConcurrency(tasks, 10);
   await flushBuffer(); // 나머지 flush
   console.log(`[가격 업데이트 완료] 업데이트 ${updated}, 스킵 ${skipped}`);
   patchStatus({ progress: 50, current: '가격 업데이트 완료' });
