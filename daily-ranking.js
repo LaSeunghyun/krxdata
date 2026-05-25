@@ -237,40 +237,105 @@ async function computeAndSaveRankings() {
           ELSE 0.5
         END AS price_position_52w,
         ROUND((
-          -- [가치 25pt] 섹터 PBR 할인율: 백분위 기반 연속 점수
-          GREATEST(0, LEAST(25, (1.0 - sf.pbr / NULLIF(ss.avg_pbr, 0)) * 25))
-          -- [가치 15pt] 섹터 PER 할인율
-          + GREATEST(0, LEAST(15, (1.0 - sf.per / NULLIF(ss.avg_per, 0)) * 15))
-          -- [수익성 15pt] ROE
-          + LEAST(15, sf.roe * 0.75)
-          -- [모멘텀 15pt] 52주 위치 기반 연속 점수 (저점 근접 = 역발상 매수 신호)
+          -- [PBR 할인 20pt] 섹터 평균 대비 단계별 점수
+          CASE
+            WHEN sf.pbr IS NULL OR ss.avg_pbr IS NULL OR ss.avg_pbr = 0 THEN 0
+            WHEN sf.pbr <= ss.avg_pbr * 0.3  THEN 20
+            WHEN sf.pbr <= ss.avg_pbr * 0.5  THEN 16
+            WHEN sf.pbr <= ss.avg_pbr * 0.7  THEN 12
+            WHEN sf.pbr <= ss.avg_pbr * 0.9  THEN 7
+            WHEN sf.pbr <= ss.avg_pbr        THEN 3
+            ELSE 0
+          END
+          -- [PER 할인 10pt] 섹터 평균 대비 단계별 점수
           + CASE
-              WHEN sa.high_52w > sa.low_52w AND sa.low_52w > 0 THEN
-                GREATEST(0, LEAST(15,
-                  (1.0 - (sa.current_price - sa.low_52w)::NUMERIC / NULLIF(sa.high_52w - sa.low_52w, 0)) * 15
-                ))
-              ELSE 7.5  -- 52주 데이터 없으면 중간값
-            END
-          -- [품질 10pt] 영업이익률
-          + LEAST(10, GREATEST(0, sf.op_margin * 0.5))
-          -- [성장성 20pt] 영업이익 YoY 성장률 (신규)
+            WHEN sf.per IS NULL OR ss.avg_per IS NULL OR ss.avg_per = 0 OR sf.per <= 0 THEN 0
+            WHEN sf.per <= ss.avg_per * 0.3  THEN 10
+            WHEN sf.per <= ss.avg_per * 0.5  THEN 8
+            WHEN sf.per <= ss.avg_per * 0.7  THEN 5
+            WHEN sf.per <= ss.avg_per        THEN 2
+            ELSE 0
+          END
+          -- [PCR 10pt] 신규 — cf_ops 기반 현금흐름 수익률
           + CASE
-              WHEN sf.op_income_yoy IS NULL THEN 0
-              WHEN sf.op_income_yoy > 50  THEN 20
-              WHEN sf.op_income_yoy > 20  THEN 15
-              WHEN sf.op_income_yoy > 0   THEN 10
-              WHEN sf.op_income_yoy > -20 THEN 3
-              ELSE 0
-            END
-          -- [부채비율 페널티 -15pt max] 보수적 리스크 조정
+            WHEN sf.cf_ops IS NULL OR sf.cf_ops <= 0 THEN 0
+            WHEN sa.market_cap_tril IS NULL OR sa.market_cap_tril = 0 THEN 0
+            ELSE LEAST(10,
+              CASE
+                WHEN (sf.cf_ops::NUMERIC / (sa.market_cap_tril * 1e12)) >= 0.15 THEN 10
+                WHEN (sf.cf_ops::NUMERIC / (sa.market_cap_tril * 1e12)) >= 0.10 THEN 8
+                WHEN (sf.cf_ops::NUMERIC / (sa.market_cap_tril * 1e12)) >= 0.07 THEN 5
+                WHEN (sf.cf_ops::NUMERIC / (sa.market_cap_tril * 1e12)) >= 0.04 THEN 3
+                ELSE 1
+              END)
+          END
+          -- [ROE 15pt]
+          + CASE
+            WHEN sf.roe IS NULL OR sf.roe <= 0 THEN 0
+            WHEN sf.roe >= 25 THEN 15
+            WHEN sf.roe >= 15 THEN 12
+            WHEN sf.roe >= 10 THEN 8
+            WHEN sf.roe >= 5  THEN 4
+            ELSE 1
+          END
+          -- [영업이익률 10pt]
+          + CASE
+            WHEN sf.op_margin IS NULL OR sf.op_margin <= 0 THEN 0
+            WHEN sf.op_margin >= 25 THEN 10
+            WHEN sf.op_margin >= 15 THEN 8
+            WHEN sf.op_margin >= 8  THEN 5
+            WHEN sf.op_margin >= 3  THEN 2
+            ELSE 0
+          END
+          -- [이익 추세 15pt] 52주 모멘텀 대체 — 이익YoY 방향성
+          + CASE
+            WHEN sf.op_income_yoy IS NULL THEN 5
+            WHEN sf.op_income_yoy >= 100 THEN 15
+            WHEN sf.op_income_yoy >= 50  THEN 13
+            WHEN sf.op_income_yoy >= 20  THEN 10
+            WHEN sf.op_income_yoy >= 0   THEN 7
+            WHEN sf.op_income_yoy >= -10 THEN 3
+            ELSE 0
+          END
+          -- [이익YoY 15pt]
+          + CASE
+            WHEN sf.op_income_yoy IS NULL THEN 0
+            WHEN sf.op_income_yoy >= 200 THEN 15
+            WHEN sf.op_income_yoy >= 100 THEN 12
+            WHEN sf.op_income_yoy >= 50  THEN 9
+            WHEN sf.op_income_yoy >= 20  THEN 6
+            WHEN sf.op_income_yoy >= 0   THEN 3
+            ELSE 0
+          END
+          -- [이익 안정성 5pt] 신규 — cf_ops > 0 + 순이익 > 0
+          + CASE
+            WHEN sf.cf_ops > 0 AND sf.net_income > 0 THEN 5
+            WHEN sf.cf_ops > 0 OR  sf.net_income > 0 THEN 2
+            ELSE 0
+          END
+          -- [부채비율 페널티 -15pt max]
           - CASE
-              WHEN sf.debt_ratio IS NULL   THEN 0
-              WHEN sf.debt_ratio > 200     THEN 15
-              WHEN sf.debt_ratio > 150     THEN 10
-              WHEN sf.debt_ratio > 100     THEN 5
-              ELSE 0
-            END
-        )::NUMERIC, 1) AS undervalue_score
+            WHEN sf.debt_ratio IS NULL   THEN 0
+            WHEN sf.debt_ratio > 200     THEN 15
+            WHEN sf.debt_ratio > 150     THEN 10
+            WHEN sf.debt_ratio > 100     THEN 5
+            ELSE 0
+          END
+          -- [이자보상배율 페널티 -10pt] 신규
+          - CASE
+            WHEN sf.op_income IS NULL OR sf.total_debt IS NULL OR sf.total_debt = 0 THEN 0
+            WHEN sf.op_income <= 0 AND sf.total_debt > 0 THEN 10
+            WHEN (sf.op_income::NUMERIC / NULLIF(sf.total_debt * 0.04, 0)) < 1 THEN 10
+            WHEN (sf.op_income::NUMERIC / NULLIF(sf.total_debt * 0.04, 0)) < 2 THEN 5
+            ELSE 0
+          END
+        )::NUMERIC *
+        -- [지주사 Soft Penalty x0.6]
+        CASE
+          WHEN sa.corp_name LIKE '%홀딩스%' OR sa.corp_name LIKE '%지주%' THEN 0.6
+          ELSE 1.0
+        END
+        , 1) AS undervalue_score
       FROM stock_analysis sa
       JOIN stock_financials sf ON sa.stock_code = sf.stock_code AND sf.analysis_year = 2025
       LEFT JOIN sector_stats ss ON sa.sector = ss.sector AND sa.mrkt_ctg = ss.mrkt_ctg
@@ -293,6 +358,10 @@ async function computeAndSaveRankings() {
           sa.high_52w IS NULL OR sa.low_52w IS NULL OR sa.high_52w = sa.low_52w
           OR (sa.current_price - sa.low_52w)::NUMERIC / NULLIF(sa.high_52w - sa.low_52w, 0) < 0.7
         )
+        -- 가치함정 Hard Filter: 영업현금흐름 음수 + PBR 극저 조합 제외
+        AND NOT (sf.cf_ops < 0 AND sf.pbr < 0.5)
+        -- 매출·이익 동반 급감 제외
+        AND NOT (sf.revenue_yoy < -20 AND sf.op_income_yoy < -30)
     )
     SELECT
       CURRENT_DATE,
@@ -358,13 +427,25 @@ async function calcOpIncomeYoy() {
   console.log(`[YoY 계산 완료] 남은 NULL: ${remaining[0]?.cnt ?? '?'}건 (2024 데이터 없는 종목)`);
 }
 
-// 목표가 계산 (Codex v4: 1M 계수 보수화 0.20→0.10, 달성률 제고)
-// score 80 → 1M: +8.0%, 3M: +32.0%, 1Y: +64.0%
-// score 60 → 1M: +6.0%, 3M: +24.0%, 1Y: +48.0%
-function calcTargetPrice(currentPrice, undervalueScore, period = '1m') {
+// 섹터 멀티플 (v5: 바이오/IT 상향, 금융/건설/지주 하향)
+function getSectorMultiplier(sector, corpName) {
+  if (!sector && !corpName) return 1.0;
+  if (corpName?.includes('홀딩스') || corpName?.includes('지주')) return 0.5;
+  const s = sector || '';
+  if (s.includes('바이오') || s.includes('의약')) return 1.3;
+  if (s.includes('반도체') || s.includes('IT') || s.includes('소프트')) return 1.2;
+  if (s.includes('금융') || s.includes('보험') || s.includes('증권')) return 0.7;
+  if (s.includes('건설') || s.includes('부동산')) return 0.8;
+  return 1.0;
+}
+
+// 목표가 계산 (Codex v5: 섹터 멀티플 적용)
+// score 80 / mult 1.0 → 1M: +8.0%, 3M: +32.0%, 1Y: +64.0%
+function calcTargetPrice(currentPrice, undervalueScore, period = '1m', sector = null, corpName = null) {
   if (!currentPrice || !undervalueScore || undervalueScore <= 0) return null;
   const coeff = period === '1y' ? 0.80 : period === '3m' ? 0.40 : 0.10;
-  return Math.round(currentPrice * (1 + (undervalueScore / 100) * coeff));
+  const mult = getSectorMultiplier(sector, corpName);
+  return Math.round(currentPrice * (1 + (undervalueScore / 100) * coeff * mult));
 }
 
 // 매크로 레짐 게이트: 삼성전자(005930) KOSPI 프록시 기준 시장 상태 판단
@@ -543,9 +624,9 @@ async function printChangeReport() {
     const change = c.rank_change === null ? "NEW" :
       c.rank_change > 0 ? `▲${c.rank_change}` :
       c.rank_change < 0 ? `▼${Math.abs(c.rank_change)}` : "─";
-    const t1m = calcTargetPrice(c.current_price, c.undervalue_score, '1m');
-    const t3m = calcTargetPrice(c.current_price, c.undervalue_score, '3m');
-    const t1y = calcTargetPrice(c.current_price, c.undervalue_score, '1y');
+    const t1m = calcTargetPrice(c.current_price, c.undervalue_score, '1m', c.sector, c.corp_name);
+    const t3m = calcTargetPrice(c.current_price, c.undervalue_score, '3m', c.sector, c.corp_name);
+    const t1y = calcTargetPrice(c.current_price, c.undervalue_score, '1y', c.sector, c.corp_name);
     const fmt = (t, base) => t ? `${t.toLocaleString()}(+${((t-base)/base*100).toFixed(1)}%)` : '-';
     const weight = c.rank_today <= 10 ? '10%' : ' 5%';
     console.log(
