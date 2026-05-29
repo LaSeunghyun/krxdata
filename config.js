@@ -38,13 +38,15 @@ export const BACKTEST_HORIZONS = [20, 60]; // 영업일(≈1M, 3M) 포워드 수
 export const BACKTEST_TOLERANCE = 5; // 스냅샷 정렬 허용일
 export const WINSOR_BOUNDS = [0.01, 0.99]; // 섹터 z-score winsorize 분위
 export const FACTOR_WEIGHTS = {
-  // 초기 equal-weight. Loop B에서 IC 비례로 갱신.
-  value: 1,
-  quality: 1,
-  growth: 1,
-  earningsMomentum: 1,
-  priceMomentum: 1,
-  trend: 1,
-  governance: 1,
-  event: 0, // 공시: IC 검증 전 0 (probation)
+  // IC-calibrated (Loop B): 2025-05~2026-05, 25주 리밸런스, 20d·60d spearman IC 평균.
+  // backtest-pit.mjs 합성점수 전용(연구용) — 라이브 v5 스코어러는 자체 로직 사용, 영향 없음.
+  // ⚠ 1년 단일 국면(성장·모멘텀 우위) 기준 — value 역방향은 국면 의존적. 분기 갱신 권장.
+  value: -0.15,         // IC -0.12/-0.19 (IC>0 0~8%) 일관 역방향 → 역가중
+  quality: 0.02,        // IC +0.027/+0.020
+  growth: 0.08,         // IC +0.050/+0.093 (IC>0 96~100%) 최강
+  priceMomentum: 0.03,  // IC +0.006/+0.039
+  trend: 0,             // IC ~0
+  earningsMomentum: 0,  // 미측정(분기 데이터 필요) — probation
+  governance: 0,        // 미측정 — probation
+  event: 0,             // 공시: 미측정 — probation
 };

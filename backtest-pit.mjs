@@ -1,20 +1,18 @@
 /**
  * backtest-pit.mjs — Point-in-Time 백테스트 (look-ahead 제거)
  *
- * 과거 3개월 일별시세를 받아와, 각 리밸런스 시점 T에서
- *   - 가치/품질/성장: stock_financials(연간 2025, ~3월 공시라 4~5월 어느 T든 PIT 안전)
- *   - 가격모멘텀/추세: 받아온 시세를 T 시점까지만 사용 (미래 미사용)
+ * DB(stock_prices)의 일별시세를 읽어, 각 리밸런스 시점 T에서
+ *   - 가치/품질/성장: stock_financials(연간 2025, ~3월 공시라 PIT 안전)
+ *   - 가격모멘텀/추세: DB 시세를 T 시점까지만 사용 (미래 미사용)
  * 로 섹터중립 z-score 합성점수를 만들고, 20·60 영업일 포워드 수익률과
  * spearman IC / 분위 스프레드 / top분위 hit rate를 산출한다.
  *
  * 모든 위험 수학은 순수함수(normalize.js / backtest.js)에 격리, 골든테스트로 검증됨.
- * 캐시: 시세는 backtest-cache-<begin>-<end>.json 에 저장 → 재실행 시 재수집 생략.
+ * 시세 출처: stock_prices 테이블(매일 daily-ranking 잡이 적재). 공공API 미사용.
  *
- * 실행:  node backtest-pit.mjs            (캐시 있으면 사용)
- *        node backtest-pit.mjs --refresh  (시세 강제 재수집)
+ * 실행:  node backtest-pit.mjs
  */
 import dotenv from "dotenv";
-import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { sectorZScores } from "./normalize.js";
@@ -26,25 +24,17 @@ dotenv.config({ path: path.join(__dirname, ".env") });
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
-const PUBLIC_KEY = process.env.PUBLIC_DATA_API_KEY;
-const PUBLIC_BASE =
-  "https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService/getStockPriceInfo";
 
 if (!SUPABASE_URL || !SUPABASE_KEY) { console.error("SUPABASE 미설정"); process.exit(1); }
-if (!PUBLIC_KEY) { console.error("PUBLIC_DATA_API_KEY 미설정"); process.exit(1); }
-
-const REFRESH = process.argv.includes("--refresh");
 
 // ── 설정 ──────────────────────────────────────────────────────
-const LOOKBACK_DAYS = 90;          // 과거 시세 범위(달력일)
+const LOOKBACK_DAYS = 400;         // DB에서 읽을 과거 범위(달력일) — 60일 호라이즌+모멘텀+리밸런스 확보용
 const HORIZONS = [20, 60];         // 포워드 수익 영업일
 const MOM_LOOKBACKS = [20, 60];    // 모멘텀 영업일
 const SMA_WINDOW = 20;             // 추세용 이동평균
 const REBALANCE_STEP = 5;          // 리밸런스 간격(영업일) = 주간
 const QUANTILE = 0.2;              // 상·하위 분위
-const FETCH_DELAY_MS = 250;
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const pad = (n) => String(n).padStart(2, "0");
 const ymd = (d) => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`;
 const today = () => ymd(new Date());
@@ -52,15 +42,21 @@ const daysAgo = (n) => { const d = new Date(); d.setDate(d.getDate() - n); retur
 
 const BEGIN = daysAgo(LOOKBACK_DAYS);
 const END = today();
-const CACHE_FILE = path.join(__dirname, `backtest-cache-${BEGIN}-${END}.json`);
 
 // ── Supabase REST ─────────────────────────────────────────────
-async function dbSelect(table, query) {
-  const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${query}`, {
-    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` },
-  });
-  if (!r.ok) throw new Error(`${table} HTTP ${r.status}`);
-  return r.json();
+const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+async function dbSelect(table, query, attempt = 0) {
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${query}`, {
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` },
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!r.ok) throw new Error(`${table} HTTP ${r.status}`);
+    return r.json();
+  } catch (e) {
+    if (attempt < 4) { await sleep(500 * (attempt + 1)); return dbSelect(table, query, attempt + 1); }
+    throw e;
+  }
 }
 
 async function loadUniverse() {
@@ -91,49 +87,29 @@ async function loadUniverse() {
     .map((s) => ({ ...s, fin: finMap.get(s.stock_code) }));
 }
 
-// ── 공공데이터 과거 일별시세 ──────────────────────────────────
-async function fetchHistory(stockCode) {
-  const url = new URL(PUBLIC_BASE);
-  url.searchParams.set("serviceKey", PUBLIC_KEY);
-  url.searchParams.set("resultType", "json");
-  url.searchParams.set("numOfRows", "200");
-  url.searchParams.set("pageNo", "1");
-  url.searchParams.set("beginBasDt", BEGIN);
-  url.searchParams.set("endBasDt", END);
-  url.searchParams.set("likeIsinCd", `KR7${stockCode}`);
-  try {
-    const r = await fetch(url.toString(), {
-      headers: { "User-Agent": "Mozilla/5.0" },
-      signal: AbortSignal.timeout(10_000),
-    });
-    const data = await r.json();
-    const items = data?.response?.body?.items?.item ?? [];
-    const arr = Array.isArray(items) ? items : [items];
-    return arr
-      .filter((i) => i.srtnCd === stockCode && Number(i.clpr) > 0)
-      .map((i) => ({ date: i.basDt, close: Number(i.clpr) }))
-      .sort((a, b) => a.date.localeCompare(b.date)); // 오름차순
-  } catch {
-    return [];
-  }
-}
-
-async function buildPriceCache(universe) {
-  if (!REFRESH && fs.existsSync(CACHE_FILE)) {
-    console.log(`[캐시] ${path.basename(CACHE_FILE)} 사용`);
-    return JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
-  }
-  console.log(`[시세] ${universe.length}종목 × ~0.25s 수집 중 (~${Math.round(universe.length * 0.25 / 60)}분)...`);
+// ── DB(stock_prices)에서 일별시세 적재 ───────────────────────
+// 공공API 미사용. 매일 daily-ranking 잡이 적재한 stock_prices를 읽는다.
+async function buildPriceCacheFromDB() {
+  console.log(`[DB] stock_prices 읽는 중 (date >= ${BEGIN})...`);
   const cache = {};
-  let done = 0, ok = 0;
-  for (const s of universe) {
-    const hist = await fetchHistory(s.stock_code);
-    if (hist.length > 0) { cache[s.stock_code] = hist; ok++; }
-    if (++done % 100 === 0) process.stdout.write(`  ${done}/${universe.length} (유효 ${ok})\n`);
-    await sleep(FETCH_DELAY_MS);
+  const PAGE = 1000; // PostgREST 응답 최대 1000행 캡 → 페이지 크기 일치 필수
+  let total = 0;
+  for (let off = 0; ; off += PAGE) {
+    const rows = await dbSelect(
+      "stock_prices",
+      `select=stock_code,date,close&date=gte.${BEGIN}&order=stock_code.asc,date.asc&limit=${PAGE}&offset=${off}`,
+    );
+    for (const r of rows) {
+      const c = Number(r.close);
+      if (!(c > 0)) continue;
+      (cache[r.stock_code] ??= []).push({ date: String(r.date), close: c });
+    }
+    total += rows.length;
+    if (rows.length < PAGE) break;
   }
-  fs.writeFileSync(CACHE_FILE, JSON.stringify(cache));
-  console.log(`  → 시세 ${ok}종목 확보, 캐시 저장`);
+  // date 오름차순 보장 (쿼리 정렬돼 있지만 방어적으로)
+  for (const code of Object.keys(cache)) cache[code].sort((a, b) => a.date.localeCompare(b.date));
+  console.log(`  → ${Object.keys(cache).length}종목 · ${total}행 적재`);
   return cache;
 }
 
@@ -179,9 +155,10 @@ console.log(`기간: ${BEGIN} ~ ${END} (${LOOKBACK_DAYS}일) / 호라이즌 ${HO
 const universe = await loadUniverse();
 console.log(`[유니버스] sector+2025재무 보유 ${universe.length}종목`);
 
-const priceCache = await buildPriceCache(universe);
-const active = universe.filter((s) => priceCache[s.stock_code]?.length >= 60);
-console.log(`[유효] 60거래일+ 시세 보유 ${active.length}종목\n`);
+const priceCache = await buildPriceCacheFromDB();
+const MIN_HIST = Math.max(...MOM_LOOKBACKS) + Math.max(...HORIZONS); // 모멘텀+호라이즌 1회분 최소 거래일
+const active = universe.filter((s) => priceCache[s.stock_code]?.length >= MIN_HIST);
+console.log(`[유효] ${MIN_HIST}거래일+ 시세 보유 ${active.length}종목\n`);
 
 // 글로벌 거래일 캘린더 (시세 보유 종목들의 날짜 합집합, 빈도 상위)
 const dateFreq = new Map();

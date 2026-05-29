@@ -94,6 +94,15 @@ jobs:
           echo "=== backfill 완료 — 랭킹 재계산 ==="
           node daily-ranking.js --skip-price
 
+      - name: Save daily prices to stock_prices
+        if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'ranking'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          echo "=== 일별 종가 stock_prices 적재 ($(TZ='Asia/Seoul' date)) ==="
+          node save-prices.mjs
+
       - name: Report summary
         if: always()
         run: |
