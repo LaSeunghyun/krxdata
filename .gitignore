@@ -26,3 +26,15 @@ watchlist.json
 *.db
 *.db-shm
 *.db-wal
+
+# 하드코딩 시크릿 포함 — 커밋 금지 (키 로테이션 후 .env 전환 필요)
+audit.mjs
+audit2.mjs
+backtest-apr01.mjs
+backtest-longterm.mjs
+backtest.mjs
+
+# 백테스트·수집 캐시
+backtest-cache-*.json
+backtest_results.json
+.corp_full_cache.json
