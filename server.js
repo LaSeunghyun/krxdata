@@ -143,7 +143,9 @@ function runDailyRanking(mode) {
 
   const proc = spawn('node', args, {
     cwd: __dirname,
-    env: process.env
+    // KRX_MANAGED=1: 자식(daily-ranking)은 상태파일을 직접 쓰지 않음.
+    // 부모가 stdout을 파싱해 단독 기록 → read-modify-write 경합 방지.
+    env: { ...process.env, KRX_MANAGED: '1' }
   });
   activeProcess = proc;
 
@@ -257,6 +259,15 @@ app.get('/api/stream', (req, res) => {
 });
 
 // ---------- 시작 ----------
+// 서버 재시작 시 좀비 상태 정리: activeProcess는 메모리 변수라 재시작하면 사라지는데
+// 상태파일에 running:true가 남아 있으면 영원히 "실행 중"으로 표시되므로 초기화.
+(() => {
+  const s = loadStatus();
+  if (s.running) {
+    saveStatus({ ...s, running: false, current: '중단됨 (서버 재시작)' });
+  }
+})();
+
 const PORT = 7799;
 app.listen(PORT, () => {
   console.log(`KRXDATA Monitor → http://localhost:${PORT}`);

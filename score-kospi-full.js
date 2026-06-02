@@ -13,8 +13,9 @@ import fetch from "node-fetch";
 import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
-import { ANALYSIS_YEAR, ANALYSIS_YEAR_FALLBACK, SCORE_BATCH_SIZE, SCORE_DELAY_MS } from "./config.js";
+import { ANALYSIS_YEAR, ANALYSIS_YEAR_FALLBACK, SCORE_BATCH_SIZE, SCORE_DELAY_MS, FETCH_TIMEOUT_MS } from "./config.js";
 import { calcTargetPrice, buildRecommendation } from "./stock-utils.js";
+import { parseFinancials, scoreFinancialTrend, disclosureSentiment, GOOD_KEYWORDS, BAD_KEYWORDS } from "./scoring-core.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, ".env") });
@@ -41,7 +42,11 @@ const today  = () => ymd(new Date());
 const daysAgo= n => { const d = new Date(); d.setDate(d.getDate()-n); return ymd(d); };
 
 async function fetchJson(url, opts = {}) {
-  const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0", ...opts.headers }, timeout: 20000 });
+  // node-fetch v3는 `timeout` 옵션을 무시 → AbortSignal.timeout 사용
+  const res = await fetch(url, {
+    headers: { "User-Agent": "Mozilla/5.0", ...opts.headers },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
@@ -91,35 +96,7 @@ async function batchFinancials(allCorpCodes) {
   return allRows;
 }
 
-function parseFinancials(rows) {
-  const get = (...names) => {
-    for (const nm of names) {
-      const row = rows.find(r => r.account_nm?.trim() === nm && r.sj_div !== "CF");
-      if (row) return {
-        current:  Number(String(row.thstrm_amount  ?? "0").replace(/,/g, "")),
-        previous: Number(String(row.frmtrm_amount  ?? "0").replace(/,/g, "")),
-        before:   Number(String(row.bfefrmtrm_amount??"0").replace(/,/g, "")),
-      };
-    }
-    return null;
-  };
-  const getCF = nm => {
-    const row = rows.find(r => r.account_nm?.trim() === nm && r.sj_div === "CF");
-    return row ? Number(String(row.thstrm_amount ?? "0").replace(/,/g, "")) : null;
-  };
-  return {
-    revenue:     get("매출액"),
-    opIncome:    get("영업이익", "영업이익(손실)"),
-    netIncome:   get("당기순이익", "당기순이익(손실)"),
-    totalAsset:  get("자산총계"),
-    totalEquity: get("자본총계"),
-    totalDebt:   get("부채총계"),
-    curAsset:    get("유동자산"),
-    curLiab:     get("유동부채"),
-    retained:    get("이익잉여금"),
-    cfOps:       getCF("영업활동현금흐름"),
-  };
-}
+// parseFinancials는 scoring-core.js로 이동 (KOSDAQ와 공유)
 
 // ── 공공데이터포털 주식시세 API ───────────────────────────────
 async function getPublicDataQuote(stockCode) {
@@ -178,54 +155,15 @@ async function getMajorShareholders(corpCode) {
 
 // ══════ 점수 계산 ═════════════════════════════════════════
 
-function scoreMomentum(history) {
-  if (history.length < 20) return { score: 0, note: "데이터부족" };
-  const closes = history.map(r => Number(r.clpr));
-  const cur = closes[closes.length - 1];
-  const ma5  = closes.slice(-5).reduce((s,v)=>s+v,0) / 5;
-  const ma20 = closes.slice(-20).reduce((s,v)=>s+v,0) / 20;
-  const ma60 = closes.length >= 60 ? closes.slice(-60).reduce((s,v)=>s+v,0)/60 : null;
-  let aligned = 0;
-  if (cur > ma5) aligned++;
-  if (ma5 > ma20) aligned++;
-  if (ma60 && ma20 > ma60) aligned++;
-  const hi52 = Math.max(...closes), lo52 = Math.min(...closes);
-  const pos52 = hi52 > lo52 ? (cur - lo52) / (hi52 - lo52) : 0.5;
-  const dir5  = closes[closes.length-1] > closes[closes.length-6] ? 1 : 0;
-  const maScore  = aligned >= 3 ? 15 : aligned >= 2 ? 10 : aligned >= 1 ? 5 : 0;
-  const posScore = pos52 > 0.7 ? 10 : pos52 > 0.5 ? 7 : pos52 > 0.3 ? 4 : 2;
-  return { score: maScore + posScore + (dir5 ? 5 : 0), note: `MA정배열${aligned}/3, 52주${(pos52*100).toFixed(0)}%` };
-}
-
-function scoreVolume(history) {
-  if (history.length < 20) return { score: 0, note: "데이터부족" };
-  const vol20avg = history.slice(-20).reduce((s,r)=>s+Number(r.trqu),0)/20;
-  const vol5avg  = history.slice(-5).reduce((s,r)=>s+Number(r.trqu),0)/5;
-  const ratio    = vol20avg > 0 ? vol5avg / vol20avg : 1;
-  const burst    = history.slice(-5).some(r => Number(r.trqu) > vol20avg * 2);
-  const ratioScore = ratio>1.5?15:ratio>1.2?12:ratio>0.8?8:4;
-  return { score: ratioScore + (burst?7:3) + (vol5avg>vol20avg?3:0), note: `거래량비율${ratio.toFixed(2)}x${burst?' 급증':''}` };
-}
-
-function scoreVolatility(history) {
-  if (history.length < 20) return { score: 0, note: "데이터부족" };
-  const h20 = history.slice(-20);
-  const range20pct = (Math.max(...h20.map(r=>Number(r.hipr))) - Math.min(...h20.map(r=>Number(r.lopr)))) / Math.min(...h20.map(r=>Number(r.lopr))) * 100;
-  const closes = h20.map(r=>Number(r.clpr));
-  let peak = closes[0], mdd = 0;
-  for (const c of closes) { peak=Math.max(peak,c); mdd=Math.min(mdd,(c-peak)/peak*100); }
-  const rangeScore = range20pct<15?12:range20pct<25?9:range20pct<35?5:2;
-  return { score: rangeScore + (mdd>-5?8:mdd>-10?6:mdd>-20?3:0), note: `변동폭${range20pct.toFixed(1)}%,MDD${mdd.toFixed(1)}%` };
-}
+// NOTE: 단기 기술지표(모멘텀/거래량/변동성)는 이 스크립트에서 주가 이력을 수집하지 않아
+//       산출하지 않는다. 해당 신호는 daily-ranking.js의 52주 위치 기반 SQL이 담당한다.
 
 function scoreDisclosure(disclosures) {
-  const GOOD = ["자기주식","수주","실적","흑자","배당","취득"];
-  const BAD  = ["유상증자","소송","대주주매도","적자","불성실"];
   let good=0, bad=0;
   for (const d of disclosures) {
     const t = d.report_nm ?? "";
-    if (GOOD.some(k=>t.includes(k))) good++;
-    if (BAD.some(k=>t.includes(k)))  bad++;
+    if (GOOD_KEYWORDS.some(k=>t.includes(k))) good++;
+    if (BAD_KEYWORDS.some(k=>t.includes(k)))  bad++;
   }
   const cnt = disclosures.length;
   return { score: Math.max(0,Math.min(15,(cnt>5?5:cnt>2?4:cnt>0?2:0)+Math.min(7,good*3)-Math.min(5,bad*2)+3)),
@@ -234,10 +172,13 @@ function scoreDisclosure(disclosures) {
 
 function scoreFinancialHealth(fin) {
   let score=0; const notes=[];
-  if (fin.totalDebt && fin.totalEquity) {
+  // 자본총계 > 0 가드: 자본잠식(자본 음수) 종목이 음수 부채비율로 최고점을 받는 버그 방지
+  if (fin.totalDebt && fin.totalEquity && fin.totalEquity.current > 0) {
     const r = fin.totalDebt.current/fin.totalEquity.current*100;
     score += r<100?10:r<200?7:r<300?3:0;
     notes.push(`부채${r.toFixed(0)}%`);
+  } else if (fin.totalEquity && fin.totalEquity.current <= 0) {
+    notes.push("자본잠식");
   }
   if (fin.curAsset && fin.curLiab && fin.curLiab.current>0) {
     const r = fin.curAsset.current/fin.curLiab.current*100;
@@ -312,59 +253,7 @@ function scoreShareholders(shareholders) {
   return { score: Math.min(12,score), note: `최대주주${max.r.toFixed(1)}%${hasInst?',기관보유':''}` };
 }
 
-// ── 다년도 성장·안정성 추세 (DB 이력 기반, max 18점) ─────
-function scoreFinancialTrend(history) {
-  if (!history || history.length < 2) return { score: null, note: "이력없음", maxScore: 0 };
-  const sorted = [...history].sort((a, b) => b.analysis_year - a.analysis_year);
-  let score = 0;
-  const notes = [];
-
-  // ① 매출 성장 흐름 (max 4, +3% 이상만 성장으로 인정)
-  const revs = sorted.filter(h => h.revenue > 0);
-  if (revs.length >= 2) {
-    const growYears = revs.slice(0, -1).filter((h, i) =>
-      (h.revenue - revs[i + 1].revenue) / revs[i + 1].revenue * 100 >= 3
-    ).length;
-    score += growYears >= 2 ? 4 : growYears >= 1 ? 2 : 0;
-    notes.push(`매출성장${growYears}년`);
-  }
-
-  // ② 영업이익 성장 흐름 (max 4, +3% 이상만 인정)
-  const ops = sorted.filter(h => h.op_income !== null && h.op_income > 0);
-  if (ops.length >= 2) {
-    const growYears = ops.slice(0, -1).filter((h, i) =>
-      (h.op_income - ops[i + 1].op_income) / Math.abs(ops[i + 1].op_income) * 100 >= 3
-    ).length;
-    score += growYears >= 2 ? 4 : growYears >= 1 ? 2 : 0;
-    notes.push(`영업이익성장${growYears}년`);
-  }
-
-  // ③ 부채비율 개선 추세 (max 3, 낮을수록 좋음)
-  const debts = sorted.filter(h => h.debt_ratio !== null);
-  if (debts.length >= 2) {
-    const improving = debts.slice(0, -1).filter((h, i) => h.debt_ratio < debts[i + 1].debt_ratio).length;
-    score += improving >= 2 ? 3 : improving >= 1 ? 2 : 0;
-    notes.push(`부채${improving >= 1 ? '개선' : '악화'}`);
-  }
-
-  // ④ 유동비율 개선 추세 (max 2, 높을수록 좋음)
-  const curs = sorted.filter(h => h.cur_ratio !== null);
-  if (curs.length >= 2) {
-    const improving = curs.slice(0, -1).filter((h, i) => h.cur_ratio > curs[i + 1].cur_ratio).length;
-    score += improving >= 1 ? 2 : 0;
-    notes.push(`유동${improving >= 1 ? '개선' : '악화'}`);
-  }
-
-  // ⑤ 영업현금흐름 지속성 (max 5, 가장 조작 어려운 품질 신호)
-  const cfs = sorted.filter(h => h.cf_ops !== null);
-  if (cfs.length >= 1) {
-    const posCount = cfs.filter(h => h.cf_ops > 0).length;
-    score += posCount === cfs.length ? 5 : posCount >= cfs.length * 0.7 ? 3 : posCount > 0 ? 1 : 0;
-    notes.push(`현금흐름${posCount}/${cfs.length}년+`);
-  }
-
-  return { score: Math.min(18, score), note: notes.join(","), maxScore: 18 };
-}
+// scoreFinancialTrend는 scoring-core.js로 이동 (KOSDAQ와 공유)
 
 // ── DB upsert helpers ────────────────────────────────────
 async function upsertTable(table, rows) {
@@ -501,6 +390,7 @@ async function main() {
   const finBatch = [];
   const histBatch = [];
   const discBatch = [];
+  const failCounts = { quote: 0, disclosure: 0, shareholder: 0 }; // API 실패 추적
 
   for (let i = 0; i < companies.length; i++) {
     const s = companies[i];
@@ -508,20 +398,17 @@ async function main() {
 
     let quote=null, disclosures=[], shareholders=[], marketCap=0;
 
-    try { quote = await getPublicDataQuote(s.stockCode); } catch { /* 무시 */ }
+    try { quote = await getPublicDataQuote(s.stockCode); } catch { failCounts.quote++; }
     if (quote) marketCap = quote.marketCap;
 
     await sleep(150);
-    try { disclosures = await getDisclosures(s.corp_code); } catch { /* 무시 */ }
-    try { shareholders = await getMajorShareholders(s.corp_code); } catch { /* 무시 */ }
+    try { disclosures = await getDisclosures(s.corp_code); } catch { failCounts.disclosure++; }
+    try { shareholders = await getMajorShareholders(s.corp_code); } catch { failCounts.shareholder++; }
     await sleep(DELAY_MS);
 
     const currentPrice = quote?.price ?? 0;
 
-    // 단기 (기술지표 제외 — 이력 데이터 불필요한 항목만)
-    const momentum   = { score: 0, note: "이력미수집" };
-    const volume     = { score: 0, note: "이력미수집" };
-    const volatility = { score: 0, note: "이력미수집" };
+    // 단기 (기술지표는 미수집 — daily-ranking.js의 52주 SQL이 담당)
     const disclosure = scoreDisclosure(disclosures);
     const shortTotal = disclosure.score;
 
@@ -546,9 +433,6 @@ async function main() {
       totalScore, shortScore: shortTotal, longScore: longTotal,
       generatedAt: new Date().toISOString(),
       detail: {
-        단기_기술모멘텀:  { score: momentum.score,   max:30, note: momentum.note },
-        단기_거래량수급:  { score: volume.score,     max:25, note: volume.note },
-        단기_변동성:     { score: volatility.score,  max:20, note: volatility.note },
         단기_공시이벤트:  { score: disclosure.score, max:15, note: disclosure.note },
         중장기_재무건전성: { score: health.score,    max:25, note: health.note },
         중장기_수익성:   { score: profit.score,      max:25, note: profit.note },
@@ -666,6 +550,7 @@ async function main() {
     ].join(" "));
   }
   console.log(`\n저장: scored-kospi-full.json | DB upsert 완료`);
+  console.log(`수집 실패 — 시세:${failCounts.quote} 공시:${failCounts.disclosure} 주주:${failCounts.shareholder}`);
 }
 
 main().catch(e => { console.error("오류:", e); process.exit(1); });

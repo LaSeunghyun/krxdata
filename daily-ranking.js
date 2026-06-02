@@ -8,10 +8,20 @@ import { writeFileSync, existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import dotenv from 'dotenv';
+import {
+  ANALYSIS_YEAR_NUM as YEAR,
+  ANALYSIS_YEAR_PREV as YEAR_PREV,
+  ANALYSIS_YEAR_PREV2 as YEAR_PREV2,
+  FETCH_TIMEOUT_MS,
+} from './config.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STATUS_FILE = join(__dirname, '.update-status.json');
 dotenv.config({ path: join(__dirname, '.env') });
+
+// server.js가 자식으로 실행할 때(KRX_MANAGED=1)는 부모가 stdout을 파싱해
+// 상태파일을 단독 기록한다. 동시 read-modify-write 경합을 막기 위해 자식은 기록하지 않음.
+const STATUS_MANAGED = process.env.KRX_MANAGED === '1';
 
 function loadStatus() {
   try {
@@ -21,17 +31,34 @@ function loadStatus() {
 }
 
 function patchStatus(patch) {
+  if (STATUS_MANAGED) return; // 부모(server.js)가 단독 기록
   try {
     const prev = loadStatus();
     writeFileSync(STATUS_FILE, JSON.stringify({ ...prev, ...patch }, null, 2), 'utf-8');
   } catch {}
 }
 
-const SUPABASE_URL = process.env.SUPABASE_URL || "https://onxkbuecwbcueuhwnowx.supabase.co";
-const SUPABASE_KEY = process.env.SUPABASE_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9ueGtidWVjd2JjdWV1aHdub3d4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDcyMjU3NDgsImV4cCI6MjA2MjgwMTc0OH0.r-7oRLJMaiWKiDB73A5XLhHFqSuNmXrQdv1QpxsEiJE";
-const PUBLIC_KEY = process.env.PUBLIC_DATA_API_KEY || "buKN%2Fk5k1%2F0CaFK%2Bf2bgOyHrspRaL8NZE3sLKYtPIzKuvzMbE2W3MZJBkiL9djHpO3ugUgS3ph8rpuhX1PgG2w%3D%3D";
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_KEY ?? process.env.SUPABASE_SERVICE_KEY;
+const PUBLIC_KEY = process.env.PUBLIC_DATA_API_KEY;
 const PUBLIC_BASE = "https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService";
-const DART_KEY = process.env.DART_API_KEY || "23a669211c9cbad873d5e65dcafa85de7626da92";
+const DART_KEY = process.env.DART_API_KEY;
+
+const SUPABASE_MANAGEMENT_KEY = process.env.SUPABASE_MANAGEMENT_KEY;
+const SUPABASE_PROJECT_REF = process.env.SUPABASE_PROJECT_REF;
+
+const _missing = [
+  ["SUPABASE_URL", SUPABASE_URL],
+  ["SUPABASE_KEY(또는 SUPABASE_SERVICE_KEY)", SUPABASE_KEY],
+  ["PUBLIC_DATA_API_KEY", PUBLIC_KEY],
+  ["DART_API_KEY", DART_KEY],
+  ["SUPABASE_MANAGEMENT_KEY", SUPABASE_MANAGEMENT_KEY],
+  ["SUPABASE_PROJECT_REF", SUPABASE_PROJECT_REF],
+].filter(([, v]) => !v).map(([k]) => k);
+if (_missing.length) {
+  console.error(`환경변수 미설정: ${_missing.join(", ")} — .env를 확인하세요.`);
+  process.exit(1);
+}
 
 function today() { return new Date().toISOString().slice(0,10).replace(/-/g,''); }
 function daysAgo(n) {
@@ -39,6 +66,10 @@ function daysAgo(n) {
   return d.toISOString().slice(0,10).replace(/-/g,'');
 }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+// 타임아웃 내장 fetch — API 무응답 시 withConcurrency 전체가 멈추는 것 방지
+function fetchT(url, opts = {}, timeoutMs = FETCH_TIMEOUT_MS) {
+  return fetch(url, { ...opts, signal: AbortSignal.timeout(timeoutMs) });
+}
 export function shouldRefresh52w(argv = process.argv.slice(2)) {
   const skipPrice = argv.includes('--skip-price');
   return !skipPrice || argv.includes('--refresh-52w');
@@ -48,25 +79,22 @@ export function shouldRunPriceUpdate(argv = process.argv.slice(2)) {
   return !argv.includes('--skip-price') || argv.includes('--refresh-52w');
 }
 
-const SUPABASE_MANAGEMENT_KEY = process.env.SUPABASE_MANAGEMENT_KEY;
-const SUPABASE_PROJECT_REF = process.env.SUPABASE_PROJECT_REF || "onxkbuecwbcueuhwnowx";
-
 async function dbQuery(sql) {
-  const res = await fetch(`https://api.supabase.com/v1/projects/${SUPABASE_PROJECT_REF}/database/query`, {
+  const res = await fetchT(`https://api.supabase.com/v1/projects/${SUPABASE_PROJECT_REF}/database/query`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${SUPABASE_MANAGEMENT_KEY}`,
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({ query: sql })
-  });
+  }, 60_000);
   const data = await res.json();
   if (!Array.isArray(data)) throw new Error(data?.message ?? 'DB 쿼리 오류');
   return data;
 }
 
 async function upsert(table, rows, onConflict) {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+  const res = await fetchT(`${SUPABASE_URL}/rest/v1/${table}`, {
     method: 'POST',
     headers: {
       'apikey': SUPABASE_KEY,
@@ -92,16 +120,23 @@ async function getPublicDataQuote(stockCode, fetch52w = false) {
     url.searchParams.set("beginBasDt", fetch52w ? daysAgo(365) : daysAgo(7));
     url.searchParams.set("endBasDt", today());
     url.searchParams.set("likeIsinCd", `KR7${stockCode}`);
-    const r = await fetch(url.toString());
+    const r = await fetchT(url.toString());
     const data = await r.json();
     const items = data?.response?.body?.items?.item ?? [];
     const arr = Array.isArray(items) ? items : [items];
     const filtered = arr.filter(r => r.srtnCd === stockCode).sort((a, b) => b.basDt.localeCompare(a.basDt));
     const item = filtered[0];
     if (!item) return null;
+    const price = parseInt(item.clpr, 10);
+    let marketCap = parseInt(item.mrktTotAmt, 10);
+    // mrktTotAmt 누락 시 상장주식수×종가로 추산, 그래도 안 되면 0 (NaN이 SQL에 흘러들어 배치 전체가 깨지는 것 방지)
+    if (!Number.isFinite(marketCap)) {
+      const shares = parseInt(item.lstgStCnt ?? "0", 10);
+      marketCap = Number.isFinite(shares) && Number.isFinite(price) ? shares * price : 0;
+    }
     const result = {
-      price: parseInt(item.clpr, 10),
-      market_cap: parseInt(item.mrktTotAmt, 10),
+      price,
+      market_cap: marketCap,
       base_date: item.basDt
     };
     if (fetch52w && filtered.length > 1) {
@@ -145,40 +180,49 @@ async function updatePrices() {
   const SQL_BATCH = 200;  // SQL upsert 묶음 크기
 
   const buffer = []; // { code, price, cap, high, low }
-  const bufferLock = { flushing: false };
+  // flush를 promise 체인으로 직렬화 — withConcurrency 병렬 태스크가 동시에 flush를
+  // 트리거해도 한 번에 하나씩만 실행되며, 드롭 없이 순차 처리된다.
+  let flushChain = Promise.resolve();
+  const num = v => (Number.isFinite(v) ? v : 'NULL'); // 비정상 숫자는 NULL로 (배치 전체 깨짐 방지)
 
-  async function flushBuffer() {
-    if (!buffer.length || bufferLock.flushing) return;
-    bufferLock.flushing = true;
+  function flushBuffer() {
+    if (!buffer.length) return flushChain;
     const rows = buffer.splice(0, buffer.length);
-    const vals = rows.map(r =>
-      `('${r.code}', ${r.price}, ${r.cap}` +
-      (r.high != null ? `, ${r.high}, ${r.low}, TRUE` : `, NULL, NULL, FALSE`) +
-      `)`
-    ).join(',\n');
-    await dbQuery(`
-      UPDATE stock_analysis AS sa
-      SET current_price     = v.current_price,
-          market_cap_tril   = v.market_cap_tril,
-          high_52w          = COALESCE(v.high_52w, sa.high_52w),
-          low_52w           = COALESCE(v.low_52w, sa.low_52w),
-          week52_updated_at = CASE WHEN v.refreshed THEN NOW() ELSE sa.week52_updated_at END,
-          updated_at        = NOW()
-      FROM (
-        VALUES ${vals}
-      ) AS v(stock_code, current_price, market_cap_tril, high_52w, low_52w, refreshed)
-      WHERE sa.stock_code = v.stock_code
-    `);
-    bufferLock.flushing = false;
+    flushChain = flushChain.then(async () => {
+      const vals = rows
+        // stock_code 화이트리스트 검증 (raw SQL 보간이므로 방어)
+        .filter(r => /^[A-Za-z0-9]{5,6}$/.test(r.code) && Number.isFinite(r.price))
+        .map(r =>
+          `('${r.code}', ${num(r.price)}, ${num(r.cap)}` +
+          (r.high != null ? `, ${num(r.high)}, ${num(r.low)}, TRUE` : `, NULL, NULL, FALSE`) +
+          `)`
+        ).join(',\n');
+      if (!vals) return;
+      await dbQuery(`
+        UPDATE stock_analysis AS sa
+        SET current_price     = v.current_price,
+            market_cap_tril   = v.market_cap_tril,
+            high_52w          = COALESCE(v.high_52w, sa.high_52w),
+            low_52w           = COALESCE(v.low_52w, sa.low_52w),
+            week52_updated_at = CASE WHEN v.refreshed THEN NOW() ELSE sa.week52_updated_at END,
+            updated_at        = NOW()
+        FROM (
+          VALUES ${vals}
+        ) AS v(stock_code, current_price, market_cap_tril, high_52w, low_52w, refreshed)
+        WHERE sa.stock_code = v.stock_code
+      `);
+    });
+    return flushChain;
   }
 
   const tasks = codes.map(code => async () => {
     const q = await getPublicDataQuote(code, refresh52w);
     if (q && q.price > 0) {
+      const cap = parseFloat((q.market_cap / 1e12).toFixed(4));
       buffer.push({
         code,
         price: q.price,
-        cap: parseFloat((q.market_cap / 1e12).toFixed(4)),
+        cap: Number.isFinite(cap) ? cap : 0,
         high: q.high_52w ?? null,
         low:  q.low_52w  ?? null,
       });
@@ -337,7 +381,7 @@ async function computeAndSaveRankings() {
         END
         , 1) AS undervalue_score
       FROM stock_analysis sa
-      JOIN stock_financials sf ON sa.stock_code = sf.stock_code AND sf.analysis_year = 2025
+      JOIN stock_financials sf ON sa.stock_code = sf.stock_code AND sf.analysis_year = ${YEAR}
       LEFT JOIN sector_stats ss ON sa.sector = ss.sector AND sa.mrkt_ctg = ss.mrkt_ctg
       WHERE sa.current_price > 0
         AND sf.pbr > 0 AND sf.pbr < 100
@@ -388,7 +432,9 @@ async function computeAndSaveRankings() {
   return r;
 }
 
-// STEP 2.1: op_income_yoy 계산 — 2024/2025 op_income 교차 업데이트
+// STEP 2.1: op_income_yoy 계산 — 직전연도 대비 교차 업데이트
+// NOTE: op_income_yoy IS NULL 가드를 제거해 매 실행마다 재계산한다.
+//       (재무 재적재 시에도 stale 값이 고착되지 않도록)
 async function calcOpIncomeYoy() {
   const r = await dbQuery(`
     UPDATE stock_financials f25
@@ -398,14 +444,13 @@ async function calcOpIncomeYoy() {
     )
     FROM stock_financials f24
     WHERE f25.stock_code     = f24.stock_code
-      AND f25.analysis_year  = 2025
-      AND f24.analysis_year  = 2024
+      AND f25.analysis_year  = ${YEAR}
+      AND f24.analysis_year  = ${YEAR_PREV}
       AND f25.op_income      IS NOT NULL
       AND f24.op_income      IS NOT NULL
       AND f24.op_income     != 0
-      AND f25.op_income_yoy  IS NULL
   `);
-  // 2023→2024도 동일 처리
+  // 전전연도 → 직전연도도 동일 처리
   await dbQuery(`
     UPDATE stock_financials f24
     SET op_income_yoy = ROUND(
@@ -414,15 +459,14 @@ async function calcOpIncomeYoy() {
     )
     FROM stock_financials f23
     WHERE f24.stock_code     = f23.stock_code
-      AND f24.analysis_year  = 2024
-      AND f23.analysis_year  = 2023
+      AND f24.analysis_year  = ${YEAR_PREV}
+      AND f23.analysis_year  = ${YEAR_PREV2}
       AND f24.op_income      IS NOT NULL
       AND f23.op_income      IS NOT NULL
       AND f23.op_income     != 0
-      AND f24.op_income_yoy  IS NULL
   `);
   const remaining = await dbQuery(
-    `SELECT COUNT(*) cnt FROM stock_financials WHERE analysis_year=2025 AND op_income_yoy IS NULL`
+    `SELECT COUNT(*) cnt FROM stock_financials WHERE analysis_year=${YEAR} AND op_income_yoy IS NULL`
   );
   console.log(`[YoY 계산 완료] 남은 NULL: ${remaining[0]?.cnt ?? '?'}건 (2024 데이터 없는 종목)`);
 }
@@ -441,7 +485,8 @@ function getSectorMultiplier(sector, corpName) {
 
 // 목표가 계산 (Codex v5: 섹터 멀티플 적용)
 // score 80 / mult 1.0 → 1M: +8.0%, 3M: +32.0%, 1Y: +64.0%
-function calcTargetPrice(currentPrice, undervalueScore, period = '1m', sector = null, corpName = null) {
+// NOTE: stock-utils.js의 calcTargetPrice(EPS·PER 기반)와 다른 로직 — undervalue_score 기반 목표가
+function calcTargetByScore(currentPrice, undervalueScore, period = '1m', sector = null, corpName = null) {
   if (!currentPrice || !undervalueScore || undervalueScore <= 0) return null;
   const coeff = period === '1y' ? 0.80 : period === '3m' ? 0.40 : 0.10;
   const mult = getSectorMultiplier(sector, corpName);
@@ -460,7 +505,7 @@ async function checkMarketRegime() {
     url.searchParams.set("beginBasDt", daysAgo(30));
     url.searchParams.set("endBasDt", today());
     url.searchParams.set("likeIsinCd", "KR7005930");
-    const r = await fetch(url.toString());
+    const r = await fetchT(url.toString());
     const data = await r.json();
     const items = data?.response?.body?.items?.item ?? [];
     const arr = (Array.isArray(items) ? items : [items])
@@ -509,8 +554,8 @@ async function detectBigBathRecovery() {
              sf25.debt_ratio AS debt_ratio,
              sf24.op_margin  AS op_margin_2024
       FROM stock_analysis sa
-      JOIN stock_financials sf25 ON sa.stock_code = sf25.stock_code AND sf25.analysis_year = 2025
-      JOIN stock_financials sf24 ON sa.stock_code = sf24.stock_code AND sf24.analysis_year = 2024
+      JOIN stock_financials sf25 ON sa.stock_code = sf25.stock_code AND sf25.analysis_year = ${YEAR}
+      JOIN stock_financials sf24 ON sa.stock_code = sf24.stock_code AND sf24.analysis_year = ${YEAR_PREV}
       WHERE sf25.op_margin < 0
         AND sf24.op_margin > 0
         AND (sf25.debt_ratio IS NULL OR sf25.debt_ratio < 350)
@@ -530,7 +575,7 @@ async function detectBigBathRecovery() {
         const end = today();
         const url = `https://opendart.fss.or.kr/api/list.json?crtfc_key=${DART_KEY}` +
                     `&stock_code=${s.stock_code}&bgn_de=${bgn}&end_de=${end}&page_count=10`;
-        const r   = await fetch(url);
+        const r   = await fetchT(url);
         const d   = await r.json();
         const items = d?.list ?? [];
 
@@ -624,9 +669,9 @@ async function printChangeReport() {
     const change = c.rank_change === null ? "NEW" :
       c.rank_change > 0 ? `▲${c.rank_change}` :
       c.rank_change < 0 ? `▼${Math.abs(c.rank_change)}` : "─";
-    const t1m = calcTargetPrice(c.current_price, c.undervalue_score, '1m', c.sector, c.corp_name);
-    const t3m = calcTargetPrice(c.current_price, c.undervalue_score, '3m', c.sector, c.corp_name);
-    const t1y = calcTargetPrice(c.current_price, c.undervalue_score, '1y', c.sector, c.corp_name);
+    const t1m = calcTargetByScore(c.current_price, c.undervalue_score, '1m', c.sector, c.corp_name);
+    const t3m = calcTargetByScore(c.current_price, c.undervalue_score, '3m', c.sector, c.corp_name);
+    const t1y = calcTargetByScore(c.current_price, c.undervalue_score, '1y', c.sector, c.corp_name);
     const fmt = (t, base) => t ? `${t.toLocaleString()}(+${((t-base)/base*100).toFixed(1)}%)` : '-';
     const weight = c.rank_today <= 10 ? '10%' : ' 5%';
     console.log(
