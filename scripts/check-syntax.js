@@ -8,16 +8,23 @@ const projectRoot = path.resolve(__dirname, "..");
 const files = [
   "batch.js",
   "config.js",
+  "daily-ranking.js",
+  "dart-financials-backfill.js",
   "db-upsert.js",
   "db.js",
+  "mcp-input.js",
   "mcp-server.js",
   "patch-marketcap.js",
   "push-to-supabase.mjs",
   "score-kosdaq.js",
   "score-kospi-full.js",
   "score-top100.js",
+  "server.js",
   "stock-utils.js",
   "test-filter.js",
+  "verify-supabase.mjs",
+  "tests/data-refresh.test.js",
+  "tests/mcp-input.test.js",
   "tests/project-contract.test.js",
 ];
 

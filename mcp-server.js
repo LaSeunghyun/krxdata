@@ -23,6 +23,13 @@ import {
 import { fileURLToPath } from "url";
 import path from "path";
 import dotenv from "dotenv";
+import {
+  escapeSqlLiteral,
+  parseFinancialYear,
+  parseMarket,
+  parseOptionalSqlText,
+  parseRankingLimit,
+} from "./mcp-input.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, ".env") });
@@ -113,14 +120,14 @@ const server = new Server(
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
-  const { name, arguments: args } = req.params;
+  const { name, arguments: args = {} } = req.params;
 
   try {
     // ── get_stock_info ─────────────────────────────────────
     if (name === "get_stock_info") {
       const code = String(args.stock_code ?? "").trim();
       if (!/^\d{6}$/.test(code)) throw new Error("stock_code는 6자리 숫자여야 합니다");
-      const year = args.year ?? 2024;
+      const year = parseFinancialYear(args.year);
 
       const rows = await dbQuery(`
         SELECT
@@ -189,9 +196,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
     // ── search_stocks ──────────────────────────────────────
     if (name === "search_stocks") {
-      const q = String(args.name ?? "").trim().replace(/'/g, "''");
+      const q = escapeSqlLiteral(String(args.name ?? "").trim());
       if (!q) throw new Error("name을 입력하세요");
-      const marketFilter = args.market ? `AND sa.mrkt_ctg = '${args.market}'` : "";
+      const market = parseMarket(args.market);
+      const marketFilter = market ? `AND sa.mrkt_ctg = '${market}'` : "";
 
       const rows = await dbQuery(`
         SELECT sa.stock_code, sa.corp_name, sa.mrkt_ctg, sa.sector,
@@ -216,9 +224,11 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
     // ── get_rankings ───────────────────────────────────────
     if (name === "get_rankings") {
-      const top = Math.min(args.top ?? 20, 100);
-      const sectorFilter = args.sector ? `AND dr.sector = '${args.sector}'` : "";
-      const marketFilter = args.market ? `AND dr.mrkt_ctg = '${args.market}'` : "";
+      const top = parseRankingLimit(args.top);
+      const sector = parseOptionalSqlText(args.sector, "sector");
+      const market = parseMarket(args.market);
+      const sectorFilter = sector ? `AND dr.sector = '${sector}'` : "";
+      const marketFilter = market ? `AND dr.mrkt_ctg = '${market}'` : "";
 
       const rows = await dbQuery(`
         SELECT rank, stock_code, corp_name, mrkt_ctg, sector,
@@ -240,9 +250,11 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
     // ── get_sector_stats ───────────────────────────────────
     if (name === "get_sector_stats") {
-      const marketFilter = args.market ? `WHERE mrkt_ctg = '${args.market}'` : "";
-      const sectorFilter = args.sector
-        ? (marketFilter ? `AND sector = '${args.sector}'` : `WHERE sector = '${args.sector}'`)
+      const market = parseMarket(args.market);
+      const sector = parseOptionalSqlText(args.sector, "sector");
+      const marketFilter = market ? `WHERE mrkt_ctg = '${market}'` : "";
+      const sectorFilter = sector
+        ? (marketFilter ? `AND sector = '${sector}'` : `WHERE sector = '${sector}'`)
         : "";
 
       const rows = await dbQuery(`

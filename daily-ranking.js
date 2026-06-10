@@ -47,17 +47,23 @@ const DART_KEY = process.env.DART_API_KEY;
 const SUPABASE_MANAGEMENT_KEY = process.env.SUPABASE_MANAGEMENT_KEY;
 const SUPABASE_PROJECT_REF = process.env.SUPABASE_PROJECT_REF;
 
-const _missing = [
-  ["SUPABASE_URL", SUPABASE_URL],
-  ["SUPABASE_KEY(또는 SUPABASE_SERVICE_KEY)", SUPABASE_KEY],
-  ["PUBLIC_DATA_API_KEY", PUBLIC_KEY],
-  ["DART_API_KEY", DART_KEY],
-  ["SUPABASE_MANAGEMENT_KEY", SUPABASE_MANAGEMENT_KEY],
-  ["SUPABASE_PROJECT_REF", SUPABASE_PROJECT_REF],
-].filter(([, v]) => !v).map(([k]) => k);
-if (_missing.length) {
-  console.error(`환경변수 미설정: ${_missing.join(", ")} — .env를 확인하세요.`);
-  process.exit(1);
+export function getMissingDailyRankingEnv(env = process.env) {
+  const supabaseKey = env.SUPABASE_KEY ?? env.SUPABASE_SERVICE_KEY;
+  return [
+    ["SUPABASE_URL", env.SUPABASE_URL],
+    ["SUPABASE_KEY(또는 SUPABASE_SERVICE_KEY)", supabaseKey],
+    ["PUBLIC_DATA_API_KEY", env.PUBLIC_DATA_API_KEY],
+    ["DART_API_KEY", env.DART_API_KEY],
+    ["SUPABASE_MANAGEMENT_KEY", env.SUPABASE_MANAGEMENT_KEY],
+    ["SUPABASE_PROJECT_REF", env.SUPABASE_PROJECT_REF],
+  ].filter(([, v]) => !v).map(([k]) => k);
+}
+
+function ensureDailyRankingEnv() {
+  const missing = getMissingDailyRankingEnv();
+  if (missing.length) {
+    throw new Error(`환경변수 미설정: ${missing.join(", ")} — .env를 확인하세요.`);
+  }
 }
 
 function today() { return new Date().toISOString().slice(0,10).replace(/-/g,''); }
@@ -246,18 +252,8 @@ async function updatePrices() {
 }
 
 // STEP 2: 저평가 전체 랭킹 계산 + DB 저장
-async function computeAndSaveRankings() {
-  console.log(`[랭킹 계산] 시작`);
-  patchStatus({ progress: 60, current: '랭킹 계산 중...' });
-  // 오늘 데이터 초기화 후 재삽입 (이전 실행 잔여 데이터 제거)
-  await dbQuery(`DELETE FROM daily_rankings WHERE rank_date = CURRENT_DATE`);
-
-  const r = await dbQuery(`
-    INSERT INTO daily_rankings (
-      rank_date, rank, stock_code, corp_name, mrkt_ctg, sector,
-      current_price, market_cap_tril, pbr, per, roe, op_margin, debt_ratio,
-      undervalue_score, total_score, sector_avg_pbr, sector_avg_per
-    )
+export function buildRankingsRefreshSql() {
+  return `
     WITH scored AS (
       SELECT
         sa.stock_code,
@@ -406,25 +402,48 @@ async function computeAndSaveRankings() {
         AND NOT (sf.cf_ops < 0 AND sf.pbr < 0.5)
         -- 매출·이익 동반 급감 제외
         AND NOT (sf.revenue_yoy < -20 AND sf.op_income_yoy < -30)
+    ),
+    upserted AS (
+      INSERT INTO daily_rankings (
+        rank_date, rank, stock_code, corp_name, mrkt_ctg, sector,
+        current_price, market_cap_tril, pbr, per, roe, op_margin, debt_ratio,
+        undervalue_score, total_score, sector_avg_pbr, sector_avg_per
+      )
+      SELECT
+        CURRENT_DATE,
+        ROW_NUMBER() OVER (ORDER BY undervalue_score DESC NULLS LAST),
+        stock_code, corp_name, mrkt_ctg, sector,
+        current_price, market_cap_tril, pbr, per, roe, op_margin, debt_ratio,
+        undervalue_score, total_score, sector_avg_pbr, sector_avg_per
+      FROM scored
+      WHERE undervalue_score IS NOT NULL
+      ON CONFLICT (rank_date, stock_code) DO UPDATE SET
+        rank = EXCLUDED.rank,
+        undervalue_score = EXCLUDED.undervalue_score,
+        current_price = EXCLUDED.current_price,
+        market_cap_tril = EXCLUDED.market_cap_tril,
+        pbr = EXCLUDED.pbr,
+        per = EXCLUDED.per,
+        roe = EXCLUDED.roe
+      RETURNING rank, stock_code, corp_name, undervalue_score
+    ),
+    deleted AS (
+      DELETE FROM daily_rankings d
+      WHERE d.rank_date = CURRENT_DATE
+        AND NOT EXISTS (
+          SELECT 1 FROM upserted u
+          WHERE u.stock_code = d.stock_code
+        )
+      RETURNING 1
     )
-    SELECT
-      CURRENT_DATE,
-      ROW_NUMBER() OVER (ORDER BY undervalue_score DESC NULLS LAST),
-      stock_code, corp_name, mrkt_ctg, sector,
-      current_price, market_cap_tril, pbr, per, roe, op_margin, debt_ratio,
-      undervalue_score, total_score, sector_avg_pbr, sector_avg_per
-    FROM scored
-    WHERE undervalue_score IS NOT NULL
-    ON CONFLICT (rank_date, stock_code) DO UPDATE SET
-      rank = EXCLUDED.rank,
-      undervalue_score = EXCLUDED.undervalue_score,
-      current_price = EXCLUDED.current_price,
-      market_cap_tril = EXCLUDED.market_cap_tril,
-      pbr = EXCLUDED.pbr,
-      per = EXCLUDED.per,
-      roe = EXCLUDED.roe
-    RETURNING rank, stock_code, corp_name, undervalue_score
-  `);
+    SELECT rank, stock_code, corp_name, undervalue_score FROM upserted
+  `;
+}
+
+async function computeAndSaveRankings() {
+  console.log(`[랭킹 계산] 시작`);
+  patchStatus({ progress: 60, current: '랭킹 계산 중...' });
+  const r = await dbQuery(buildRankingsRefreshSql());
 
   if (!Array.isArray(r)) { console.error("랭킹 오류:", r); return []; }
   console.log(`[랭킹 저장 완료] ${r.length}건`);
@@ -732,6 +751,8 @@ async function main() {
   }
 
   try {
+    ensureDailyRankingEnv();
+
     if (runPriceUpdate) {
       await updatePrices();
     } else {

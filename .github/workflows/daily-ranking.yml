@@ -67,6 +67,7 @@ jobs:
           PUBLIC_DATA_API_KEY: ${{ secrets.PUBLIC_DATA_API_KEY }}
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
           SUPABASE_MANAGEMENT_KEY: ${{ secrets.SUPABASE_MANAGEMENT_KEY }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
         run: |
           echo "=== 가격+랭킹 업데이트 시작 ($(TZ='Asia/Seoul' date)) ==="
           node daily-ranking.js${{ github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_52w == 'true' && ' --refresh-52w' || '' }}
@@ -79,6 +80,7 @@ jobs:
           PUBLIC_DATA_API_KEY: ${{ secrets.PUBLIC_DATA_API_KEY }}
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
           SUPABASE_MANAGEMENT_KEY: ${{ secrets.SUPABASE_MANAGEMENT_KEY }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
         run: |
           echo "=== 랭킹 재계산 시작 ($(TZ='Asia/Seoul' date)) ==="
           node daily-ranking.js --skip-price${{ github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_52w == 'true' && ' --refresh-52w' || '' }}
@@ -86,8 +88,12 @@ jobs:
       - name: Run backfill (backfill mode)
         if: steps.mode.outputs.mode == 'backfill'
         env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          PUBLIC_DATA_API_KEY: ${{ secrets.PUBLIC_DATA_API_KEY }}
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
           SUPABASE_MANAGEMENT_KEY: ${{ secrets.SUPABASE_MANAGEMENT_KEY }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
         run: |
           echo "=== 재무 backfill 시작 ($(TZ='Asia/Seoul' date)) ==="
           node dart-financials-backfill.js --years 2023,2024,2025

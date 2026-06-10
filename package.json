@@ -27,11 +27,8 @@
     "@modelcontextprotocol/sdk": "^1.0.0",
     "adm-zip": "^0.5.17",
     "better-sqlite3": "^12.10.0",
-    "cheerio": "^1.2.0",
     "dotenv": "^16.4.5",
+    "express": "^5.2.1",
     "node-fetch": "^3.3.2"
-  },
-  "devDependencies": {
-    "pg": "^8.21.0"
   }
 }

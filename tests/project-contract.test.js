@@ -39,3 +39,35 @@ test("runtime config has safe defaults for repeatable local runs", () => {
   assert.equal(FETCH_TIMEOUT_MS, 10_000);
   assert.equal(BATCH_TIMEOUT_MS, 30_000);
 });
+
+test("daily-ranking workflow passes required env to every ranking invocation", () => {
+  const workflow = fs.readFileSync(
+    path.join(projectRoot, ".github", "workflows", "daily-ranking.yml"),
+    "utf8",
+  );
+
+  const requiredEnv = [
+    "SUPABASE_URL",
+    "SUPABASE_KEY",
+    "PUBLIC_DATA_API_KEY",
+    "DART_API_KEY",
+    "SUPABASE_MANAGEMENT_KEY",
+    "SUPABASE_PROJECT_REF",
+  ];
+
+  for (const stepName of [
+    "Run price update + ranking (full mode)",
+    "Run ranking only (ranking mode)",
+    "Run backfill (backfill mode)",
+  ]) {
+    const start = workflow.indexOf(`- name: ${stepName}`);
+    assert.notEqual(start, -1, `${stepName} step exists`);
+    const next = workflow.indexOf("\n      - name:", start + 1);
+    const block = workflow.slice(start, next === -1 ? workflow.length : next);
+
+    assert.match(block, /node daily-ranking\.js/, `${stepName} invokes daily-ranking.js`);
+    for (const key of requiredEnv) {
+      assert.match(block, new RegExp(`${key}: \\$\\{\\{ secrets\\.${key} \\}\\}`), `${stepName} passes ${key}`);
+    }
+  }
+});

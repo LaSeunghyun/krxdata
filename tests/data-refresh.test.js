@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { parseFinancials } from "../dart-financials-backfill.js";
-import { shouldRefresh52w, shouldRunPriceUpdate } from "../daily-ranking.js";
+import {
+  buildRankingsRefreshSql,
+  getMissingDailyRankingEnv,
+  shouldRefresh52w,
+  shouldRunPriceUpdate,
+} from "../daily-ranking.js";
 
 test("full mode always refreshes 52-week prices", () => {
   assert.equal(shouldRefresh52w([]), true);
@@ -31,4 +36,35 @@ test("financial parser maps finance-sector revenue aliases", () => {
   assert.equal(parsed.revenue?.current, 83_149_506_134);
   assert.equal(parsed.opIncome?.current, 6_847_926_442);
   assert.equal(parsed.totalDebt?.current, 1_017_688_463_958);
+});
+
+test("daily-ranking env validation is explicit and import-safe", () => {
+  const missing = getMissingDailyRankingEnv({});
+  assert.deepEqual(missing, [
+    "SUPABASE_URL",
+    "SUPABASE_KEY(또는 SUPABASE_SERVICE_KEY)",
+    "PUBLIC_DATA_API_KEY",
+    "DART_API_KEY",
+    "SUPABASE_MANAGEMENT_KEY",
+    "SUPABASE_PROJECT_REF",
+  ]);
+
+  assert.deepEqual(getMissingDailyRankingEnv({
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SERVICE_KEY: "service-key",
+    PUBLIC_DATA_API_KEY: "public-key",
+    DART_API_KEY: "dart-key",
+    SUPABASE_MANAGEMENT_KEY: "management-key",
+    SUPABASE_PROJECT_REF: "project-ref",
+  }), []);
+});
+
+test("ranking refresh SQL upserts rows and removes stale rows in one statement", () => {
+  const sql = buildRankingsRefreshSql();
+
+  assert.match(sql, /WITH\s+scored\s+AS\s*\(/i);
+  assert.match(sql, /upserted\s+AS\s*\(\s*INSERT\s+INTO\s+daily_rankings/i);
+  assert.match(sql, /deleted\s+AS\s*\(\s*DELETE\s+FROM\s+daily_rankings\s+d/i);
+  assert.match(sql, /NOT\s+EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+upserted\s+u/i);
+  assert.match(sql, /SELECT\s+rank,\s*stock_code,\s*corp_name,\s*undervalue_score\s+FROM\s+upserted/i);
 });

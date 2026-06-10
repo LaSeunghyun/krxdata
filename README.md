@@ -100,17 +100,15 @@ GitHub Actions로 `daily_rankings`가 갱신되면 Claude에게 직접 질문:
       "command": "node",
       "args": ["C:\\claudeT\\files\\mcp-server.js"],
       "env": {
-        "DART_API_KEY": "your_dart_api_key",
-        "PUBLIC_DATA_API_KEY": "your_public_data_api_key"
+        "SUPABASE_MANAGEMENT_KEY": "your_supabase_management_key",
+        "SUPABASE_PROJECT_REF": "your_supabase_project_ref"
       }
     }
   }
 }
 ```
 
-제공 도구: `get_corp_info`, `get_market_info`, `get_stock_price`, `get_stock_history`,
-`get_disclosures`, `get_disclosure_body`, `get_financials`, `get_major_shareholders`,
-`query_price`, `query_disclosures`
+제공 도구: `get_stock_info`, `search_stocks`, `get_rankings`, `get_sector_stats`
 
 ## 데이터 산출물
 
