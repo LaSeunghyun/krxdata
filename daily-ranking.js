@@ -254,7 +254,20 @@ async function updatePrices() {
 // STEP 2: 저평가 전체 랭킹 계산 + DB 저장
 export function buildRankingsRefreshSql() {
   return `
-    WITH scored AS (
+    WITH mom AS (
+      -- 60거래일 가격 모멘텀 (stock_prices 일별 종가 기반)
+      SELECT stock_code,
+             (MAX(CASE WHEN rn = 1  THEN close END)::NUMERIC
+              / NULLIF(MAX(CASE WHEN rn = 60 THEN close END), 0) - 1) * 100 AS ret60
+      FROM (
+        SELECT stock_code, close,
+               ROW_NUMBER() OVER (PARTITION BY stock_code ORDER BY date DESC) AS rn
+        FROM stock_prices
+      ) t
+      WHERE rn IN (1, 60)
+      GROUP BY stock_code
+    ),
+    scored AS (
       SELECT
         sa.stock_code,
         sa.corp_name,
@@ -277,23 +290,33 @@ export function buildRankingsRefreshSql() {
           ELSE 0.5
         END AS price_position_52w,
         ROUND((
-          -- [PBR 할인 20pt] 섹터 평균 대비 단계별 점수
+          -- [PBR 할인 10pt] (v6: 20→10 — PIT 백테스트에서 value 역방향 증거로 비중 절반)
           CASE
             WHEN sf.pbr IS NULL OR ss.avg_pbr IS NULL OR ss.avg_pbr = 0 THEN 0
-            WHEN sf.pbr <= ss.avg_pbr * 0.3  THEN 20
-            WHEN sf.pbr <= ss.avg_pbr * 0.5  THEN 16
-            WHEN sf.pbr <= ss.avg_pbr * 0.7  THEN 12
-            WHEN sf.pbr <= ss.avg_pbr * 0.9  THEN 7
-            WHEN sf.pbr <= ss.avg_pbr        THEN 3
+            WHEN sf.pbr <= ss.avg_pbr * 0.3  THEN 10
+            WHEN sf.pbr <= ss.avg_pbr * 0.5  THEN 8
+            WHEN sf.pbr <= ss.avg_pbr * 0.7  THEN 6
+            WHEN sf.pbr <= ss.avg_pbr * 0.9  THEN 3
+            WHEN sf.pbr <= ss.avg_pbr        THEN 1
             ELSE 0
           END
-          -- [PER 할인 10pt] 섹터 평균 대비 단계별 점수
+          -- [PER 할인 5pt] (v6: 10→5)
           + CASE
             WHEN sf.per IS NULL OR ss.avg_per IS NULL OR ss.avg_per = 0 OR sf.per <= 0 THEN 0
-            WHEN sf.per <= ss.avg_per * 0.3  THEN 10
-            WHEN sf.per <= ss.avg_per * 0.5  THEN 8
-            WHEN sf.per <= ss.avg_per * 0.7  THEN 5
-            WHEN sf.per <= ss.avg_per        THEN 2
+            WHEN sf.per <= ss.avg_per * 0.3  THEN 5
+            WHEN sf.per <= ss.avg_per * 0.5  THEN 4
+            WHEN sf.per <= ss.avg_per * 0.7  THEN 2
+            WHEN sf.per <= ss.avg_per        THEN 1
+            ELSE 0
+          END
+          -- [가격 모멘텀 15pt] (v6 신설 — 60거래일 수익률. 백테스트 IC 양(+) 증거. NULL=중립 5)
+          + CASE
+            WHEN m.ret60 IS NULL    THEN 5
+            WHEN m.ret60 >= 30      THEN 15
+            WHEN m.ret60 >= 15      THEN 12
+            WHEN m.ret60 >= 5       THEN 8
+            WHEN m.ret60 >= 0       THEN 5
+            WHEN m.ret60 >= -10     THEN 2
             ELSE 0
           END
           -- [PCR 10pt] 신규 — cf_ops 기반 현금흐름 수익률
@@ -377,8 +400,10 @@ export function buildRankingsRefreshSql() {
         END
         , 1) AS undervalue_score
       FROM stock_analysis sa
-      JOIN stock_financials sf ON sa.stock_code = sf.stock_code AND sf.analysis_year = ${YEAR}
+      JOIN stock_financials sf ON sa.stock_code = sf.stock_code
+           AND sf.analysis_year = ${YEAR} AND sf.report_code = '11011'
       LEFT JOIN sector_stats ss ON sa.sector = ss.sector AND sa.mrkt_ctg = ss.mrkt_ctg
+      LEFT JOIN mom m ON m.stock_code = sa.stock_code
       WHERE sa.current_price > 0
         AND sf.pbr > 0 AND sf.pbr < 100
         AND ss.avg_pbr IS NOT NULL
@@ -393,11 +418,7 @@ export function buildRankingsRefreshSql() {
         AND sf.op_margin > 2
         -- 하드 필터: 시총 1,000억 미만 제거 (500억→1,000억 보수적 강화)
         AND sa.market_cap_tril >= 0.1
-        -- 하드 필터: 52주 위치 70% 초과(모멘텀 하락 구간) 제거
-        AND (
-          sa.high_52w IS NULL OR sa.low_52w IS NULL OR sa.high_52w = sa.low_52w
-          OR (sa.current_price - sa.low_52w)::NUMERIC / NULLIF(sa.high_52w - sa.low_52w, 0) < 0.7
-        )
+        -- (v6) 52주 위치 70% 초과 제외 필터 삭제 — 안티모멘텀으로 백테스트 증거(모멘텀 IC 양수)와 모순
         -- 가치함정 Hard Filter: 영업현금흐름 음수 + PBR 극저 조합 제외
         AND NOT (sf.cf_ops < 0 AND sf.pbr < 0.5)
         -- 매출·이익 동반 급감 제외
@@ -465,6 +486,8 @@ async function calcOpIncomeYoy() {
     WHERE f25.stock_code     = f24.stock_code
       AND f25.analysis_year  = ${YEAR}
       AND f24.analysis_year  = ${YEAR_PREV}
+      AND f25.report_code    = '11011'
+      AND f24.report_code    = '11011'
       AND f25.op_income      IS NOT NULL
       AND f24.op_income      IS NOT NULL
       AND f24.op_income     != 0
@@ -480,37 +503,20 @@ async function calcOpIncomeYoy() {
     WHERE f24.stock_code     = f23.stock_code
       AND f24.analysis_year  = ${YEAR_PREV}
       AND f23.analysis_year  = ${YEAR_PREV2}
+      AND f24.report_code    = '11011'
+      AND f23.report_code    = '11011'
       AND f24.op_income      IS NOT NULL
       AND f23.op_income      IS NOT NULL
       AND f23.op_income     != 0
   `);
   const remaining = await dbQuery(
-    `SELECT COUNT(*) cnt FROM stock_financials WHERE analysis_year=${YEAR} AND op_income_yoy IS NULL`
+    `SELECT COUNT(*) cnt FROM stock_financials WHERE analysis_year=${YEAR} AND report_code='11011' AND op_income_yoy IS NULL`
   );
   console.log(`[YoY 계산 완료] 남은 NULL: ${remaining[0]?.cnt ?? '?'}건 (2024 데이터 없는 종목)`);
 }
 
-// 섹터 멀티플 (v5: 바이오/IT 상향, 금융/건설/지주 하향)
-function getSectorMultiplier(sector, corpName) {
-  if (!sector && !corpName) return 1.0;
-  if (corpName?.includes('홀딩스') || corpName?.includes('지주')) return 0.5;
-  const s = sector || '';
-  if (s.includes('바이오') || s.includes('의약')) return 1.3;
-  if (s.includes('반도체') || s.includes('IT') || s.includes('소프트')) return 1.2;
-  if (s.includes('금융') || s.includes('보험') || s.includes('증권')) return 0.7;
-  if (s.includes('건설') || s.includes('부동산')) return 0.8;
-  return 1.0;
-}
-
-// 목표가 계산 (Codex v5: 섹터 멀티플 적용)
-// score 80 / mult 1.0 → 1M: +8.0%, 3M: +32.0%, 1Y: +64.0%
-// NOTE: stock-utils.js의 calcTargetPrice(EPS·PER 기반)와 다른 로직 — undervalue_score 기반 목표가
-function calcTargetByScore(currentPrice, undervalueScore, period = '1m', sector = null, corpName = null) {
-  if (!currentPrice || !undervalueScore || undervalueScore <= 0) return null;
-  const coeff = period === '1y' ? 0.80 : period === '3m' ? 0.40 : 0.10;
-  const mult = getSectorMultiplier(sector, corpName);
-  return Math.round(currentPrice * (1 + (undervalueScore / 100) * coeff * mult));
-}
+// (v6) 점수 기반 목표가(calcTargetByScore)·섹터 멀티플 제거 —
+// backtest_results.json에서 hit rate 극히 낮은 미검증 휴리스틱으로 판명, 리포트 신뢰도 저해
 
 // 매크로 레짐 게이트: 삼성전자(005930) KOSPI 프록시 기준 시장 상태 판단
 // ETF API 미지원으로 삼성전자(KOSPI 비중 ~30%) 사용
@@ -573,8 +579,10 @@ async function detectBigBathRecovery() {
              sf25.debt_ratio AS debt_ratio,
              sf24.op_margin  AS op_margin_2024
       FROM stock_analysis sa
-      JOIN stock_financials sf25 ON sa.stock_code = sf25.stock_code AND sf25.analysis_year = ${YEAR}
-      JOIN stock_financials sf24 ON sa.stock_code = sf24.stock_code AND sf24.analysis_year = ${YEAR_PREV}
+      JOIN stock_financials sf25 ON sa.stock_code = sf25.stock_code
+           AND sf25.analysis_year = ${YEAR} AND sf25.report_code = '11011'
+      JOIN stock_financials sf24 ON sa.stock_code = sf24.stock_code
+           AND sf24.analysis_year = ${YEAR_PREV} AND sf24.report_code = '11011'
       WHERE sf25.op_margin < 0
         AND sf24.op_margin > 0
         AND (sf25.debt_ratio IS NULL OR sf25.debt_ratio < 350)
@@ -680,23 +688,19 @@ async function printChangeReport() {
 
   console.log("\n========== 저평가 랭킹 TOP 20 (매수 포트폴리오) ==========");
   console.log(`기준일: ${new Date().toLocaleDateString('ko-KR')}`);
-  console.log("순위  변동  종목명              시장   섹터          현재가   1M목표(+%)   3M목표(+%)   1Y목표(+%)  점수  비중");
-  console.log("─".repeat(125));
+  console.log("순위  변동  종목명              시장   섹터          현재가     PBR    PER   점수  비중");
+  console.log("─".repeat(100));
 
   const top20 = changes.filter(c => c.rank_today <= 20);
   for (const c of top20) {
     const change = c.rank_change === null ? "NEW" :
       c.rank_change > 0 ? `▲${c.rank_change}` :
       c.rank_change < 0 ? `▼${Math.abs(c.rank_change)}` : "─";
-    const t1m = calcTargetByScore(c.current_price, c.undervalue_score, '1m', c.sector, c.corp_name);
-    const t3m = calcTargetByScore(c.current_price, c.undervalue_score, '3m', c.sector, c.corp_name);
-    const t1y = calcTargetByScore(c.current_price, c.undervalue_score, '1y', c.sector, c.corp_name);
-    const fmt = (t, base) => t ? `${t.toLocaleString()}(+${((t-base)/base*100).toFixed(1)}%)` : '-';
     const weight = c.rank_today <= 10 ? '10%' : ' 5%';
     console.log(
       `${String(c.rank_today).padStart(3)}  ${change.padEnd(5)} ${c.corp_name.slice(0,14).padEnd(16)} ${c.mrkt_ctg.padEnd(6)} ${(c.sector||'').slice(0,12).padEnd(13)} ` +
       `${c.current_price.toLocaleString('ko-KR').padStart(8)}  ` +
-      `${fmt(t1m,c.current_price).padStart(14)}  ${fmt(t3m,c.current_price).padStart(14)}  ${fmt(t1y,c.current_price).padStart(14)}  ` +
+      `${String(c.pbr ?? '').padStart(5)}  ${String(c.per ?? '').padStart(5)}  ` +
       `${String(c.undervalue_score||'').padStart(5)}  ${weight}`
     );
   }
@@ -763,11 +767,11 @@ async function main() {
     const regime = await checkMarketRegime();
     if (regime.warn) {
       console.log("\n⚠️  [매크로 경고] 시장 위험 구간 감지!");
-      console.log(`   KODEX200: ${regime.latest?.toLocaleString()}원 / 20MA: ${regime.ma20?.toLocaleString()}원 (MA 하향)`);
+      console.log(`   삼성전자(KOSPI 프록시): ${regime.latest?.toLocaleString()}원 / 20MA: ${regime.ma20?.toLocaleString()}원 (MA 하향)`);
       console.log(`   5일 수익률: ${regime.ret5d}% (임계값 -3% 초과)`);
       console.log("   → 신규 진입 보류 권고. 기존 보유 종목 스톱로스 확인 필요.\n");
     } else if (regime.latest) {
-      console.log(`[시장 체크] KODEX200 ${regime.latest?.toLocaleString()}원 / 20MA ${regime.ma20?.toLocaleString()}원 / 5일수익률 ${regime.ret5d}% — 정상`);
+      console.log(`[시장 체크] 삼성전자(KOSPI 프록시) ${regime.latest?.toLocaleString()}원 / 20MA ${regime.ma20?.toLocaleString()}원 / 5일수익률 ${regime.ret5d}% — 정상`);
     }
 
     // op_income_yoy 계산 (데이터 있는 경우 자동 갱신)
