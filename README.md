@@ -13,16 +13,22 @@ OpenDart API      ──►  (GitHub Actions)        daily_rankings 테이블
                                           "저평가 종목 추천해줘"
 ```
 
-## 저평가 점수 계산식
+## 저평가 점수 계산식 (v6)
 
 ```
-저평가점수 (0~100점) =
-  섹터 PBR 대비 할인율 × 40점   ← PBR이 섹터 평균보다 낮을수록 고점
-  + 섹터 PER 대비 할인율 × 30점  ← PER이 섹터 평균보다 낮을수록 고점
-  + ROE × 1.5 (최대 30점)        ← 수익성
+undervalue_score =
+  PBR 섹터 할인 (max 10) + PER 섹터 할인 (max 5)     ← 가치 (v6: PIT 백테스트 역방향 증거로 비중 절반)
+  + 가격 모멘텀 60일 (max 15)                        ← v6 신설 (백테스트 IC 양수)
+  + PCR 현금흐름수익률 (max 10) + ROE (max 15)
+  + 영업이익률 (max 10) + 이익추세 (max 15) + 이익YoY (max 15)
+  + 이익안정성 (max 5)
+  − 부채비율 페널티 (max 15) − 이자보상배율 페널티 (max 10)
+  × 지주사 Soft Penalty (0.6)
 ```
 
-데이터 소스: `stock_financials` + `sector_stats` + `stock_analysis` (Supabase)
+v6 변경: 52주 위치 >70% 제외 필터 삭제(안티모멘텀), 점수 기반 목표가 제거(미검증 휴리스틱).
+
+데이터 소스: `stock_financials`(연간 `report_code='11011'`) + `sector_stats` + `stock_analysis` + `stock_prices` (Supabase)
 
 ## 자동화 스케줄 (GitHub Actions)
 
@@ -49,13 +55,25 @@ OpenDart API      ──►  (GitHub Actions)        daily_rankings 테이블
 
 | 파일 | 역할 |
 |------|------|
-| `daily-ranking.js` | 현재가 업데이트 + 저평가 순위 계산 + 변동 리포트 (GitHub Actions 진입점) |
+| `daily-ranking.js` | 현재가 업데이트 + 저평가 순위 계산 + 변동 리포트 + 포트폴리오 알림 (GitHub Actions 진입점) |
+| `backtest-pit.mjs` | Point-in-Time 백테스트 — `rcept_dt <= T` 재무만 사용, `--save-ic`로 IC 이력 적재 |
+| `rcept-backfill.js` | DART rcept_no → 연간 재무 공시일(`rcept_dt`) 백필 (`--db`로 전체 유니버스) |
+| `dart-quarterly-backfill.js` | 분기/반기 재무 적재 — 어닝모멘텀 팩터 데이터 |
+| `portfolio.js` | 포트폴리오 원장 — enter/check/close/report, 스톱로스 -25%·절반익절 +100% |
+| `run-migration.mjs` | SQL 마이그레이션 실행기 (`node run-migration.mjs migration-v6.sql`) |
 | `score-kospi-full.js` | KOSPI 전 종목 스코어링 JSON 생성 |
 | `score-kosdaq.js` | KOSDAQ 전 종목 스코어링 JSON 생성 |
 | `db-upsert.js` | 점수 JSON을 Supabase `stock_analysis`에 upsert |
 | `fetch-sectors.js` | 섹터별 평균 지표 계산 → `sector_stats` 갱신 |
 | `batch.js` | 관심 종목 주가·공시 로컬 SQLite 저장 |
 | `mcp-server.js` | Claude Desktop MCP 서버 (공시·재무·주가 도구) |
+
+## 분기 운영 절차 (Loop B — 팩터 모니터링)
+
+1. 분기보고서 공시 후: `node dart-quarterly-backfill.js --periods <YYYY:reprt_code>`
+2. `node rcept-backfill.js --db --years <최근연도>` (신규 공시 rcept_dt 갱신)
+3. `node backtest-pit.mjs --save-ic` → `factor_ic_history` 누적 → IC 추세로 `config.js FACTOR_WEIGHTS` 재가중
+   (규칙: `w = clamp(round(mean(IC20, IC60), 2), ±0.2)`, `|w|<0.01 → 0`)
 
 ## 환경 변수
 
