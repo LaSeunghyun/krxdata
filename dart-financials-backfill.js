@@ -221,13 +221,13 @@ export async function buildCorpCodeMap() {
 // ── 회사 목록 로드 ───────────────────────────────────────────
 // 1순위: 로컬 JSON 파일 (로컬 개발 환경)
 // 2순위: DB stock_analysis + DART corpCode.xml (GitHub Actions 등 CI 환경)
-export async function loadCompanies() {
+export async function loadCompanies(forceDb = false) {
   const companies = [];
   const seen = new Set();
 
-  // 1순위: 로컬 JSON 파일
+  // 1순위: 로컬 JSON 파일 (forceDb=true면 DB+corpCode 전체 유니버스 사용)
   let localLoaded = false;
-  for (const [file, mrkt] of [
+  if (!forceDb) for (const [file, mrkt] of [
     ["kospi-profitable.json",  "KOSPI"],
     ["kosdaq-profitable.json", "KOSDAQ"],
   ]) {

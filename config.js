@@ -37,6 +37,12 @@ export const FILTER_DELAY_MS = toNumber("FILTER_DELAY_MS", 500);
 export const BACKTEST_HORIZONS = [20, 60]; // 영업일(≈1M, 3M) 포워드 수익 구간
 export const BACKTEST_TOLERANCE = 5; // 스냅샷 정렬 허용일
 export const WINSOR_BOUNDS = [0.01, 0.99]; // 섹터 z-score winsorize 분위
+export const BACKTEST_ROUND_TRIP_COST = 0.005; // 왕복 거래비용 0.5% (수수료+거래세+슬리피지 보수 추정)
+export const BACKTEST_MIN_PRICE = 1000; // 동전주 제외 (유동성·슬리피지 방어)
+
+// ── 포트폴리오 운용 규칙 ──
+export const STOP_LOSS_PCT = -25;   // 즉시청산
+export const HALF_PROFIT_PCT = 100; // 절반익절
 export const FACTOR_WEIGHTS = {
   // IC-calibrated (Loop B): 2025-05~2026-05, 25주 리밸런스, 20d·60d spearman IC 평균.
   // backtest-pit.mjs 합성점수 전용(연구용) — 라이브 v5 스코어러는 자체 로직 사용, 영향 없음.
