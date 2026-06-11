@@ -99,3 +99,12 @@ test("contract: 미검증 목표가 휴리스틱 미사용", () => {
 test("contract: 가격 모멘텀 컴포넌트 존재", () => {
   assert.ok(dailyRankingSrc.includes("ret60"), "v6 가격 모멘텀(ret60) 점수 컴포넌트 필요");
 });
+
+test("contract: mcp-server SQL도 연간 행만 사용 (report_code 11011)", () => {
+  const mcpSrc = fs.readFileSync(path.join(projectRoot, "mcp-server.js"), "utf8");
+  const joins = mcpSrc.match(/JOIN stock_financials[\s\S]*?(?=\n\s*(LEFT|WHERE|GROUP|ORDER))/g) ?? [];
+  assert.ok(joins.length >= 2, "stock_financials JOIN이 존재해야 함");
+  for (const j of joins) {
+    assert.ok(j.includes("report_code = '11011'"), `JOIN에 report_code 필터 누락: ${j.slice(0, 80)}`);
+  }
+});

@@ -6,6 +6,7 @@
  *
  * node portfolio.js enter 005930 [--weight 10] [--price 60000]
  * node portfolio.js check
+ * node portfolio.js half 005930            ← +100% 절반익절 (비중 절반, 상태 half_exited)
  * node portfolio.js close 005930 [--reason manual] [--price 60000]
  * node portfolio.js report
  */
@@ -97,6 +98,18 @@ async function main() {
     console.log(`✅ 진입 기록: ${cur?.corp_name ?? ""}(${code}) @ ${price.toLocaleString()}원`);
   } else if (cmd === "check") {
     printCheck(await checkOpenPositions());
+  } else if (cmd === "half") {
+    if (!code) throw new Error("종목코드 필요: node portfolio.js half <code>");
+    const rows = await rest(`portfolio_positions?stock_code=eq.${code}&status=eq.open&select=id,weight_pct`);
+    if (!rows?.length) throw new Error(`${code}: open 상태 포지션 없음`);
+    for (const p of rows) {
+      await rest(`portfolio_positions?id=eq.${p.id}`, {
+        method: "PATCH",
+        headers: { Prefer: "return=minimal" },
+        body: JSON.stringify({ status: "half_exited", weight_pct: Number(p.weight_pct) / 2 }),
+      });
+    }
+    console.log(`✅ 절반익절 기록: ${code} — 비중 ${rows.map(p => `${p.weight_pct}→${p.weight_pct / 2}%`).join(", ")}, 상태 half_exited`);
   } else if (cmd === "close") {
     if (!code) throw new Error("종목코드 필요: node portfolio.js close <code>");
     const cur = await currentPriceOf(code);
@@ -128,7 +141,7 @@ async function main() {
     }
     if (wSum > 0) console.log(`\n보유 포지션 가중 평균 수익률: ${(wRet / wSum).toFixed(2)}%`);
   } else {
-    console.log("사용법: node portfolio.js enter <code> [--weight N] [--price P] | check | close <code> [--reason R] | report");
+    console.log("사용법: node portfolio.js enter <code> [--weight N] [--price P] | check | half <code> | close <code> [--reason R] | report");
   }
 }
 

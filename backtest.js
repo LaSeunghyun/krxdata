@@ -81,7 +81,9 @@ export function alignForward(snapshots, horizonDays, toleranceDays) {
   return out;
 }
 
-// 한 종목의 재무 행들 중 rcept_dt <= asOf 인 최신 행. 동률이면 analysis_year 큰 쪽.
+// 한 종목의 재무 행들 중 rcept_dt <= asOf 인 행에서 "가장 최근 회계기간" 선택:
+// analysis_year 최대 우선, 동률이면 rcept_dt 최대(같은 연도 내 더 늦은 분기/정정분).
+// ※ rcept_dt 최대 우선이면 구연도 정정공시(예: FY2023 정정 6월)가 FY2024 정기공시(3월)를 가린다.
 export function latestFinancialAsOf(rows, asOf) {
   if (!Array.isArray(rows)) return null;
   let best = null;
@@ -91,8 +93,8 @@ export function latestFinancialAsOf(rows, asOf) {
     if (d > String(asOf)) continue;
     if (
       best === null ||
-      d > String(best.rcept_dt) ||
-      (d === String(best.rcept_dt) && (r.analysis_year ?? 0) > (best.analysis_year ?? 0))
+      (r.analysis_year ?? 0) > (best.analysis_year ?? 0) ||
+      ((r.analysis_year ?? 0) === (best.analysis_year ?? 0) && d > String(best.rcept_dt))
     ) best = r;
   }
   return best;
@@ -109,6 +111,31 @@ export function hasExtremeGap(closes, startIdx, endIdx, threshold = 0.35) {
     if (Math.abs(b / a - 1) > threshold) return true;
   }
   return false;
+}
+
+// 백테스트 펀더멘털 팩터 (높을수록 좋음 방향 통일).
+// fin = PIT 선택된 연간 재무 행(DB row). value는 stale per/pbr 대신
+// T 시점 시총(mcapT)으로 earnings/book yield를 직접 계산해 PIT 정합 유지.
+// 결측·자본잠식·적자·mcapT 불명은 null(중립) — 절대 NaN/Infinity 미반환.
+export function fundamentalFactors(fin, mcapT) {
+  if (!fin) return { value: null, quality: null, growth: null };
+  const ni = Number(fin.net_income), eq = Number(fin.total_equity);
+  const ey = Number.isFinite(ni) && ni > 0 && mcapT > 0 ? ni / mcapT : null; // earnings yield (적자 결측)
+  const by = Number.isFinite(eq) && eq > 0 && mcapT > 0 ? eq / mcapT : null; // book yield (자본잠식 결측)
+  const value = ey != null && by != null ? (ey + by) / 2 : (ey ?? by);
+  // quality: roe↑, debt_ratio↓, cur_ratio↑, cf_ops>0
+  const roe = Number.isFinite(Number(fin.roe)) ? Number(fin.roe) : null;
+  const debtPenalty = Number.isFinite(Number(fin.debt_ratio)) ? -Number(fin.debt_ratio) : null;
+  const cur = Number.isFinite(Number(fin.cur_ratio)) ? Number(fin.cur_ratio) : null;
+  const cf = Number.isFinite(Number(fin.cf_ops)) ? (Number(fin.cf_ops) > 0 ? 1 : 0) : null;
+  const qParts = [roe, debtPenalty, cur, cf == null ? null : cf * 100].filter((v) => v != null);
+  const quality = qParts.length ? qParts.reduce((a, b) => a + b, 0) / qParts.length : null;
+  // growth: revenue_yoy, op_income_yoy
+  const rg = Number.isFinite(Number(fin.revenue_yoy)) ? Number(fin.revenue_yoy) : null;
+  const og = Number.isFinite(Number(fin.op_income_yoy)) ? Number(fin.op_income_yoy) : null;
+  const gParts = [rg, og].filter((v) => v != null);
+  const growth = gParts.length ? gParts.reduce((a, b) => a + b, 0) / gParts.length : null;
+  return { value, quality, growth };
 }
 
 // rcept_dt 미보유 행의 보수적(법정기한+여유) 공시 추정일

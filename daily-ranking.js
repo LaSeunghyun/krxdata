@@ -255,16 +255,17 @@ async function updatePrices() {
 export function buildRankingsRefreshSql() {
   return `
     WITH mom AS (
-      -- 60거래일 가격 모멘텀 (stock_prices 일별 종가 기반)
+      -- 60거래일 가격 모멘텀 (stock_prices 일별 종가, 최근 180일 한정 — 테이블 무한 성장 방어)
       SELECT stock_code,
              (MAX(CASE WHEN rn = 1  THEN close END)::NUMERIC
-              / NULLIF(MAX(CASE WHEN rn = 60 THEN close END), 0) - 1) * 100 AS ret60
+              / NULLIF(MAX(CASE WHEN rn = 61 THEN close END), 0) - 1) * 100 AS ret60
       FROM (
         SELECT stock_code, close,
                ROW_NUMBER() OVER (PARTITION BY stock_code ORDER BY date DESC) AS rn
         FROM stock_prices
+        WHERE date >= TO_CHAR(CURRENT_DATE - 180, 'YYYYMMDD')
       ) t
-      WHERE rn IN (1, 60)
+      WHERE rn IN (1, 61)
       GROUP BY stock_code
     ),
     scored AS (
@@ -787,8 +788,12 @@ async function main() {
       const alerts = positions.filter(p => p.action !== "hold");
       if (alerts.length) {
         console.log("\n⚠️  [포트폴리오 알림]");
-        for (const a of alerts)
-          console.log(`  ${a.action === "stop_loss" ? "🔴 스톱로스" : "🟢 절반익절"}: ${a.corp_name}(${a.stock_code}) ${a.ret}% — node portfolio.js close ${a.stock_code} --reason ${a.action}`);
+        for (const a of alerts) {
+          const cmd = a.action === "stop_loss"
+            ? `node portfolio.js close ${a.stock_code} --reason stop_loss`
+            : `node portfolio.js half ${a.stock_code}`;
+          console.log(`  ${a.action === "stop_loss" ? "🔴 스톱로스" : "🟢 절반익절"}: ${a.corp_name}(${a.stock_code}) ${a.ret}% — ${cmd}`);
+        }
       } else if (positions.length) {
         console.log(`\n[포트폴리오] 보유 ${positions.length}종목 — 스톱로스/익절 해당 없음`);
       }

@@ -330,6 +330,7 @@ async function main() {
       const url = `${SUPABASE_URL}/rest/v1/stock_financials`
         + `?stock_code=in.(${chunk.join(",")})`
         + `&analysis_year=lt.${YEAR}`
+        + `&report_code=eq.11011`
         + `&order=analysis_year.desc`
         + `&select=stock_code,analysis_year,revenue,op_income,net_income,debt_ratio,cur_ratio,cf_ops`;
       const res = await fetch(url, {

@@ -29,9 +29,11 @@ function pickAccount(rows, names) {
   for (const nm of names) {
     const row = rows.find(r => r.sj_div !== "CF" && r.account_nm?.replace(/\s/g, "") === nm.replace(/\s/g, ""));
     if (row) {
-      // 누적(_add_amount) 우선 — 전년동기 누적과 비교해야 계절성이 제거됨
-      const cur = numAmt(row.thstrm_add_amount ?? row.thstrm_amount);
-      const prv = numAmt(row.frmtrm_add_amount ?? row.frmtrm_amount);
+      // 누적(_add_amount)은 양쪽 모두 있을 때만 사용 — 한쪽만 누적이면
+      // 누적 vs 3개월 비교가 돼 YoY가 수배 왜곡되므로 둘 다 plain으로 강제.
+      const useAdd = row.thstrm_add_amount != null && row.frmtrm_add_amount != null;
+      const cur = numAmt(useAdd ? row.thstrm_add_amount : row.thstrm_amount);
+      const prv = numAmt(useAdd ? row.frmtrm_add_amount : row.frmtrm_amount);
       return { cur, prv };
     }
   }

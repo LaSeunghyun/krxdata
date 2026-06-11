@@ -2,10 +2,14 @@
  * backtest-pit.mjs — Point-in-Time 백테스트 (look-ahead 제거)
  *
  * DB(stock_prices)의 일별시세를 읽어, 각 리밸런스 시점 T에서
- *   - 가치/품질/성장: stock_financials(연간 2025, ~3월 공시라 PIT 안전)
+ *   - 가치/품질/성장: T 시점에 공시돼 있던(rcept_dt <= T) 최신 연간 재무만 사용
+ *   - 어닝모멘텀: T 시점 공시된 최신 분기보고서의 누적 전년동기 YoY
  *   - 가격모멘텀/추세: DB 시세를 T 시점까지만 사용 (미래 미사용)
  * 로 섹터중립 z-score 합성점수를 만들고, 20·60 영업일 포워드 수익률과
- * spearman IC / 분위 스프레드 / top분위 hit rate를 산출한다.
+ * spearman IC / 분위 스프레드(gross/net) / top분위 hit rate를 산출한다.
+ *
+ * 한계(주의): 유니버스가 현재 stock_analysis 기준이라 상폐 종목이 빠진 생존 편향 존재.
+ * sharesProxy(현재 주식수) 소급 적용은 전구간 갭 가드로 완화하나 완전하지 않음.
  *
  * 모든 위험 수학은 순수함수(normalize.js / backtest.js)에 격리, 골든테스트로 검증됨.
  * 시세 출처: stock_prices 테이블(매일 daily-ranking 잡이 적재). 공공API 미사용.
@@ -16,7 +20,9 @@ import dotenv from "dotenv";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { sectorZScores } from "./normalize.js";
-import { spearmanIC, quantileSpread, latestFinancialAsOf, estimateRceptDt, hasExtremeGap } from "./backtest.js";
+import {
+  spearmanIC, quantileSpread, latestFinancialAsOf, estimateRceptDt, hasExtremeGap, fundamentalFactors,
+} from "./backtest.js";
 import { FACTOR_WEIGHTS, BACKTEST_ROUND_TRIP_COST, BACKTEST_MIN_PRICE } from "./config.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -142,29 +148,7 @@ async function buildPriceCacheFromDB() {
   return cache;
 }
 
-// ── 팩터 (높을수록 좋음 방향으로 통일) ────────────────────────
-// fin = T 시점 PIT 선택된 연간 재무 행. value는 DB의 stale per/pbr 대신
-// T 시점 시총(주식수 프록시 × T 종가)으로 직접 계산해 PIT 정합 유지.
-function fundamentalFactors(fin, mcapT) {
-  if (!fin) return { value: null, quality: null, growth: null };
-  const ni = Number(fin.net_income), eq = Number(fin.total_equity);
-  const ey = Number.isFinite(ni) && ni > 0 && mcapT > 0 ? ni / mcapT : null; // earnings yield
-  const by = Number.isFinite(eq) && eq > 0 && mcapT > 0 ? eq / mcapT : null; // book yield (자본잠식 결측)
-  const value = ey != null && by != null ? (ey + by) / 2 : (ey ?? by);
-  // quality: roe↑, debt_ratio↓, cur_ratio↑, cf_ops>0
-  const roe = Number.isFinite(Number(fin.roe)) ? Number(fin.roe) : null;
-  const debtPenalty = Number.isFinite(Number(fin.debt_ratio)) ? -Number(fin.debt_ratio) : null;
-  const cur = Number.isFinite(Number(fin.cur_ratio)) ? Number(fin.cur_ratio) : null;
-  const cf = Number.isFinite(Number(fin.cf_ops)) ? (Number(fin.cf_ops) > 0 ? 1 : 0) : null;
-  const qParts = [roe, debtPenalty, cur, cf == null ? null : cf * 100].filter((v) => v != null);
-  const quality = qParts.length ? qParts.reduce((a, b) => a + b, 0) / qParts.length : null;
-  // growth: revenue_yoy, op_income_yoy
-  const rg = Number.isFinite(Number(fin.revenue_yoy)) ? Number(fin.revenue_yoy) : null;
-  const og = Number.isFinite(Number(fin.op_income_yoy)) ? Number(fin.op_income_yoy) : null;
-  const gParts = [rg, og].filter((v) => v != null);
-  const growth = gParts.length ? gParts.reduce((a, b) => a + b, 0) / gParts.length : null;
-  return { value, quality, growth };
-}
+// 펀더멘털 팩터 계산은 순수 모듈(backtest.js fundamentalFactors)로 격리 — 골든 테스트 대상.
 
 // 종목 시세 배열에서 date의 로컬 인덱스 (정확히 일치하는 거래일)
 function indexOfDate(hist, date) {
@@ -183,7 +167,7 @@ console.log("=== KRXDATA Point-in-Time 백테스트 ===");
 console.log(`기간: ${BEGIN} ~ ${END} (${LOOKBACK_DAYS}일) / 호라이즌 ${HORIZONS.join(",")} 영업일\n`);
 
 const universe = await loadUniverse();
-console.log(`[유니버스] sector+2025재무 보유 ${universe.length}종목`);
+console.log(`[유니버스] sector+연간재무(2023~2025) 보유 ${universe.length}종목`);
 
 const priceCache = await buildPriceCacheFromDB();
 const MIN_HIST = Math.max(...MOM_LOOKBACKS) + Math.max(...HORIZONS); // 모멘텀+호라이즌 1회분 최소 거래일
@@ -193,6 +177,15 @@ console.log(`[유효] ${MIN_HIST}거래일+ 시세 보유 ${active.length}종목
 // corporate action 가드용 close 배열 사전 계산
 const histCloses = {};
 for (const code of Object.keys(priceCache)) histCloses[code] = priceCache[code].map((r) => r.close);
+
+// 전 구간에 액면분할·증자 의심 갭이 있는 종목: value 팩터 차단용.
+// sharesProxy(현재 주식수)를 과거로 소급하는 mcap_T 추정이 이런 종목에서 체계적으로 깨지기 때문.
+const fullRangeGap = new Set();
+for (const code of Object.keys(histCloses)) {
+  const c = histCloses[code];
+  if (hasExtremeGap(c, 0, c.length - 1)) fullRangeGap.add(code);
+}
+console.log(`[가드] 전구간 corporate action 의심 ${fullRangeGap.size}종목 — value 팩터 중립 처리`);
 
 // 글로벌 거래일 캘린더 (시세 보유 종목들의 날짜 합집합, 빈도 상위)
 const dateFreq = new Map();
@@ -251,12 +244,14 @@ for (const tIdx of rebalIdx) {
 
     // ★PIT: T 시점에 공시돼 있던 최신 연간 재무만 사용 (look-ahead 차단)
     const fin = latestFinancialAsOf(s.finRows, T);
-    const mcapT = s.sharesProxy != null ? s.sharesProxy * cT : null;
+    // mcap_T = 현재 주식수 프록시 × T 종가. 전구간 corporate action 의심 종목은 value 중립.
+    const mcapT = s.sharesProxy != null && !fullRangeGap.has(s.stock_code) ? s.sharesProxy * cT : null;
     const f = fundamentalFactors(fin, mcapT);
-    // 분기 어닝모멘텀: T 시점 공시된 최신 분기보고서의 누적 전년동기 YoY
+    // 분기 어닝모멘텀: T 시점 공시된 최신 분기보고서의 누적 전년동기 YoY.
+    // 999 = 흑자전환 sentinel(quarterlyYoY) — 크기 정보가 없으므로 중립(null) 처리.
     const qFin = latestFinancialAsOf(s.qRows, T);
-    const earningsMomentum =
-      qFin && Number.isFinite(Number(qFin.op_income_yoy)) ? Number(qFin.op_income_yoy) : null;
+    const qYoY = qFin != null ? Number(qFin.op_income_yoy) : NaN;
+    const earningsMomentum = Number.isFinite(qYoY) && qYoY < 999 ? qYoY : null;
 
     // 포워드 수익률 (검증용 라벨). 구간 내 corporate action 갭은 관측 제외.
     const fwd = {};

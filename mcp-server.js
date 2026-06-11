@@ -142,7 +142,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           dr.rank, dr.undervalue_score, dr.total_score, dr.rank_date
         FROM stock_analysis sa
         LEFT JOIN stock_financials sf
-          ON sa.stock_code = sf.stock_code AND sf.analysis_year = ${year}
+          ON sa.stock_code = sf.stock_code AND sf.analysis_year = ${year} AND sf.report_code = '11011'
         LEFT JOIN sector_stats ss
           ON sa.sector = ss.sector AND sa.mrkt_ctg = ss.mrkt_ctg
         LEFT JOIN daily_rankings dr
@@ -208,7 +208,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
                dr.rank, dr.undervalue_score
         FROM stock_analysis sa
         LEFT JOIN stock_financials sf
-          ON sa.stock_code = sf.stock_code AND sf.analysis_year = 2024
+          ON sa.stock_code = sf.stock_code AND sf.analysis_year = 2024 AND sf.report_code = '11011'
         LEFT JOIN daily_rankings dr
           ON sa.stock_code = dr.stock_code
           AND dr.rank_date = (SELECT MAX(rank_date) FROM daily_rankings)
