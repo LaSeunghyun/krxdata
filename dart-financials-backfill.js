@@ -28,7 +28,7 @@ function ensureEnv() {
   if (!MGMT_KEY) throw new Error("SUPABASE_MANAGEMENT_KEY 미설정");
 }
 
-async function dbQuery(sql) {
+export async function dbQuery(sql) {
   ensureEnv();
   const res = await fetch(`https://api.supabase.com/v1/projects/${PROJECT_REF}/database/query`, {
     method: "POST",
@@ -63,12 +63,12 @@ async function fetchJson(url) {
 }
 
 // ── DART 재무 배치 조회 ──────────────────────────────────────
-async function getMultiFinancials(corpCodes, year, fsdiv) {
+export async function getMultiFinancials(corpCodes, year, fsdiv, reprtCode = "11011") {
   const url = new URL(`${DART_BASE}/fnlttMultiAcnt.json`);
   url.searchParams.set("crtfc_key", DART_KEY);
   url.searchParams.set("corp_code", corpCodes.join(","));
   url.searchParams.set("bsns_year", year);
-  url.searchParams.set("reprt_code", "11011"); // 사업보고서
+  url.searchParams.set("reprt_code", reprtCode); // 11011=사업 11013=1Q 11012=반기 11014=3Q
   url.searchParams.set("fs_div",     fsdiv);
   const d = await fetchJson(url.toString());
   if (!["000", "013"].includes(d.status))
@@ -77,12 +77,12 @@ async function getMultiFinancials(corpCodes, year, fsdiv) {
 }
 
 /** corpCodes 배열에 대해 CFS 우선 → OFS 보완으로 해당 연도 재무 수집 */
-async function fetchYearFinancials(corpCodes, year) {
-  let list = await getMultiFinancials(corpCodes, year, "CFS");
+export async function fetchYearFinancials(corpCodes, year, reprtCode = "11011") {
+  let list = await getMultiFinancials(corpCodes, year, "CFS", reprtCode);
   const found = new Set(list.map(r => r.corp_code));
   const missing = corpCodes.filter(c => !found.has(c));
   if (missing.length) {
-    const ofs = await getMultiFinancials(missing, year, "OFS");
+    const ofs = await getMultiFinancials(missing, year, "OFS", reprtCode);
     list = [...list, ...ofs];
   }
   return list;
@@ -141,7 +141,7 @@ async function upsertRows(rows) {
       `${esc(r.total_debt)},${esc(r.total_asset)},${esc(r.cf_ops)},` +
       `${esc(r.debt_ratio)},${esc(r.cur_ratio)},${esc(r.op_margin)},` +
       `${esc(r.revenue_yoy)},${esc(r.op_income_yoy)},` +
-      `${esc(r.per)},${esc(r.pbr)},${esc(r.roe)},${esc(r.market_cap)},NOW())`
+      `${esc(r.per)},${esc(r.pbr)},${esc(r.roe)},${esc(r.market_cap)},'11011',NOW())`
     ).join(",\n");
 
     await dbQuery(`
@@ -151,9 +151,9 @@ async function upsertRows(rows) {
          total_debt,total_asset,cf_ops,
          debt_ratio,cur_ratio,op_margin,
          revenue_yoy,op_income_yoy,
-         per,pbr,roe,market_cap,updated_at)
+         per,pbr,roe,market_cap,report_code,updated_at)
       VALUES ${vals}
-      ON CONFLICT (stock_code, analysis_year) DO UPDATE SET
+      ON CONFLICT (stock_code, analysis_year, report_code) DO UPDATE SET
         corp_name     = EXCLUDED.corp_name,
         mrkt_ctg      = EXCLUDED.mrkt_ctg,
         revenue       = COALESCE(EXCLUDED.revenue,       stock_financials.revenue),
@@ -181,7 +181,7 @@ async function upsertRows(rows) {
 const CORP_CODE_CACHE = path.join(__dirname, ".corp_code_cache.json");
 const CORP_CODE_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7일
 
-async function buildCorpCodeMap() {
+export async function buildCorpCodeMap() {
   // 캐시 유효 시 재사용
   if (fs.existsSync(CORP_CODE_CACHE)) {
     try {
@@ -221,7 +221,7 @@ async function buildCorpCodeMap() {
 // ── 회사 목록 로드 ───────────────────────────────────────────
 // 1순위: 로컬 JSON 파일 (로컬 개발 환경)
 // 2순위: DB stock_analysis + DART corpCode.xml (GitHub Actions 등 CI 환경)
-async function loadCompanies() {
+export async function loadCompanies() {
   const companies = [];
   const seen = new Set();
 
