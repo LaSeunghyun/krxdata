@@ -776,6 +776,20 @@ async function main() {
     await computeAndSaveRankings();
     await printChangeReport();
 
+    // 포트폴리오 스톱로스/익절 점검 (포지션 있을 때만 출력)
+    try {
+      const { checkOpenPositions } = await import("./portfolio.js");
+      const positions = await checkOpenPositions();
+      const alerts = positions.filter(p => p.action !== "hold");
+      if (alerts.length) {
+        console.log("\n⚠️  [포트폴리오 알림]");
+        for (const a of alerts)
+          console.log(`  ${a.action === "stop_loss" ? "🔴 스톱로스" : "🟢 절반익절"}: ${a.corp_name}(${a.stock_code}) ${a.ret}% — node portfolio.js close ${a.stock_code} --reason ${a.action}`);
+      } else if (positions.length) {
+        console.log(`\n[포트폴리오] 보유 ${positions.length}종목 — 스톱로스/익절 해당 없음`);
+      }
+    } catch (e) { console.log(`[포트폴리오 점검 생략] ${e.message}`); }
+
     // Stage 1: 빅배스 턴어라운드 감시 (항상 실행)
     console.log('\n[턴어라운드 감시] 빅배스 후보 탐색 중...');
     const recoveryWatch = await detectBigBathRecovery();
