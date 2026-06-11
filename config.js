@@ -54,8 +54,8 @@ export const FACTOR_WEIGHTS = {
   growth: 0,            // IC -0.003/+0.004 → 노이즈 컷 (누수 제거 후 신호 소멸)
   priceMomentum: 0.02,  // IC +0.002/+0.046 (60d IC>0 76%) — 최강 팩터
   trend: 0,             // IC -0.013/+0.018 → 노이즈 컷
-  earningsMomentum: 0,  // IC -0.047/-0.079 (60d IC>0 0%) — 첫 측정·이상 분포(완전 역방향).
-                        //   규칙상 -0.06이나 데이터 품질 의심(999 코딩·rcept 추정 폴백) → 1분기 probation 후 재검증
+  earningsMomentum: -0.03, // IC -0.019/-0.036 (60d IC>0 0%) — 누적/3개월 혼합 버그 수정 후 재측정치.
+                           //   단일 기간(1년) 측정 기반 역가중 — 분기마다 IC 추세 확인 후 유지/철회 판단
   governance: 0,        // 미측정 — probation
   event: 0,             // 공시: 미측정 — probation
 };
