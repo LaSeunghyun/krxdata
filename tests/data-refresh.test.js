@@ -62,7 +62,8 @@ test("daily-ranking env validation is explicit and import-safe", () => {
 test("ranking refresh SQL upserts rows and removes stale rows in one statement", () => {
   const sql = buildRankingsRefreshSql();
 
-  assert.match(sql, /WITH\s+scored\s+AS\s*\(/i);
+  assert.match(sql, /WITH\s+mom\s+AS\s*\(/i);   // v6: 가격 모멘텀 CTE
+  assert.match(sql, /,\s*scored\s+AS\s*\(/i);
   assert.match(sql, /upserted\s+AS\s*\(\s*INSERT\s+INTO\s+daily_rankings/i);
   assert.match(sql, /deleted\s+AS\s*\(\s*DELETE\s+FROM\s+daily_rankings\s+d/i);
   assert.match(sql, /NOT\s+EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+upserted\s+u/i);

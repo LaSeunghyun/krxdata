@@ -71,3 +71,31 @@ test("daily-ranking workflow passes required env to every ranking invocation", (
     }
   }
 });
+
+// ── v6 회귀 방지 계약 ─────────────────────────────────────────
+const dailyRankingSrc = fs.readFileSync(path.join(projectRoot, "daily-ranking.js"), "utf8");
+
+test("contract: 랭킹 SQL은 연간 행만 사용 (report_code 11011)", () => {
+  assert.ok(
+    dailyRankingSrc.includes("sf.report_code = '11011'"),
+    "stock_financials JOIN에 report_code='11011' 필터 필요 — 분기 행 오염 방지",
+  );
+});
+
+test("contract: 안티모멘텀 52주 하드필터 제거 유지", () => {
+  assert.ok(
+    !/price_position[\s\S]*?< 0\.7|low_52w, 0\) < 0\.7/.test(dailyRankingSrc),
+    "52주 위치 0.7 하드필터가 부활하면 안 됨 (백테스트 모멘텀 IC 양수와 모순)",
+  );
+});
+
+test("contract: 미검증 목표가 휴리스틱 미사용", () => {
+  assert.ok(
+    !dailyRankingSrc.includes("function calcTargetByScore"),
+    "점수 기반 목표가는 백테스트 미검증으로 제거됨",
+  );
+});
+
+test("contract: 가격 모멘텀 컴포넌트 존재", () => {
+  assert.ok(dailyRankingSrc.includes("ret60"), "v6 가격 모멘텀(ret60) 점수 컴포넌트 필요");
+});
