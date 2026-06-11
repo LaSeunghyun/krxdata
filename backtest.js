@@ -81,6 +81,47 @@ export function alignForward(snapshots, horizonDays, toleranceDays) {
   return out;
 }
 
+// 한 종목의 재무 행들 중 rcept_dt <= asOf 인 최신 행. 동률이면 analysis_year 큰 쪽.
+export function latestFinancialAsOf(rows, asOf) {
+  if (!Array.isArray(rows)) return null;
+  let best = null;
+  for (const r of rows) {
+    if (r?.rcept_dt == null) continue;
+    const d = String(r.rcept_dt);
+    if (d > String(asOf)) continue;
+    if (
+      best === null ||
+      d > String(best.rcept_dt) ||
+      (d === String(best.rcept_dt) && (r.analysis_year ?? 0) > (best.analysis_year ?? 0))
+    ) best = r;
+  }
+  return best;
+}
+
+// closes[startIdx..endIdx] 구간에 |일간변동| > threshold 또는 비정상가(<=0) 존재 여부.
+// 수정주가 미보유 환경에서 액면분할·무상증자 왜곡 관측 제외용. KR 가격제한폭 ±30% → 기본 0.35.
+export function hasExtremeGap(closes, startIdx, endIdx, threshold = 0.35) {
+  const lo = Math.max(1, startIdx + 1);
+  const hi = Math.min(closes.length - 1, endIdx);
+  for (let i = lo; i <= hi; i++) {
+    const a = closes[i - 1], b = closes[i];
+    if (!(a > 0) || !(b > 0)) return true;
+    if (Math.abs(b / a - 1) > threshold) return true;
+  }
+  return false;
+}
+
+// rcept_dt 미보유 행의 보수적(법정기한+여유) 공시 추정일
+export function estimateRceptDt(analysisYear, reportCode = "11011") {
+  const y = Number(analysisYear);
+  switch (String(reportCode)) {
+    case "11013": return `${y}0516`; // 1분기보고서
+    case "11012": return `${y}0815`; // 반기보고서
+    case "11014": return `${y}1115`; // 3분기보고서
+    default:      return `${y + 1}0401`; // 사업보고서
+  }
+}
+
 export function quantileSpread(rows, scoreKey, retKey, q = 0.2) {
   const valid = rows.filter(
     (r) => isFiniteNum(r[scoreKey]) && isFiniteNum(r[retKey]),
