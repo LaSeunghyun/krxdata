@@ -50,7 +50,8 @@ const STRATEGIES = {
   'rsi2':       { slots: 5, rsiMax: 10, stopPct: 7, maxHold: 10 },    // 과매도 반등 (현재 시총 상위 — lookahead 주의)
   'rsi2-pit':   { slots: 5, rsiMax: 10, stopPct: 7, maxHold: 10 },    // 과매도 반등 (PIT 20일 거래대금 상위 — 테마주 포함)
   'rsi2-mcap':  { slots: 5, rsiMax: 10, stopPct: 7, maxHold: 10 },    // 과매도 반등 (PIT 시총 상위 = 당시 가격×발행주식수)
-  'pullback':   { slots: 10, stopPct: 7, tpPct: 8, maxHold: 15 },     // C32: UP 추세주 MA20 눌림목 (스탠드얼론 검증)
+  'pullback':   { slots: 10, stopPct: 7, tpPct: 8, maxHold: 15 },     // C32: UP 추세주 MA20 눌림목 — 강한 기각 (PF 0.75)
+  'gapfollow':  { slots: 10, stopPct: 7, gapPct: 4, trailPct: 8, maxHold: 10 }, // C33: 갭업 유지 추종 (스탠드얼론 검증)
   // combo: 레짐 적응형 — 상승장 hi120 비중↑, 중립 rsi2 비중↑, 하락장 rsi2 소량+현금
   'combo':      { slots: 10, rsiMax: 10, stopPct: 7, maxHoldR: 10, lookback: 120, trailPct: 10, maxHoldH: 60 },
   // combo-v2: 사유 기록 분석 반영 — hi120 돌파폭 3%+만, rsi2 최대보유 5일, NEUTRAL hi120 슬롯 2
@@ -452,6 +453,25 @@ for (let di = 0; di < tradingDays.length; di++) {
           if (cd.c[i] > ma60 && cd.c[i - 1] >= ma20p && cd.c[i] < ma20) {
             buy(book, day, code, cd.c[i], budget(), { ctx: { sub: 'pullback', regime: 'UP' } });
           }
+        }
+      }
+    } else if (k === 'gapfollow') {
+      // C33: 갭업 유지 추종 — 시가 갭업 +gapPct% & 종가가 시가 위(갭 소화) 시 종가 매수
+      // 청산: hi120과 동일 트레일링 구조 (손절 -stopPct% 백업)
+      for (const [code, p] of Object.entries(book.positions)) {
+        const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
+        if (i == null) continue;
+        if (cd.c[i] <= p.entry * (1 - cfg.stopPct / 100)) p.exitAtOpen = 'stop_loss';
+        else if (cd.c[i] <= p.hi * (1 - cfg.trailPct / 100)) p.exitAtOpen = 'trailing';
+        else if (p.holdDays >= cfg.maxHold) p.exitAtOpen = 'max_hold';
+      }
+      for (const code of mom) {
+        if (book.positions[code] || Object.keys(book.positions).length >= cfg.slots) continue;
+        const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
+        if (i == null || i < 1) continue;
+        const gap = (cd.o[i] / cd.c[i - 1] - 1) * 100;
+        if (gap >= cfg.gapPct && cd.c[i] > cd.o[i]) {
+          buy(book, day, code, cd.c[i], budget(), { ctx: { sub: 'gapfollow', gap: gap.toFixed(1) } });
         }
       }
     } else if (k === 'combo' || k === 'combo-v2') {
