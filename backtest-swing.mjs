@@ -61,6 +61,7 @@ for (const [flag, key] of [['--trail', 'trailPct'], ['--minbreak', 'minBreakout'
   if (v != null) STRATEGIES['combo-v2'][key] = Number(v);
 }
 const DUMP = argOf('--dump', null);
+const COOLDOWN = Number(argOf('--cooldown', 0));
 const ACTIVE = Object.entries(STRATEGIES).filter(([k]) => !ONLY.length || ONLY.includes(k));
 
 function tickSize(p) {
@@ -253,6 +254,8 @@ function buy(book, day, code, price, budget, meta = {}) {
   book.positions[code] = { qty, entry: fill, entryDay: day, hi: fill, holdDays: 0, ...meta };
   return true;
 }
+// C18 (--cooldown N): stop_loss 청산 종목 N영업일 재진입 금지
+let CUR_DI = 0;
 function sell(book, day, code, price, reason, qtyArg) {
   const p = book.positions[code];
   if (!p) return;
@@ -261,6 +264,7 @@ function sell(book, day, code, price, reason, qtyArg) {
   const pnl = netPnl(p.entry, fill, qty);
   book.cash += fill * qty;
   book.trades.push({ day: fmtDay(day), code, entry: p.entry, exit: fill, qty, pnl, hold: p.holdDays, reason, ctx: p.ctx });
+  if (reason === 'stop_loss' && COOLDOWN > 0) (book.cool ??= {})[code] = CUR_DI + COOLDOWN;
   p.qty -= qty;
   if (p.qty < 1) delete book.positions[code];
 }
@@ -315,6 +319,7 @@ let weekMark = '';
 
 for (let di = 0; di < tradingDays.length; di++) {
   const day = tradingDays[di];
+  CUR_DI = di;
   const wk = weekKey(day);
   const isNewWeek = wk !== weekMark; weekMark = wk;
   const mom = momUniverse(day);
@@ -474,6 +479,8 @@ for (let di = 0; di < tradingDays.length; di++) {
         const r = rsi2(cd, i);
         // H7: N일 연속 과매도 요구 (--rsidays 2)
         const daysOk = !(cfg.rsiDays > 1) || rsi2(cd, i - 1) < cfg.rsiMax;
+        // C18: stop_loss 쿨다운 중이면 재진입 금지
+        if ((book.cool?.[code] ?? -1) > di) continue;
         if (r < cfg.rsiMax && daysOk) {
           // H2: DOWN 레짐 사이즈 축소 (--downsize 0.5)
           const sizeMult = (regime === 'DOWN' && cfg.downSize > 0) ? cfg.downSize : 1;
