@@ -61,7 +61,7 @@ const STRATEGIES = {
 // 가설 플래그: --volx N (hi120 돌파일 거래량 > 20일평균 ×N), --rsidays N (rsi2 N일 연속 과매도),
 //             --downsize 0.5 (DOWN 레짐 rsi2 사이즈 배수), --tp1r 1 (1R 도달 시 절반 익절)
 for (const [flag, key] of [['--trail', 'trailPct'], ['--minbreak', 'minBreakout'], ['--maxholdr', 'maxHoldR'], ['--stoppct', 'stopPct'],
-  ['--volx', 'volX'], ['--rsidays', 'rsiDays'], ['--downsize', 'downSize'], ['--tp1r', 'tp1R'], ['--intraday', 'intradayExit'], ['--maxholdh', 'maxHoldH'], ['--rsiuni', 'rsiUni'], ['--entryopen', 'entryOpen'], ['--downflat', 'downFlat'], ['--rsima', 'rsiMa'], ['--tp2r', 'tp2R'], ['--trailwide', 'trailWide'], ['--maxbreak', 'maxBreak'], ['--atrsize', 'atrSize'], ['--lookback', 'lookback'], ['--rsitp', 'rsiTp'], ['--closeloc', 'closeLoc'], ['--rsivol', 'rsiVol'], ['--breakfail', 'breakFail'], ['--rsicut', 'rsiCut'], ['--pyramid', 'pyramid'], ['--slots', 'slots']]) {
+  ['--volx', 'volX'], ['--rsidays', 'rsiDays'], ['--downsize', 'downSize'], ['--tp1r', 'tp1R'], ['--intraday', 'intradayExit'], ['--maxholdh', 'maxHoldH'], ['--rsiuni', 'rsiUni'], ['--entryopen', 'entryOpen'], ['--downflat', 'downFlat'], ['--rsima', 'rsiMa'], ['--tp2r', 'tp2R'], ['--trailwide', 'trailWide'], ['--maxbreak', 'maxBreak'], ['--atrsize', 'atrSize'], ['--lookback', 'lookback'], ['--rsitp', 'rsiTp'], ['--closeloc', 'closeLoc'], ['--rsivol', 'rsiVol'], ['--breakfail', 'breakFail'], ['--rsicut', 'rsiCut'], ['--pyramid', 'pyramid'], ['--slots', 'slots'], ['--rsiafford', 'rsiAfford']]) {
   const v = argOf(flag, null);
   if (v != null) STRATEGIES['combo-v2'][key] = Number(v);
 }
@@ -196,8 +196,8 @@ function liqUniverse(day) {
 // PIT 시총 상위 30 — 발행주식수(현재값 근사) × 당시 종가. 주식수 변동은 가격 대비 미미
 const sharesEst = new Map(); // code → 추정 발행주식수
 const mcapCache = new Map();
-function mcapUniverse(day) {
-  const wk = weekKey(day);
+function mcapUniverse(day, top = MCAP_TOP) {
+  const wk = weekKey(day) + ':' + top;
   if (mcapCache.has(wk)) return mcapCache.get(wk);
   const scored = [];
   for (const [code, cd] of candles) {
@@ -208,7 +208,7 @@ function mcapUniverse(day) {
     scored.push({ code, mcap: sh * cd.c[i] });
   }
   scored.sort((a, b) => b.mcap - a.mcap);
-  mcapCache.set(wk, scored.slice(0, MCAP_TOP).map(s => s.code));
+  mcapCache.set(wk, scored.slice(0, top).map(s => s.code));
   return mcapCache.get(wk);
 }
 
@@ -580,7 +580,17 @@ for (let di = 0; di < tradingDays.length; di++) {
         }
       }
       // rsi2 서브 진입 (PIT 시총 상위 과매도)
-      for (const code of mcapUniverse(day)) {
+      // I1 (--rsiafford N): 소액 계좌용 — 시총 상위 N 풀에서 슬롯예산으로 1주 이상 매수 가능한
+      // 종목만 남겨 상위 30개 선택. 소액일 때 rsi2 기아(대형주 1주 가격 > 슬롯예산) 해소
+      let rsiPool = mcapUniverse(day, cfg.rsiAfford > 0 ? cfg.rsiAfford : undefined);
+      if (cfg.rsiAfford > 0) {
+        const bud = budget();
+        rsiPool = rsiPool.filter(c => {
+          const cd = candles.get(c); const i = cd ? indexOfDate(cd, day) : null;
+          return i != null && tickUp(cd.c[i]) <= bud;
+        }).slice(0, 30);
+      }
+      for (const code of rsiPool) {
         if (countSub('rsi2') >= caps.rsi2 || book.positions[code]) continue;
         const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
         if (i == null || i < 4) continue;
