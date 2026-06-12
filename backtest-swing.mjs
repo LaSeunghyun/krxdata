@@ -229,6 +229,8 @@ const CAPS_PRESETS = {
   A: COMBO_CAPS_V2,
   B: { UP: { hi120: 8, rsi2: 2 }, NEUTRAL: { hi120: 3, rsi2: 7 }, DOWN: { hi120: 0, rsi2: 5 } },
   C: { UP: { hi120: 5, rsi2: 5 }, NEUTRAL: { hi120: 2, rsi2: 8 }, DOWN: { hi120: 0, rsi2: 6 } },
+  // C19: NEUTRAL hi120 무수익(전기간 +18k/46건) → rsi2로 재배분
+  D: { UP: { hi120: 6, rsi2: 4 }, NEUTRAL: { hi120: 0, rsi2: 8 }, DOWN: { hi120: 0, rsi2: 4 } },
 };
 const CAPS_SEL = argOf('--caps', 'A');
 // 레짐 MA 페어 (--regimema "20,60"): 빠른 스위치 vs 느린 스위치
