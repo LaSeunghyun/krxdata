@@ -379,6 +379,20 @@ async function morningPhase(books) {
 }
 
 // ── close: 종가 시그널 평가 ──────────────────────────────────
+// ── 텔레그램 보고 (TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID 미설정 시 무동작) ──
+async function notifyTelegram(text) {
+  const token = process.env.TELEGRAM_BOT_TOKEN, chat = process.env.TELEGRAM_CHAT_ID;
+  if (!token || !chat) return;
+  try {
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chat, text: text.slice(0, 4000) }),
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch (e) { log(`텔레그램 전송 실패: ${e.message}`); }
+}
+
 // ── LIVE: 실주문 집행 (소액 검증) ─────────────────────────────
 // 흐름: close 페이즈가 실보유를 combo 룰로 판정 → live_queue 적재 → morning 페이즈가 실주문 집행
 // 가드: 주문당 10만원 상한, 하루 최대 3주문, paper_state k='live_halt' 존재 시 전면 중단
@@ -447,11 +461,15 @@ async function executeLiveQueue() {
       const fillPrice = Number(fill.filledPrice ?? fill.averageFilledPrice ?? fill.price ?? px);
       recordTrade({ ts: kst().toISOString(), strat: 'live', type: o.side.toLowerCase(), code: o.code, name: o.name, qty, price: fillPrice, entry: o.entry ?? null, pnl: o.side === 'SELL' && o.entry ? netPnl(o.entry, fillPrice, qty) : null, reason: o.reason, ctx: o.ctx });
       log(`💰 LIVE ${o.side === 'BUY' ? '매수' : '매도'} ${o.name ?? o.code} ${qty}주 @${fillPrice.toLocaleString()} (${o.reason})`);
+      await notifyTelegram(
+        `💰 [실주문 체결] ${o.side === 'BUY' ? '매수' : '매도'} ${o.name ?? o.code} ${qty}주 @${fillPrice.toLocaleString()}원\n사유: ${o.reason}` +
+        (o.side === 'SELL' && o.entry ? `\n실현손익: ${netPnl(o.entry, fillPrice, qty).toLocaleString()}원 (평단 ${Number(o.entry).toLocaleString()}원)` : ''));
       if (o.side === 'BUY') meta[o.code] = { sub: o.ctx?.sub ?? 'hi120', name: o.name, entry: fillPrice, entryDay: kstDate(), hi: fillPrice, holdDays: 0, ctx: o.ctx };
       else delete meta[o.code];
     } catch (e) {
       log(`LIVE 주문 오류 — 안전 중단: ${e.message}`);
       await saveStateKey('live_halt', { reason: e.message, at: kst().toISOString() });
+      await notifyTelegram(`⛔ [실주문 오류 — 전면 중단] ${e.message}\n다음 액션 지시가 있을 때까지 매수/매도를 중단합니다.`);
       remaining.push(o);
       break;
     }
@@ -468,6 +486,23 @@ async function evaluateLiveHoldings(regime, uApplied, badCodes) {
   if (seq == null) return;
   const holdings = await getHoldings(seq).catch(() => null);
   const items = holdings?.items ?? [];
+
+  // ── 서킷브레이커: 원금 대비 -30% 이상 손실 → 전면 중단 + 텔레그램 보고 ──
+  const bpNow = await getBuyingPower(seq, { currency: 'KRW' }).catch(() => null);
+  const totalNow = Number(holdings?.marketValue?.amount?.krw ?? 0) + Number(bpNow?.cashBuyingPower ?? 0);
+  let baseline = await loadStateKey('live_baseline', null);
+  if (!baseline) { baseline = { value: totalNow, at: kstDate() }; await saveStateKey('live_baseline', baseline); log(`LIVE 원금 기준선 설정: ${totalNow.toLocaleString()}원`); }
+  if (baseline.value > 0 && totalNow <= baseline.value * 0.7) {
+    await saveStateKey('live_halt', { reason: `원금 대비 -30% 도달 (${baseline.value.toLocaleString()} → ${totalNow.toLocaleString()})`, at: kst().toISOString() });
+    await saveStateKey('live_queue', []); // 대기 주문 전부 취소
+    await notifyTelegram(
+      `🚨 [서킷브레이커] 원금 대비 -30% 손실 도달\n` +
+      `기준 원금: ${baseline.value.toLocaleString()}원 (${baseline.at})\n현재 평가: ${totalNow.toLocaleString()}원 (${((totalNow / baseline.value - 1) * 100).toFixed(1)}%)\n` +
+      `모든 매수/매도를 중단했습니다. 다음 액션을 지시해 주세요 (Claude 세션에서 "라이브 재개" / "전량 청산" 등).`);
+    log('🚨 서킷브레이커 발동 — 전면 중단');
+    return;
+  }
+
   const meta = await loadStateKey('live_meta', {});
   const queue = await loadStateKey('live_queue', []);
   const queuedCodes = new Set(queue.map(q => q.code));
@@ -644,6 +679,24 @@ async function closePhase(books) {
   // LIVE: 실보유 종가 판정 → 익일 시가 주문 큐 적재
   hi120SignalG = hi120Signal;
   try { await evaluateLiveHoldings(regime, uApplied, badCodes); } catch (e) { log(`LIVE 판정 오류 (비치명): ${e.message}`); }
+
+  // 장 마감 텔레그램 보고 (자산 현황 + 예약 주문)
+  try {
+    const queueNow = await loadStateKey('live_queue', []);
+    const eqLines = [];
+    for (const [strat, book] of Object.entries(books)) {
+      let eq = book.cash;
+      for (const [code, p] of Object.entries(book.positions)) {
+        const t2 = lastBar(await bars(code));
+        eq += (t2?.close ?? p.entry) * p.qty;
+      }
+      eqLines.push(`${strat}: ${((eq / CAPITAL - 1) * 100).toFixed(2)}% (보유 ${Object.keys(book.positions).length})`);
+    }
+    await notifyTelegram(
+      `📊 [장 마감 보고 ${kstDate()}] 레짐 ${regime}\n` +
+      `페이퍼: ${eqLines.join(' | ')}\n` +
+      (queueNow.length ? `내일 시가 실주문 예약: ${queueNow.map(q => `${q.side === 'BUY' ? '매수' : '매도'} ${q.name ?? q.code} ${q.qty}주 (${q.reason})`).join(' / ')}` : '내일 실주문 예약 없음'));
+  } catch (e) { log(`마감 보고 실패 (비치명): ${e.message}`); }
 
   // 자산 곡선 기록
   const eqVals = [];
