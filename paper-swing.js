@@ -33,7 +33,7 @@ const STRATEGIES = {
   'rsi2':  { slots: 5, rsiMax: 10, stopPct: 7, maxHold: 10 },
   // combo: 레짐 적응형 (UP: hi120 6+rsi2 4 / NEUTRAL: hi120 2+rsi2 6 / DOWN: rsi2 4만)
   // 사유 분석 반영 룰: hi120 돌파폭 3%+만, rsi2 서브 최대보유 5일
-  'combo': { slots: 10, rsiMax: 10, stopPct: 7, maxHoldR: 5, lookback: 120, trailPct: 8, maxHoldH: 60, minBreakout: 3 },
+  'combo': { slots: 10, rsiMax: 10, stopPct: 7, maxHoldR: 5, lookback: 120, trailPct: 8, maxHoldH: 60, minBreakout: 3, rsiDays: 2 },
 };
 const COMBO_CAPS = { UP: { hi120: 6, rsi2: 4 }, NEUTRAL: { hi120: 2, rsi2: 6 }, DOWN: { hi120: 0, rsi2: 4 } };
 
@@ -635,12 +635,14 @@ async function closePhase(books) {
     if (list[i].close <= prevHigh) return null;
     return { close: list[i].close, breakoutPct: ((list[i].close / prevHigh - 1) * 100) };
   }
-  async function rsi2Signal(code) {
+  async function rsi2Signal(code, days = 1) {
     const list = await bars(code, 10);
-    if (list.length < 4) return null;
+    if (list.length < 5) return null;
     const closes = list.map(b => b.close);
     const r = rsi2val(closes, closes.length - 1);
-    return r < 10 ? { close: closes[closes.length - 1], rsi: r } : null;
+    if (r >= 10) return null;
+    if (days > 1 && rsi2val(closes, closes.length - 2) >= 10) return null; // 연속 과매도 요구
+    return { close: closes[closes.length - 1], rsi: r };
   }
 
   // hi120 단독: 모멘텀 top30 중 신고가 돌파
@@ -671,7 +673,7 @@ async function closePhase(books) {
     }
     for (const r of largeCaps) {
       if (countSub('rsi2') >= caps.rsi2 || badCodes.has(r.stock_code) || book.positions[r.stock_code]) continue;
-      const sig = await rsi2Signal(r.stock_code);
+      const sig = await rsi2Signal(r.stock_code, STRATEGIES['combo'].rsiDays ?? 1);
       if (sig) paperBuy(books, 'combo', r.stock_code, r.corp_name, sig.close, { sub: 'rsi2', ctx: { sub: 'rsi2', regime, rsi: sig.rsi.toFixed(0) } });
     }
   }

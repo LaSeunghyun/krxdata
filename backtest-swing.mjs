@@ -50,13 +50,17 @@ const STRATEGIES = {
   // combo: 레짐 적응형 — 상승장 hi120 비중↑, 중립 rsi2 비중↑, 하락장 rsi2 소량+현금
   'combo':      { slots: 10, rsiMax: 10, stopPct: 7, maxHoldR: 10, lookback: 120, trailPct: 10, maxHoldH: 60 },
   // combo-v2: 사유 기록 분석 반영 — hi120 돌파폭 3%+만, rsi2 최대보유 5일, NEUTRAL hi120 슬롯 2
-  'combo-v2':   { slots: 10, rsiMax: 10, stopPct: 7, maxHoldR: 5, lookback: 120, trailPct: 8, maxHoldH: 60, minBreakout: 3, v2: true },
+  'combo-v2':   { slots: 10, rsiMax: 10, stopPct: 7, maxHoldR: 5, lookback: 120, trailPct: 8, maxHoldH: 60, minBreakout: 3, rsiDays: 2, v2: true },
 };
 // combo-v2 파라미터 오버라이드 (스윕용): --trail 8 --minbreak 5 --maxholdr 3 --stoppct 5
-for (const [flag, key] of [['--trail', 'trailPct'], ['--minbreak', 'minBreakout'], ['--maxholdr', 'maxHoldR'], ['--stoppct', 'stopPct']]) {
+// 가설 플래그: --volx N (hi120 돌파일 거래량 > 20일평균 ×N), --rsidays N (rsi2 N일 연속 과매도),
+//             --downsize 0.5 (DOWN 레짐 rsi2 사이즈 배수), --tp1r 1 (1R 도달 시 절반 익절)
+for (const [flag, key] of [['--trail', 'trailPct'], ['--minbreak', 'minBreakout'], ['--maxholdr', 'maxHoldR'], ['--stoppct', 'stopPct'],
+  ['--volx', 'volX'], ['--rsidays', 'rsiDays'], ['--downsize', 'downSize'], ['--tp1r', 'tp1R']]) {
   const v = argOf(flag, null);
   if (v != null) STRATEGIES['combo-v2'][key] = Number(v);
 }
+const DUMP = argOf('--dump', null);
 const ACTIVE = Object.entries(STRATEGIES).filter(([k]) => !ONLY.length || ONLY.includes(k));
 
 function tickSize(p) {
@@ -206,18 +210,28 @@ function mcapUniverse(day) {
 function marketRegime(day) {
   const cd = candles.get('005930');
   const i = cd ? indexOfDate(cd, day) ?? lastIndexBefore(cd, day) : null;
-  if (i == null || i < 60) return 'NEUTRAL';
-  let ma20 = 0, ma60 = 0;
-  for (let j = i - 19; j <= i; j++) ma20 += cd.c[j];
-  for (let j = i - 59; j <= i; j++) ma60 += cd.c[j];
-  ma20 /= 20; ma60 /= 60;
+  const [fast, slow] = REGIME_MAS;
+  if (i == null || i < slow) return 'NEUTRAL';
+  let maF = 0, maS = 0;
+  for (let j = i - fast + 1; j <= i; j++) maF += cd.c[j];
+  for (let j = i - slow + 1; j <= i; j++) maS += cd.c[j];
+  maF /= fast; maS /= slow;
   const ret5 = (cd.c[i] / cd.c[i - 5] - 1) * 100;
-  if (cd.c[i] > ma20 && ma20 > ma60) return 'UP';
-  if (cd.c[i] < ma20 && ret5 < -3) return 'DOWN';
+  if (cd.c[i] > maF && maF > maS) return 'UP';
+  if (cd.c[i] < maF && ret5 < -3) return 'DOWN';
   return 'NEUTRAL';
 }
 const COMBO_CAPS = { UP: { hi120: 6, rsi2: 4 }, NEUTRAL: { hi120: 3, rsi2: 5 }, DOWN: { hi120: 0, rsi2: 4 } };
 const COMBO_CAPS_V2 = { UP: { hi120: 6, rsi2: 4 }, NEUTRAL: { hi120: 2, rsi2: 6 }, DOWN: { hi120: 0, rsi2: 4 } };
+// 슬롯 배분 프리셋 (--caps A|B|C): A=현행, B=추세 공격형, C=역추세 수비형
+const CAPS_PRESETS = {
+  A: COMBO_CAPS_V2,
+  B: { UP: { hi120: 8, rsi2: 2 }, NEUTRAL: { hi120: 3, rsi2: 7 }, DOWN: { hi120: 0, rsi2: 5 } },
+  C: { UP: { hi120: 5, rsi2: 5 }, NEUTRAL: { hi120: 2, rsi2: 8 }, DOWN: { hi120: 0, rsi2: 6 } },
+};
+const CAPS_SEL = argOf('--caps', 'A');
+// 레짐 MA 페어 (--regimema "20,60"): 빠른 스위치 vs 느린 스위치
+const REGIME_MAS = argOf('--regimema', '20,60').split(',').map(Number);
 
 // ── 포트폴리오 ───────────────────────────────────────────────
 function makeBook() { return { cash: CAPITAL, positions: {}, trades: [], peak: CAPITAL, maxDD: 0, monthly: new Map(), lastEq: CAPITAL }; }
@@ -366,7 +380,7 @@ for (let di = 0; di < tradingDays.length; di++) {
       }
     } else if (k === 'combo' || k === 'combo-v2') {
       const regime = marketRegime(day);
-      const caps = (cfg.v2 ? COMBO_CAPS_V2 : COMBO_CAPS)[regime];
+      const caps = (cfg.v2 ? (CAPS_PRESETS[CAPS_SEL] ?? COMBO_CAPS_V2) : COMBO_CAPS)[regime];
       // 보유 관리: 서브 전략별 청산 규칙
       for (const [code, p] of Object.entries(book.positions)) {
         const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
@@ -392,7 +406,14 @@ for (let di = 0; di < tradingDays.length; di++) {
         let prevHigh = 0;
         for (let j = i - cfg.lookback; j < i; j++) prevHigh = Math.max(prevHigh, cd.h[j]);
         const breakoutPct = (cd.c[i] / prevHigh - 1) * 100;
-        if (cd.c[i] > prevHigh && breakoutPct >= (cfg.minBreakout ?? 0)) {
+        // H3: 돌파일 거래량 필터 (--volx N) — 거래량 미동반 돌파 제외
+        let volOk = true;
+        if (cfg.volX > 0 && i >= 21) {
+          let av = 0;
+          for (let j = i - 20; j < i; j++) av += cd.v[j];
+          volOk = cd.v[i] > (av / 20) * cfg.volX;
+        }
+        if (cd.c[i] > prevHigh && breakoutPct >= (cfg.minBreakout ?? 0) && volOk) {
           buy(book, day, code, cd.c[i], budget(), { sub: 'hi120', ctx: { sub: 'hi120', regime, breakoutPct: breakoutPct.toFixed(1) } });
         }
       }
@@ -400,10 +421,14 @@ for (let di = 0; di < tradingDays.length; di++) {
       for (const code of mcapUniverse(day)) {
         if (countSub('rsi2') >= caps.rsi2 || book.positions[code]) continue;
         const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
-        if (i == null || i < 3) continue;
+        if (i == null || i < 4) continue;
         const r = rsi2(cd, i);
-        if (r < cfg.rsiMax) {
-          buy(book, day, code, cd.c[i], budget(), { sub: 'rsi2', ctx: { sub: 'rsi2', regime, rsi: r.toFixed(0) } });
+        // H7: N일 연속 과매도 요구 (--rsidays 2)
+        const daysOk = !(cfg.rsiDays > 1) || rsi2(cd, i - 1) < cfg.rsiMax;
+        if (r < cfg.rsiMax && daysOk) {
+          // H2: DOWN 레짐 사이즈 축소 (--downsize 0.5)
+          const sizeMult = (regime === 'DOWN' && cfg.downSize > 0) ? cfg.downSize : 1;
+          buy(book, day, code, cd.c[i], Math.floor(budget() * sizeMult), { sub: 'rsi2', ctx: { sub: 'rsi2', regime, rsi: r.toFixed(0) } });
         }
       }
     } else if (k === 'rsi2' || k === 'rsi2-pit' || k === 'rsi2-mcap') {
@@ -510,3 +535,12 @@ for (const comboKey of ['combo', 'combo-v2']) {
   console.log('  ⛔ 하지말아야할 것: ' + (donts.join(' / ') || '(표본 부족)'));
 }
 console.log(`\n비용: 수수료 ${FEE_BPS}bp×2 + 거래세 ${TAX_BPS}bp + 슬리피지 ±1틱 | 풀: 현재 상장 ${candles.size}종목 (생존 편향) | swing-rank: 랭킹 ${rankByDay.size}일치`);
+
+// 매매 내역 덤프 (--dump path) — 사이클 분석용
+if (DUMP) {
+  const { writeFileSync } = await import('fs');
+  const out = {};
+  for (const [k] of ACTIVE) out[k] = { cash: books[k].cash, maxDD: books[k].maxDD, trades: books[k].trades };
+  writeFileSync(DUMP, JSON.stringify({ from: FROM, to: TO, params: STRATEGIES['combo-v2'], books: out }));
+  console.log(`덤프 저장: ${DUMP}`);
+}
