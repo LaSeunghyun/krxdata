@@ -133,6 +133,11 @@ export async function getBuyingPower(accountSeq, params = {}) {
   return tossGet("/api/v1/buying-power", params, accountHeader(accountSeq));
 }
 
+/** 보유 주식 조회 */
+export async function getHoldings(accountSeq) {
+  return tossGet("/api/v1/holdings", {}, accountHeader(accountSeq));
+}
+
 function chunk(arr, size) {
   const out = [];
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
