@@ -15,7 +15,10 @@
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import dotenv from 'dotenv';
-import { isTossConfigured, getDailyCandles, getKrMarketCalendar } from './toss-api.js';
+import {
+  isTossConfigured, getDailyCandles, getKrMarketCalendar,
+  getAccounts, getHoldings, getBuyingPower, getPricesMap, createOrder, getOrder, cancelOrder,
+} from './toss-api.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: join(__dirname, '.env') });
@@ -371,9 +374,160 @@ async function morningPhase(books) {
     }
   }
   log(`morning 완료 — 시가 집행 ${executed}건`);
+  // LIVE 큐 실주문 집행 (가드: 주문당 10만원·일 3건·live_halt 플래그)
+  try { await executeLiveQueue(); } catch (e) { log(`LIVE 집행 오류 (비치명): ${e.message}`); }
 }
 
 // ── close: 종가 시그널 평가 ──────────────────────────────────
+// ── LIVE: 실주문 집행 (소액 검증) ─────────────────────────────
+// 흐름: close 페이즈가 실보유를 combo 룰로 판정 → live_queue 적재 → morning 페이즈가 실주문 집행
+// 가드: 주문당 10만원 상한, 하루 최대 3주문, paper_state k='live_halt' 존재 시 전면 중단
+const LIVE_MAX_ORDER_VALUE = 100_000;
+const LIVE_MAX_ORDERS_PER_DAY = 3;
+
+async function loadStateKey(k, dflt) {
+  const rows = await dbQuery(`SELECT data FROM paper_state WHERE k = '${k}'`);
+  if (!rows.length || rows[0].data == null) return dflt;
+  return typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+}
+async function saveStateKey(k, data) {
+  await dbQuery(`INSERT INTO paper_state (k, data, updated_at) VALUES ('${k}', $j$${JSON.stringify(data).replace(/\$/g, '')}$j$::jsonb, NOW())
+                 ON CONFLICT (k) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`);
+}
+
+async function waitLiveFill(seq, orderId, timeoutMs = 90_000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeoutMs) {
+    const o = await getOrder(seq, orderId).catch(() => null);
+    if (o?.status === 'FILLED') return o;
+    if (['REJECTED', 'CANCELED', 'CANCEL_REJECTED'].includes(o?.status)) return null;
+    await new Promise(r => setTimeout(r, 3_000));
+  }
+  try { await cancelOrder(seq, orderId); } catch {}
+  return null;
+}
+
+async function executeLiveQueue() {
+  if (await loadStateKey('live_halt', null)) { log('LIVE 중단 플래그(live_halt) — 집행 생략'); return; }
+  const queue = await loadStateKey('live_queue', []);
+  if (!queue.length) { log('LIVE 큐 비어있음'); return; }
+  const accounts = await getAccounts();
+  const seq = accounts[0]?.accountSeq;
+  if (seq == null) { log('LIVE 계좌 조회 실패 — 집행 보류'); return; }
+
+  log(`LIVE 큐 ${queue.length}건 집행 시작 (계좌 ${accounts[0].accountNo})`);
+  const remaining = [];
+  let executed = 0;
+  const meta = await loadStateKey('live_meta', {});
+
+  for (const o of queue) {
+    if (executed >= LIVE_MAX_ORDERS_PER_DAY) { remaining.push(o); continue; }
+    try {
+      const px = (await getPricesMap([o.code])).get(o.code)?.price ?? 0;
+      if (!(px > 0)) { log(`LIVE ${o.code} 현재가 조회 실패 — 보류`); remaining.push(o); continue; }
+      let qty = o.qty;
+      if (o.side === 'BUY') {
+        // 매도대금 반영 대기 (최대 60초)
+        let cash = 0;
+        for (let w = 0; w < 12; w++) {
+          const bp = await getBuyingPower(seq, { currency: 'KRW' }).catch(() => null);
+          cash = Number(bp?.cashBuyingPower ?? 0);
+          if (cash >= px) break;
+          await new Promise(r => setTimeout(r, 5_000));
+        }
+        qty = Math.min(o.qty, Math.floor(cash / (px * 1.01)));
+        if (qty < 1) { log(`LIVE 매수가능금액 부족 (${cash.toLocaleString()}원) — ${o.name ?? o.code} 스킵`); continue; }
+      }
+      if (px * qty > LIVE_MAX_ORDER_VALUE) { log(`LIVE 주문가치 상한 초과 (${(px * qty).toLocaleString()}원 > ${LIVE_MAX_ORDER_VALUE.toLocaleString()}) — 스킵`); continue; }
+
+      const order = await createOrder(seq, { symbol: o.code, side: o.side, orderType: 'MARKET', quantity: String(qty) });
+      const fill = await waitLiveFill(seq, order.orderId);
+      executed++;
+      if (!fill) { log(`LIVE ${o.side} ${o.name ?? o.code} 미체결/거부 — 다음 회차 보류`); remaining.push(o); continue; }
+      const fillPrice = Number(fill.filledPrice ?? fill.averageFilledPrice ?? fill.price ?? px);
+      recordTrade({ ts: kst().toISOString(), strat: 'live', type: o.side.toLowerCase(), code: o.code, name: o.name, qty, price: fillPrice, entry: o.entry ?? null, pnl: o.side === 'SELL' && o.entry ? netPnl(o.entry, fillPrice, qty) : null, reason: o.reason, ctx: o.ctx });
+      log(`💰 LIVE ${o.side === 'BUY' ? '매수' : '매도'} ${o.name ?? o.code} ${qty}주 @${fillPrice.toLocaleString()} (${o.reason})`);
+      if (o.side === 'BUY') meta[o.code] = { sub: o.ctx?.sub ?? 'hi120', name: o.name, entry: fillPrice, entryDay: kstDate(), hi: fillPrice, holdDays: 0, ctx: o.ctx };
+      else delete meta[o.code];
+    } catch (e) {
+      log(`LIVE 주문 오류 — 안전 중단: ${e.message}`);
+      await saveStateKey('live_halt', { reason: e.message, at: kst().toISOString() });
+      remaining.push(o);
+      break;
+    }
+  }
+  await saveStateKey('live_queue', remaining);
+  await saveStateKey('live_meta', meta);
+}
+
+// close 페이즈: 실보유를 combo 룰로 판정 → 큐 적재
+async function evaluateLiveHoldings(regime, uApplied, badCodes) {
+  if (await loadStateKey('live_halt', null)) return;
+  const accounts = await getAccounts().catch(() => []);
+  const seq = accounts[0]?.accountSeq;
+  if (seq == null) return;
+  const holdings = await getHoldings(seq).catch(() => null);
+  const items = holdings?.items ?? [];
+  const meta = await loadStateKey('live_meta', {});
+  const queue = await loadStateKey('live_queue', []);
+  const queuedCodes = new Set(queue.map(q => q.code));
+  const cfg = STRATEGIES['combo'];
+
+  for (const it of items) {
+    if (it.marketCountry !== 'KR' || queuedCodes.has(it.symbol)) continue;
+    const m = meta[it.symbol] ?? { sub: 'hi120', name: it.name, entry: Number(it.averagePurchasePrice), entryDay: '00000000', hi: Number(it.lastPrice), holdDays: 999 };
+    const list = await bars(it.symbol);
+    const t = lastBar(list);
+    if (!t) continue;
+    m.holdDays = (m.holdDays ?? 0) + 1;
+    m.hi = Math.max(m.hi ?? 0, t.high);
+    let exitReason = null;
+    if (m.sub === 'rsi2') {
+      const closes = list.map(b => b.close);
+      const i = closes.length - 1;
+      let ma5 = 0; const n = Math.min(5, closes.length);
+      for (let j = i - n + 1; j <= i; j++) ma5 += closes[j];
+      ma5 /= n;
+      if (t.close <= m.entry * (1 - cfg.stopPct / 100)) exitReason = 'stop_loss';
+      else if (t.close > ma5) exitReason = 'ma5_exit';
+      else if (m.holdDays >= cfg.maxHoldR) exitReason = 'max_hold';
+    } else {
+      if (t.close <= m.hi * (1 - cfg.trailPct / 100)) exitReason = 'trailing';
+      else if (m.holdDays >= cfg.maxHoldH) exitReason = 'max_hold';
+    }
+    if (exitReason) {
+      queue.push({ side: 'SELL', code: it.symbol, name: it.name, qty: Number(it.quantity), entry: Number(it.averagePurchasePrice), reason: exitReason, ctx: { ...(m.ctx ?? {}), sub: m.sub, regime } });
+      log(`LIVE 매도 예약: ${it.name} (${exitReason}) — 익일 시가 집행`);
+    }
+    meta[it.symbol] = m;
+  }
+
+  // 신규 진입: 현금 있고 미보유면 combo 최상위 시그널 1건 (소액 계좌라 1슬롯)
+  const bp = await getBuyingPower(seq, { currency: 'KRW' }).catch(() => null);
+  const cash = Number(bp?.cashBuyingPower ?? 0);
+  const heldCodes = new Set(items.map(i => i.symbol));
+  const willSell = new Set(queue.filter(q => q.side === 'SELL').map(q => q.code));
+  const hasOpenSlot = [...heldCodes].filter(c => !willSell.has(c)).length === 0 && !queue.some(q => q.side === 'BUY');
+  if (cash > MIN_PRICE || willSell.size > 0) {
+    if (hasOpenSlot && COMBO_CAPS[regime].hi120 > 0) {
+      for (const u of uApplied) {
+        if (heldCodes.has(u.stock_code) || badCodes.has(u.stock_code)) continue;
+        const sig = await hi120SignalG(u.stock_code);
+        if (sig && sig.breakoutPct >= cfg.minBreakout) {
+          const budgetEst = cash > MIN_PRICE ? cash : LIVE_MAX_ORDER_VALUE; // 매도 예약분은 집행 시점 잔고로 재계산
+          const qty = Math.max(1, Math.floor(Math.min(budgetEst, LIVE_MAX_ORDER_VALUE) / sig.close));
+          queue.push({ side: 'BUY', code: u.stock_code, name: u.corp_name, qty, reason: `combo hi120 돌파 +${sig.breakoutPct.toFixed(1)}%`, ctx: { sub: 'hi120', regime, breakoutPct: sig.breakoutPct.toFixed(1) } });
+          log(`LIVE 매수 예약: ${u.corp_name} ${qty}주 (돌파 +${sig.breakoutPct.toFixed(1)}%) — 익일 시가 집행`);
+          break;
+        }
+      }
+    }
+  }
+  await saveStateKey('live_queue', queue);
+  await saveStateKey('live_meta', meta);
+}
+let hi120SignalG = null; // closePhase에서 주입 (단독/콤보 공용 시그널 함수 재사용)
+
 // 시장 레짐 (005930, 당일 종가): UP / NEUTRAL / DOWN
 async function marketRegime() {
   const list = await bars('005930', 70);
@@ -486,6 +640,10 @@ async function closePhase(books) {
       if (sig) paperBuy(books, 'combo', r.stock_code, r.corp_name, sig.close, { sub: 'rsi2', ctx: { sub: 'rsi2', regime, rsi: sig.rsi.toFixed(0) } });
     }
   }
+
+  // LIVE: 실보유 종가 판정 → 익일 시가 주문 큐 적재
+  hi120SignalG = hi120Signal;
+  try { await evaluateLiveHoldings(regime, uApplied, badCodes); } catch (e) { log(`LIVE 판정 오류 (비치명): ${e.message}`); }
 
   // 자산 곡선 기록
   const eqVals = [];
