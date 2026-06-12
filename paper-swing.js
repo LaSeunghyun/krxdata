@@ -33,7 +33,7 @@ const STRATEGIES = {
   'rsi2':  { slots: 5, rsiMax: 10, stopPct: 7, maxHold: 10 },
   // combo: 레짐 적응형 (UP: hi120 6+rsi2 4 / NEUTRAL: hi120 2+rsi2 6 / DOWN: rsi2 4만)
   // 사유 분석 반영 룰: hi120 돌파폭 3%+만, rsi2 서브 최대보유 5일
-  'combo': { slots: 10, rsiMax: 10, stopPct: 7, maxHoldR: 5, lookback: 120, trailPct: 8, maxHoldH: 60, minBreakout: 3, rsiDays: 2, tp1R: 1, rsiMa: 3 },
+  'combo': { slots: 10, rsiMax: 10, stopPct: 7, maxHoldR: 5, lookback: 120, trailPct: 8, maxHoldH: 60, minBreakout: 3, rsiDays: 2, tp1R: 1, rsiMa: 3, tp2R: 2 },
 };
 const COMBO_CAPS = { UP: { hi120: 6, rsi2: 4 }, NEUTRAL: { hi120: 2, rsi2: 6 }, DOWN: { hi120: 0, rsi2: 4 } };
 
@@ -534,6 +534,12 @@ async function evaluateLiveHoldings(regime, uApplied, badCodes) {
         queue.push({ side: 'SELL', code: it.symbol, name: it.name, qty: Math.floor(Number(it.quantity) / 2), entry: Number(it.averagePurchasePrice), reason: 'tp_half', ctx: { ...(m.ctx ?? {}), sub: m.sub, regime } });
         log(`LIVE 절반익절 예약: ${it.name} — 익일 시가 집행`);
       }
+      // 2R 도달 시 잔량 절반 추가 익절 (C14 채택)
+      else if (cfg.tp2R > 0 && m.halfDone && !m.qtrDone && t.close >= m.entry * (1 + cfg.trailPct / 100 * cfg.tp2R) && Math.floor(Number(it.quantity) / 2) >= 1) {
+        m.qtrDone = true;
+        queue.push({ side: 'SELL', code: it.symbol, name: it.name, qty: Math.floor(Number(it.quantity) / 2), entry: Number(it.averagePurchasePrice), reason: 'tp_quarter', ctx: { ...(m.ctx ?? {}), sub: m.sub, regime } });
+        log(`LIVE 2R 추가익절 예약: ${it.name} — 익일 시가 집행`);
+      }
       else if (t.close <= m.hi * (1 - cfg.trailPct / 100)) exitReason = 'trailing';
       else if (m.holdDays >= cfg.maxHoldH) exitReason = 'max_hold';
     }
@@ -615,6 +621,10 @@ async function closePhase(books) {
         const maxH = strat === 'combo' ? cfg.maxHoldH : cfg.maxHold;
         if (cfg.tp1R > 0 && !p.halfDone && close >= p.entry * (1 + trail / 100 * cfg.tp1R) && Math.floor(p.qty / 2) >= 1) {
           p.exitAtOpen = 'tp_half'; p.exitQty = Math.floor(p.qty / 2); p.halfDone = true;
+        }
+        // 2R 도달 시 잔량 절반 추가 익절 (C14 채택)
+        else if (cfg.tp2R > 0 && p.halfDone && !p.qtrDone && close >= p.entry * (1 + trail / 100 * cfg.tp2R) && Math.floor(p.qty / 2) >= 1) {
+          p.exitAtOpen = 'tp_quarter'; p.exitQty = Math.floor(p.qty / 2); p.qtrDone = true;
         }
         else if (close <= p.hi * (1 - trail / 100)) p.exitAtOpen = 'trailing';
         else if (p.holdDays >= maxH) p.exitAtOpen = 'max_hold';

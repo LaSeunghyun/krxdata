@@ -10,3 +10,4 @@
 {"cycle":11,"hypothesis":"H9 hi120 익일시가 진입","train":{"pf":1.12,"cagr":19.4},"valid":{"pf":1.39,"cagr":62.4},"verdict":"강한 기각","notes":"돌파 종가 진입이 갭업(오버나이트 드리프트) 수익의 원천 — 구조 확정"}
 {"cycle":12,"hypothesis":"DOWN 전환 시 hi120 전량청산","train":{"pf":1.12,"cagr":21.8},"valid":{"pf":1.86,"cagr":123.3},"verdict":"기각","notes":"약세장에서 DOWN 전환 잦아 추세 포지션 과다 청산 — DOWN 직후 반등 다수"}
 {"cycle":13,"hypothesis":"rsi2 청산 ma5→ma3 (--rsima 3)","train":{"pf":1.20,"cagr":29.9,"mdd":15.6},"valid":{"pf":1.94,"cagr":117.9,"mdd":11.8},"verdict":"채택","notes":"Train PF 동률+MDD 17.5→15.6 개선, Valid PF 1.88→1.94+MDD 14.4→11.8 개선. ma3가 반등 후 정체 구간을 빨리 끊어 드로다운 축소. 새 베이스라인"}
+{"cycle":14,"hypothesis":"H14 hi120 2R 잔량 절반 추가익절 (tp2R=2)","train":{"pf":1.21,"cagr":31.9,"mdd":15.3},"valid":{"pf":1.96,"cagr":117.8,"mdd":11.6},"verdict":"채택","notes":"양 기간 PF 개선+MDD 개선. tp_half 100% 승률 패턴의 연장 — 2R에서 잔량 절반 고정익절로 trailing 반납 축소. 새 베이스라인"}
