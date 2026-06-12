@@ -528,7 +528,13 @@ async function evaluateLiveHoldings(regime, uApplied, badCodes) {
       else if (t.close > ma5) exitReason = 'ma5_exit';
       else if (m.holdDays >= cfg.maxHoldR) exitReason = 'max_hold';
     } else {
-      if (t.close <= m.hi * (1 - cfg.trailPct / 100)) exitReason = 'trailing';
+      // 1R(+8%) 절반 익절 → 잔량 트레일링 (C7 채택)
+      if (cfg.tp1R > 0 && !m.halfDone && t.close >= m.entry * (1 + cfg.trailPct / 100 * cfg.tp1R) && Math.floor(Number(it.quantity) / 2) >= 1) {
+        m.halfDone = true;
+        queue.push({ side: 'SELL', code: it.symbol, name: it.name, qty: Math.floor(Number(it.quantity) / 2), entry: Number(it.averagePurchasePrice), reason: 'tp_half', ctx: { ...(m.ctx ?? {}), sub: m.sub, regime } });
+        log(`LIVE 절반익절 예약: ${it.name} — 익일 시가 집행`);
+      }
+      else if (t.close <= m.hi * (1 - cfg.trailPct / 100)) exitReason = 'trailing';
       else if (m.holdDays >= cfg.maxHoldH) exitReason = 'max_hold';
     }
     if (exitReason) {
