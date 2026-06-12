@@ -56,7 +56,7 @@ const STRATEGIES = {
 // 가설 플래그: --volx N (hi120 돌파일 거래량 > 20일평균 ×N), --rsidays N (rsi2 N일 연속 과매도),
 //             --downsize 0.5 (DOWN 레짐 rsi2 사이즈 배수), --tp1r 1 (1R 도달 시 절반 익절)
 for (const [flag, key] of [['--trail', 'trailPct'], ['--minbreak', 'minBreakout'], ['--maxholdr', 'maxHoldR'], ['--stoppct', 'stopPct'],
-  ['--volx', 'volX'], ['--rsidays', 'rsiDays'], ['--downsize', 'downSize'], ['--tp1r', 'tp1R'], ['--intraday', 'intradayExit'], ['--maxholdh', 'maxHoldH'], ['--rsiuni', 'rsiUni'], ['--entryopen', 'entryOpen'], ['--downflat', 'downFlat'], ['--rsima', 'rsiMa'], ['--tp2r', 'tp2R']]) {
+  ['--volx', 'volX'], ['--rsidays', 'rsiDays'], ['--downsize', 'downSize'], ['--tp1r', 'tp1R'], ['--intraday', 'intradayExit'], ['--maxholdh', 'maxHoldH'], ['--rsiuni', 'rsiUni'], ['--entryopen', 'entryOpen'], ['--downflat', 'downFlat'], ['--rsima', 'rsiMa'], ['--tp2r', 'tp2R'], ['--trailwide', 'trailWide'], ['--maxbreak', 'maxBreak']]) {
   const v = argOf(flag, null);
   if (v != null) STRATEGIES['combo-v2'][key] = Number(v);
 }
@@ -417,7 +417,8 @@ for (let di = 0; di < tradingDays.length; di++) {
           else if (cfg.tp2R > 0 && p.halfDone && !p.qtrDone && cd.c[i] >= p.entry * (1 + cfg.trailPct / 100 * cfg.tp2R) && Math.floor(p.qty / 2) >= 1) {
             p.exitAtOpen = 'tp_quarter'; p.exitQty = Math.floor(p.qty / 2); p.qtrDone = true;
           }
-          else if (cd.c[i] <= p.hi * (1 - cfg.trailPct / 100)) p.exitAtOpen = 'trailing';
+          // C15 (--trailwide N): 절반익절 후 잔량 트레일링 폭 확대 (러너 추세 보존)
+          else if (cd.c[i] <= p.hi * (1 - (p.halfDone && cfg.trailWide > 0 ? cfg.trailWide : cfg.trailPct) / 100)) p.exitAtOpen = 'trailing';
           else if (p.holdDays >= cfg.maxHoldH) p.exitAtOpen = 'max_hold';
         } else {
           const maN = cfg.rsiMa || 5;
@@ -445,7 +446,9 @@ for (let di = 0; di < tradingDays.length; di++) {
           for (let j = i - 20; j < i; j++) av += cd.v[j];
           volOk = cd.v[i] > (av / 20) * cfg.volX;
         }
-        if (cd.c[i] > prevHigh && breakoutPct >= (cfg.minBreakout ?? 0) && volOk) {
+        // C16 (--maxbreak N): 돌파폭 과열 상한 — 파라볼릭 진입 제외
+        const breakCapOk = !(cfg.maxBreak > 0) || breakoutPct <= cfg.maxBreak;
+        if (cd.c[i] > prevHigh && breakoutPct >= (cfg.minBreakout ?? 0) && breakCapOk && volOk) {
           const ctxE = { sub: 'hi120', regime, breakoutPct: breakoutPct.toFixed(1) };
           if (cfg.entryOpen) (book.pendingBuys ??= []).push({ code, ctx: ctxE });
           else buy(book, day, code, cd.c[i], budget(), { sub: 'hi120', ctx: ctxE });
