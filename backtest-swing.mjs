@@ -56,7 +56,7 @@ const STRATEGIES = {
 // 가설 플래그: --volx N (hi120 돌파일 거래량 > 20일평균 ×N), --rsidays N (rsi2 N일 연속 과매도),
 //             --downsize 0.5 (DOWN 레짐 rsi2 사이즈 배수), --tp1r 1 (1R 도달 시 절반 익절)
 for (const [flag, key] of [['--trail', 'trailPct'], ['--minbreak', 'minBreakout'], ['--maxholdr', 'maxHoldR'], ['--stoppct', 'stopPct'],
-  ['--volx', 'volX'], ['--rsidays', 'rsiDays'], ['--downsize', 'downSize'], ['--tp1r', 'tp1R'], ['--intraday', 'intradayExit'], ['--maxholdh', 'maxHoldH'], ['--rsiuni', 'rsiUni'], ['--entryopen', 'entryOpen'], ['--downflat', 'downFlat'], ['--rsima', 'rsiMa'], ['--tp2r', 'tp2R'], ['--trailwide', 'trailWide'], ['--maxbreak', 'maxBreak']]) {
+  ['--volx', 'volX'], ['--rsidays', 'rsiDays'], ['--downsize', 'downSize'], ['--tp1r', 'tp1R'], ['--intraday', 'intradayExit'], ['--maxholdh', 'maxHoldH'], ['--rsiuni', 'rsiUni'], ['--entryopen', 'entryOpen'], ['--downflat', 'downFlat'], ['--rsima', 'rsiMa'], ['--tp2r', 'tp2R'], ['--trailwide', 'trailWide'], ['--maxbreak', 'maxBreak'], ['--atrsize', 'atrSize']]) {
   const v = argOf(flag, null);
   if (v != null) STRATEGIES['combo-v2'][key] = Number(v);
 }
@@ -264,6 +264,18 @@ function sell(book, day, code, price, reason, qtyArg) {
   p.qty -= qty;
   if (p.qty < 1) delete book.positions[code];
 }
+// C17 (--atrsize refPct): ATR(14)% 역가중 사이징 — refPct/atr%, [0.5, 1.5] 클램프
+function atrMult(cd, i, cfg) {
+  if (!(cfg.atrSize > 0) || i < 15) return 1;
+  let tr = 0;
+  for (let j = i - 13; j <= i; j++) {
+    tr += Math.max(cd.h[j] - cd.l[j], Math.abs(cd.h[j] - cd.c[j - 1]), Math.abs(cd.l[j] - cd.c[j - 1]));
+  }
+  const atrPct = (tr / 14) / cd.c[i] * 100;
+  if (!(atrPct > 0)) return 1;
+  return Math.min(1.5, Math.max(0.5, cfg.atrSize / atrPct));
+}
+
 function rsi2(cd, i) {
   if (i < 2) return 50;
   let up = 0, dn = 0;
@@ -451,7 +463,7 @@ for (let di = 0; di < tradingDays.length; di++) {
         if (cd.c[i] > prevHigh && breakoutPct >= (cfg.minBreakout ?? 0) && breakCapOk && volOk) {
           const ctxE = { sub: 'hi120', regime, breakoutPct: breakoutPct.toFixed(1) };
           if (cfg.entryOpen) (book.pendingBuys ??= []).push({ code, ctx: ctxE });
-          else buy(book, day, code, cd.c[i], budget(), { sub: 'hi120', ctx: ctxE });
+          else buy(book, day, code, cd.c[i], Math.floor(budget() * atrMult(cd, i, cfg)), { sub: 'hi120', ctx: ctxE });
         }
       }
       // rsi2 서브 진입 (PIT 시총 상위 과매도)
@@ -465,7 +477,7 @@ for (let di = 0; di < tradingDays.length; di++) {
         if (r < cfg.rsiMax && daysOk) {
           // H2: DOWN 레짐 사이즈 축소 (--downsize 0.5)
           const sizeMult = (regime === 'DOWN' && cfg.downSize > 0) ? cfg.downSize : 1;
-          buy(book, day, code, cd.c[i], Math.floor(budget() * sizeMult), { sub: 'rsi2', ctx: { sub: 'rsi2', regime, rsi: r.toFixed(0) } });
+          buy(book, day, code, cd.c[i], Math.floor(budget() * sizeMult * atrMult(cd, i, cfg)), { sub: 'rsi2', ctx: { sub: 'rsi2', regime, rsi: r.toFixed(0) } });
         }
       }
     } else if (k === 'rsi2' || k === 'rsi2-pit' || k === 'rsi2-mcap') {
