@@ -50,13 +50,13 @@ const STRATEGIES = {
   // combo: 레짐 적응형 — 상승장 hi120 비중↑, 중립 rsi2 비중↑, 하락장 rsi2 소량+현금
   'combo':      { slots: 10, rsiMax: 10, stopPct: 7, maxHoldR: 10, lookback: 120, trailPct: 10, maxHoldH: 60 },
   // combo-v2: 사유 기록 분석 반영 — hi120 돌파폭 3%+만, rsi2 최대보유 5일, NEUTRAL hi120 슬롯 2
-  'combo-v2':   { slots: 10, rsiMax: 10, stopPct: 7, maxHoldR: 5, lookback: 120, trailPct: 8, maxHoldH: 60, minBreakout: 3, rsiDays: 2, tp1R: 1, v2: true },
+  'combo-v2':   { slots: 10, rsiMax: 10, stopPct: 7, maxHoldR: 5, lookback: 120, trailPct: 8, maxHoldH: 60, minBreakout: 3, rsiDays: 2, tp1R: 1, rsiMa: 3, v2: true },
 };
 // combo-v2 파라미터 오버라이드 (스윕용): --trail 8 --minbreak 5 --maxholdr 3 --stoppct 5
 // 가설 플래그: --volx N (hi120 돌파일 거래량 > 20일평균 ×N), --rsidays N (rsi2 N일 연속 과매도),
 //             --downsize 0.5 (DOWN 레짐 rsi2 사이즈 배수), --tp1r 1 (1R 도달 시 절반 익절)
 for (const [flag, key] of [['--trail', 'trailPct'], ['--minbreak', 'minBreakout'], ['--maxholdr', 'maxHoldR'], ['--stoppct', 'stopPct'],
-  ['--volx', 'volX'], ['--rsidays', 'rsiDays'], ['--downsize', 'downSize'], ['--tp1r', 'tp1R'], ['--intraday', 'intradayExit']]) {
+  ['--volx', 'volX'], ['--rsidays', 'rsiDays'], ['--downsize', 'downSize'], ['--tp1r', 'tp1R'], ['--intraday', 'intradayExit'], ['--maxholdh', 'maxHoldH'], ['--rsiuni', 'rsiUni'], ['--entryopen', 'entryOpen'], ['--downflat', 'downFlat'], ['--rsima', 'rsiMa']]) {
   const v = argOf(flag, null);
   if (v != null) STRATEGIES['combo-v2'][key] = Number(v);
 }
@@ -202,7 +202,7 @@ function mcapUniverse(day) {
     scored.push({ code, mcap: sh * cd.c[i] });
   }
   scored.sort((a, b) => b.mcap - a.mcap);
-  mcapCache.set(wk, scored.slice(0, 30).map(s => s.code));
+  mcapCache.set(wk, scored.slice(0, MCAP_TOP).map(s => s.code));
   return mcapCache.get(wk);
 }
 
@@ -232,6 +232,7 @@ const CAPS_PRESETS = {
 const CAPS_SEL = argOf('--caps', 'A');
 // 레짐 MA 페어 (--regimema "20,60"): 빠른 스위치 vs 느린 스위치
 const REGIME_MAS = argOf('--regimema', '20,60').split(',').map(Number);
+const MCAP_TOP = Number(argOf('--rsiuni', '30'));
 
 // ── 포트폴리오 ───────────────────────────────────────────────
 function makeBook() { return { cash: CAPITAL, positions: {}, trades: [], peak: CAPITAL, maxDD: 0, monthly: new Map(), lastEq: CAPITAL }; }
@@ -382,6 +383,16 @@ for (let di = 0; di < tradingDays.length; di++) {
     } else if (k === 'combo' || k === 'combo-v2') {
       const regime = marketRegime(day);
       const caps = (cfg.v2 ? (CAPS_PRESETS[CAPS_SEL] ?? COMBO_CAPS_V2) : COMBO_CAPS)[regime];
+      // H9 (--entryopen): 전일 돌파 시그널을 당일 시가에 진입
+      if (cfg.entryOpen && book.pendingBuys?.length) {
+        const pend = book.pendingBuys; book.pendingBuys = [];
+        for (const pb of pend) {
+          if (book.positions[pb.code]) continue;
+          const cd2 = candles.get(pb.code); const i2 = cd2 ? indexOfDate(cd2, day) : null;
+          if (i2 == null) continue;
+          buy(book, day, pb.code, cd2.o[i2], budget(), { sub: 'hi120', ctx: pb.ctx });
+        }
+      }
       // 보유 관리: 서브 전략별 청산 규칙
       for (const [code, p] of Object.entries(book.positions)) {
         const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
@@ -397,6 +408,7 @@ for (let di = 0; di < tradingDays.length; di++) {
           }
         }
         if (p.sub === 'hi120') {
+          if (cfg.downFlat && regime === 'DOWN' && !p.exitAtOpen) { p.exitAtOpen = 'regime_flat'; continue; }
           // H6 (--tp1r N): 진입가 +trailPct×N 도달 시 절반 익절 (잔량은 트레일링 지속)
           if (cfg.tp1R > 0 && !p.halfDone && cd.c[i] >= p.entry * (1 + cfg.trailPct / 100 * cfg.tp1R) && Math.floor(p.qty / 2) >= 1) {
             p.exitAtOpen = 'tp_half'; p.exitQty = Math.floor(p.qty / 2); p.halfDone = true;
@@ -404,7 +416,8 @@ for (let di = 0; di < tradingDays.length; di++) {
           else if (cd.c[i] <= p.hi * (1 - cfg.trailPct / 100)) p.exitAtOpen = 'trailing';
           else if (p.holdDays >= cfg.maxHoldH) p.exitAtOpen = 'max_hold';
         } else {
-          let ma5 = 0; const n = Math.min(5, i + 1);
+          const maN = cfg.rsiMa || 5;
+          let ma5 = 0; const n = Math.min(maN, i + 1);
           for (let j = i - n + 1; j <= i; j++) ma5 += cd.c[j];
           ma5 /= n;
           if (cd.c[i] <= p.entry * (1 - cfg.stopPct / 100)) p.exitAtOpen = 'stop_loss';
@@ -429,7 +442,9 @@ for (let di = 0; di < tradingDays.length; di++) {
           volOk = cd.v[i] > (av / 20) * cfg.volX;
         }
         if (cd.c[i] > prevHigh && breakoutPct >= (cfg.minBreakout ?? 0) && volOk) {
-          buy(book, day, code, cd.c[i], budget(), { sub: 'hi120', ctx: { sub: 'hi120', regime, breakoutPct: breakoutPct.toFixed(1) } });
+          const ctxE = { sub: 'hi120', regime, breakoutPct: breakoutPct.toFixed(1) };
+          if (cfg.entryOpen) (book.pendingBuys ??= []).push({ code, ctx: ctxE });
+          else buy(book, day, code, cd.c[i], budget(), { sub: 'hi120', ctx: ctxE });
         }
       }
       // rsi2 서브 진입 (PIT 시총 상위 과매도)

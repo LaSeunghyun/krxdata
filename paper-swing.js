@@ -33,7 +33,7 @@ const STRATEGIES = {
   'rsi2':  { slots: 5, rsiMax: 10, stopPct: 7, maxHold: 10 },
   // combo: 레짐 적응형 (UP: hi120 6+rsi2 4 / NEUTRAL: hi120 2+rsi2 6 / DOWN: rsi2 4만)
   // 사유 분석 반영 룰: hi120 돌파폭 3%+만, rsi2 서브 최대보유 5일
-  'combo': { slots: 10, rsiMax: 10, stopPct: 7, maxHoldR: 5, lookback: 120, trailPct: 8, maxHoldH: 60, minBreakout: 3, rsiDays: 2, tp1R: 1 },
+  'combo': { slots: 10, rsiMax: 10, stopPct: 7, maxHoldR: 5, lookback: 120, trailPct: 8, maxHoldH: 60, minBreakout: 3, rsiDays: 2, tp1R: 1, rsiMa: 3 },
 };
 const COMBO_CAPS = { UP: { hi120: 6, rsi2: 4 }, NEUTRAL: { hi120: 2, rsi2: 6 }, DOWN: { hi120: 0, rsi2: 4 } };
 
@@ -521,7 +521,7 @@ async function evaluateLiveHoldings(regime, uApplied, badCodes) {
     if (m.sub === 'rsi2') {
       const closes = list.map(b => b.close);
       const i = closes.length - 1;
-      let ma5 = 0; const n = Math.min(5, closes.length);
+      let ma5 = 0; const n = Math.min(cfg.rsiMa || 5, closes.length);
       for (let j = i - n + 1; j <= i; j++) ma5 += closes[j];
       ma5 /= n;
       if (t.close <= m.entry * (1 - cfg.stopPct / 100)) exitReason = 'stop_loss';
@@ -621,7 +621,7 @@ async function closePhase(books) {
       } else if (sub === 'rsi2') {
         const closes = list.map(b => b.close);
         const i = closes.length - 1;
-        let ma5 = 0; const n = Math.min(5, closes.length);
+        let ma5 = 0; const n = Math.min(cfg.rsiMa || 5, closes.length);
         for (let j = i - n + 1; j <= i; j++) ma5 += closes[j];
         ma5 /= n;
         const maxH = strat === 'combo' ? cfg.maxHoldR : cfg.maxHold;
