@@ -4,7 +4,8 @@ on:
   # 매일 자동 실행 (KST 기준, UTC+9)
   schedule:
     - cron: '0 23 * * 0-4'   # 가격+랭킹: KST 08:00 (일~목 UTC 23:00 → 월~금 KST 08:00)
-    - cron: '3 0 * * 1-5'    # 랭킹만:   KST 09:03 (월~금 UTC 00:03)
+    - cron: '3 0 * * 1-5'    # 랭킹만:   KST 09:03 (월~금 UTC 00:03) + 페이퍼 morning
+    - cron: '45 6 * * 1-5'   # 페이퍼 close: KST 15:45 (월~금 UTC 06:45)
     - cron: '0 20 * * 0'     # 재무 backfill: KST 일요일 05:00 (UTC 일 20:00)
 
   # GitHub UI에서 수동 실행
@@ -54,6 +55,8 @@ jobs:
               echo "mode=backfill" >> $GITHUB_OUTPUT
             elif [ "$HOUR" = "23" ]; then
               echo "mode=full" >> $GITHUB_OUTPUT
+            elif [ "$HOUR" = "06" ]; then
+              echo "mode=paper" >> $GITHUB_OUTPUT
             else
               echo "mode=ranking" >> $GITHUB_OUTPUT
             fi
@@ -88,6 +91,8 @@ jobs:
         run: |
           echo "=== 랭킹 재계산 시작 ($(TZ='Asia/Seoul' date)) ==="
           node daily-ranking.js --skip-price${{ github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_52w == 'true' && ' --refresh-52w' || '' }}
+          echo "=== 페이퍼 트레이딩 morning 페이즈 ==="
+          node paper-swing.js || echo "(paper morning 실패 — 비치명)"
 
       - name: Run backfill (backfill mode)
         if: steps.mode.outputs.mode == 'backfill'
@@ -105,6 +110,17 @@ jobs:
           node dart-financials-backfill.js --years 2023,2024,2025
           echo "=== backfill 완료 — 랭킹 재계산 ==="
           node daily-ranking.js --skip-price
+
+      - name: Run paper trading close phase (paper mode)
+        if: steps.mode.outputs.mode == 'paper'
+        env:
+          SUPABASE_MANAGEMENT_KEY: ${{ secrets.SUPABASE_MANAGEMENT_KEY }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+          TOSS_CLIENT_ID: ${{ secrets.TOSS_CLIENT_ID }}
+          TOSS_CLIENT_SECRET: ${{ secrets.TOSS_CLIENT_SECRET }}
+        run: |
+          echo "=== 페이퍼 트레이딩 close 페이즈 ($(TZ='Asia/Seoul' date)) ==="
+          node paper-swing.js
 
       - name: Save daily prices to stock_prices
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'ranking'

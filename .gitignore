@@ -39,3 +39,4 @@ backtest-cache-*.json
 backtest_results.json
 .corp_full_cache.json
 .claude/settings.local.json
+candles-daily.jsonl

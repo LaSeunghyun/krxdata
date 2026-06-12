@@ -1,0 +1,371 @@
+#!/usr/bin/env node
+/**
+ * backtest-swing.mjs — 일봉 기반 스윙·단기 전략 비교 시뮬레이터 (토스 일봉, 멀티 레짐)
+ *
+ *   v2: 유니버스를 토스 일봉에서 직접 PIT 계산 (stock_prices 의존 제거) →
+ *       2023 약세~2024 횡보~2025-26 멜트업·조정 전 레짐 커버.
+ *       전 종목 일봉은 candles-daily.jsonl 디스크 캐시 (첫 실행 ~25분, 이후 수 초).
+ *       평가지표: 승률·Profit Factor·월별 일관성·MDD 중심 (복리 안정성 관점).
+ *
+ *   PIT: 일자 D 시그널은 D까지의 봉만 사용. 단 종목 풀 = 현재 상장 종목(생존 편향 존재) 주의.
+ *   체결: 종가 매수 +1틱 / 시가 매도 -1틱, 스톱·익절은 종가 판정 → 익일 시가 집행.
+ *   비용: 수수료 0.015%×2 + 매도 거래세 0.15%.
+ *
+ * 실행:
+ *   node backtest-swing.mjs --from 20230102 --to 20260611 --capital 10000000
+ *   node backtest-swing.mjs --strategies rsi2,hi120 --from 20240102 --to 20241230
+ */
+import dotenv from 'dotenv';
+import { createReadStream, existsSync, appendFileSync } from 'fs';
+import { createInterface } from 'readline';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import { getDailyCandles } from './toss-api.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: join(__dirname, '.env') });
+
+const argv = process.argv.slice(2);
+const argOf = (k, dflt) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : dflt; };
+const FROM = argOf('--from', '20230102');
+const TO = argOf('--to', '20260611');
+const CAPITAL = Number(argOf('--capital', '10000000'));
+const BARS_DEPTH = Number(argOf('--bars', '1150')); // 2022-01~ (FROM 이전 룩백 130일 포함)
+const ONLY = argOf('--strategies', '').split(',').filter(Boolean);
+const CACHE_FILE = join(__dirname, 'candles-daily.jsonl');
+
+const FEE_BPS = 1.5, TAX_BPS = 15;
+const MIN_PRICE = 2_000;
+const MIN_TURNOVER = 5e8; // 20일 평균 거래대금 5억 미만 제외 (유동성)
+
+const STRATEGIES = {
+  'swing-mom':  { slots: 10 },                                        // ret60 top10 주간 리밸 + 스톱-25%/+100% 절반
+  'swing-rank': { slots: 10 },                                        // 실제 daily_rankings (데이터 있는 날만)
+  'vb':         { slots: 5, k: 0.5 },                                 // 변동성 돌파, 익일 시가 청산
+  'overnight':  { slots: 5 },                                         // 종가 매수 → 익일 시가
+  'hi120':      { slots: 10, lookback: 120, trailPct: 10, maxHold: 60 }, // 120일 신고가 + 트레일링
+  'rsi2':       { slots: 5, rsiMax: 10, stopPct: 7, maxHold: 10 },    // 과매도 반등 (대형주)
+};
+const ACTIVE = Object.entries(STRATEGIES).filter(([k]) => !ONLY.length || ONLY.includes(k));
+
+function tickSize(p) {
+  if (p < 2_000) return 1;
+  if (p < 5_000) return 5;
+  if (p < 20_000) return 10;
+  if (p < 50_000) return 50;
+  if (p < 200_000) return 100;
+  if (p < 500_000) return 500;
+  return 1_000;
+}
+const tickUp = (p) => Math.round(p / tickSize(p)) * tickSize(p) + tickSize(p);
+const tickDn = (p) => Math.round(p / tickSize(p)) * tickSize(p) - tickSize(p);
+const fmtDay = (d) => `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
+function netPnl(entry, exit, qty) {
+  const gross = (exit - entry) * qty;
+  const fees = (entry + exit) * qty * (FEE_BPS / 10_000) + exit * qty * (TAX_BPS / 10_000);
+  return Math.round(gross - fees);
+}
+
+async function dbQuery(sql) {
+  const res = await fetch(`https://api.supabase.com/v1/projects/${process.env.SUPABASE_PROJECT_REF}/database/query`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${process.env.SUPABASE_MANAGEMENT_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: sql }),
+    signal: AbortSignal.timeout(120_000),
+  });
+  const data = await res.json();
+  if (!Array.isArray(data)) throw new Error(data?.message ?? 'DB 쿼리 오류');
+  return data;
+}
+
+// ── 일봉 풀: 디스크 캐시 우선, 누락분만 API ───────────────────
+// 구조: code → { d:[yyyymmdd...오름차순], o,h,l,c,v:[...], byDate:Map }
+const candles = new Map();
+function indexOfDate(cd, day) { return cd.byDate.get(day); }
+function lastIndexBefore(cd, day) {
+  // 이진 탐색: d[i] < day 인 최대 i
+  let lo = 0, hi = cd.d.length - 1, ans = -1;
+  while (lo <= hi) { const m = (lo + hi) >> 1; if (cd.d[m] < day) { ans = m; lo = m + 1; } else hi = m - 1; }
+  return ans;
+}
+function addToPool(code, rec) {
+  rec.byDate = new Map(rec.d.map((dt, i) => [dt, i]));
+  candles.set(code, rec);
+}
+async function loadPool(codes) {
+  if (existsSync(CACHE_FILE)) {
+    console.log('캐시 로드:', CACHE_FILE);
+    const rl = createInterface({ input: createReadStream(CACHE_FILE), crlfDelay: Infinity });
+    for await (const line of rl) {
+      if (!line.trim()) continue;
+      try { const rec = JSON.parse(line); addToPool(rec.code, rec); } catch {}
+    }
+    console.log(`캐시 ${candles.size}종목`);
+  }
+  const missing = codes.filter(c => !candles.has(c));
+  if (missing.length) {
+    console.log(`일봉 신규 수집 ${missing.length}종목 (~${Math.round(missing.length * 6 * 0.105 / 60)}분)...`);
+    let done = 0;
+    for (const code of missing) {
+      try {
+        const list = (await getDailyCandles(code, BARS_DEPTH)).reverse();
+        const rec = {
+          code,
+          d: list.map(b => String(b.timestamp).slice(0, 10).replace(/-/g, '')),
+          o: list.map(b => b.open), h: list.map(b => b.high),
+          l: list.map(b => b.low), c: list.map(b => b.close), v: list.map(b => b.volume),
+        };
+        addToPool(code, rec);
+        const { byDate, ...persist } = rec;
+        appendFileSync(CACHE_FILE, JSON.stringify(persist) + '\n');
+      } catch { /* 미커버 스킵 */ }
+      if (++done % 200 === 0) console.log(`  ${done}/${missing.length}`);
+    }
+  }
+}
+
+// ── PIT 모멘텀 유니버스 (주간, 일봉 로컬 계산) ─────────────────
+const universeCache = new Map();
+function weekKey(day) {
+  const d = new Date(`${fmtDay(day)}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
+  return d.toISOString().slice(0, 10).replace(/-/g, '');
+}
+function momUniverse(day) {
+  const wk = weekKey(day);
+  if (universeCache.has(wk)) return universeCache.get(wk);
+  const scored = [];
+  for (const [code, cd] of candles) {
+    const i = lastIndexBefore(cd, day);
+    if (i < 61) continue;
+    const price = cd.c[i];
+    if (price < MIN_PRICE) continue;
+    let turnover = 0;
+    for (let j = i - 19; j <= i; j++) turnover += cd.c[j] * cd.v[j];
+    turnover /= 20;
+    if (turnover < MIN_TURNOVER) continue;
+    const ret60 = (price / cd.c[i - 61] - 1) * 100;
+    if (ret60 <= 0) continue;
+    scored.push({ code, ret60, turnover });
+  }
+  scored.sort((a, b) => b.ret60 - a.ret60);
+  universeCache.set(wk, scored.slice(0, 30).map(s => s.code));
+  return universeCache.get(wk);
+}
+
+// ── 포트폴리오 ───────────────────────────────────────────────
+function makeBook() { return { cash: CAPITAL, positions: {}, trades: [], peak: CAPITAL, maxDD: 0, monthly: new Map(), lastEq: CAPITAL }; }
+function equity(book, day) {
+  let eq = book.cash;
+  for (const [code, p] of Object.entries(book.positions)) {
+    const cd = candles.get(code);
+    const i = cd ? indexOfDate(cd, day) ?? lastIndexBefore(cd, day) : null;
+    eq += (i != null && i >= 0 ? cd.c[i] : p.entry) * p.qty;
+  }
+  return eq;
+}
+function buy(book, day, code, price, budget, meta = {}) {
+  const fill = tickUp(price);
+  const qty = Math.floor(Math.min(budget, book.cash) / fill);
+  if (qty < 1) return false;
+  book.cash -= fill * qty;
+  book.positions[code] = { qty, entry: fill, entryDay: day, hi: fill, holdDays: 0, ...meta };
+  return true;
+}
+function sell(book, day, code, price, reason, qtyArg) {
+  const p = book.positions[code];
+  if (!p) return;
+  const qty = qtyArg ?? p.qty;
+  const fill = tickDn(price);
+  const pnl = netPnl(p.entry, fill, qty);
+  book.cash += fill * qty;
+  book.trades.push({ day: fmtDay(day), code, entry: p.entry, exit: fill, qty, pnl, hold: p.holdDays, reason });
+  p.qty -= qty;
+  if (p.qty < 1) delete book.positions[code];
+}
+function rsi2(cd, i) {
+  if (i < 2) return 50;
+  let up = 0, dn = 0;
+  for (let j = i - 1; j <= i; j++) {
+    const ch = cd.c[j] - cd.c[j - 1];
+    if (ch > 0) up += ch; else dn -= ch;
+  }
+  return up + dn === 0 ? 50 : (up / (up + dn)) * 100;
+}
+
+// ── 메인 ─────────────────────────────────────────────────────
+console.log(`=== 스윙 전략 비교 v2 ${fmtDay(FROM)} ~ ${fmtDay(TO)} | 자본 ${CAPITAL.toLocaleString()}원 | ${ACTIVE.map(([k]) => k).join(', ')} ===`);
+
+const allCodes = (await dbQuery(`SELECT stock_code FROM stock_analysis WHERE current_price > 0`)).map(r => r.stock_code);
+const largeCaps = (await dbQuery(`SELECT stock_code FROM stock_analysis WHERE current_price >= ${MIN_PRICE} ORDER BY market_cap_tril DESC LIMIT 30`)).map(r => r.stock_code);
+await loadPool(allCodes);
+
+const krx = candles.get('005930');
+const tradingDays = krx.d.filter(d => d >= FROM && d <= TO);
+console.log(`영업일 ${tradingDays.length}일 | 풀 ${candles.size}종목 (※ 현재 상장 기준 — 생존 편향 존재)`);
+
+const rankRows = await dbQuery(`SELECT rank_date, stock_code, rank FROM daily_rankings WHERE rank <= 20 ORDER BY rank_date, rank`);
+const rankByDay = new Map();
+for (const r of rankRows) {
+  const d = String(r.rank_date).replace(/-/g, '');
+  if (!rankByDay.has(d)) rankByDay.set(d, []);
+  rankByDay.get(d).push(r);
+}
+
+const books = Object.fromEntries(ACTIVE.map(([k]) => [k, makeBook()]));
+let weekMark = '';
+
+for (let di = 0; di < tradingDays.length; di++) {
+  const day = tradingDays[di];
+  const wk = weekKey(day);
+  const isNewWeek = wk !== weekMark; weekMark = wk;
+  const mom = momUniverse(day);
+
+  for (const [k, cfg] of ACTIVE) {
+    const book = books[k];
+    const budget = () => Math.floor(equity(book, day) / cfg.slots);
+
+    // ① 시가 집행 큐 + 보유일
+    for (const [code, p] of Object.entries(book.positions)) {
+      p.holdDays++;
+      const cd = candles.get(code);
+      const i = cd ? indexOfDate(cd, day) : null;
+      if (i == null) continue;
+      if (p.exitAtOpen) { sell(book, day, code, cd.o[i], p.exitAtOpen, p.exitQty); delete p.exitAtOpen; delete p.exitQty; continue; }
+      p.hi = Math.max(p.hi, cd.h[i]);
+    }
+
+    // ② 전략 로직 (종가 판정)
+    if (k === 'swing-mom' || k === 'swing-rank') {
+      const top = k === 'swing-mom' ? mom.slice(0, 10)
+        : (rankByDay.get(day) ?? []).filter(r => r.rank <= 10).map(r => r.stock_code);
+      const keep = k === 'swing-mom' ? new Set(mom.slice(0, 20))
+        : new Set((rankByDay.get(day) ?? []).map(r => r.stock_code));
+      if (k === 'swing-rank' && !rankByDay.has(day)) { /* 랭킹 없는 날 보유만 유지 */ }
+      else {
+        for (const [code, p] of Object.entries(book.positions)) {
+          const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
+          if (i == null) continue;
+          if (cd.c[i] <= p.entry * 0.75) { p.exitAtOpen = 'stop_loss'; continue; }
+          if (!p.halfDone && cd.c[i] >= p.entry * 2) { p.exitAtOpen = 'half_profit'; p.exitQty = Math.floor(p.qty / 2); p.halfDone = true; continue; }
+          if (isNewWeek && !keep.has(code)) p.exitAtOpen = 'rebalance';
+        }
+        if (isNewWeek || k === 'swing-rank') {
+          for (const code of top) {
+            if (book.positions[code] || Object.keys(book.positions).length >= cfg.slots) continue;
+            const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
+            if (i == null) continue;
+            buy(book, day, code, cd.c[i], budget());
+          }
+        }
+      }
+    } else if (k === 'vb') {
+      for (const code of mom.slice(0, 10)) {
+        if (book.positions[code] || Object.keys(book.positions).length >= cfg.slots) continue;
+        const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
+        if (i == null || i < 1) continue;
+        const target = cd.o[i] + cfg.k * (cd.h[i - 1] - cd.l[i - 1]);
+        if (cd.h[i] >= target && target > 0) {
+          if (buy(book, day, code, Math.max(target, cd.o[i]), budget()))
+            book.positions[code].exitAtOpen = 'vb_exit';
+        }
+      }
+    } else if (k === 'overnight') {
+      for (const code of mom.slice(0, 5)) {
+        if (book.positions[code] || Object.keys(book.positions).length >= cfg.slots) continue;
+        const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
+        if (i == null) continue;
+        if (buy(book, day, code, cd.c[i], budget()))
+          book.positions[code].exitAtOpen = 'overnight_exit';
+      }
+    } else if (k === 'hi120') {
+      for (const [code, p] of Object.entries(book.positions)) {
+        const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
+        if (i == null) continue;
+        if (cd.c[i] <= p.hi * (1 - cfg.trailPct / 100)) p.exitAtOpen = 'trailing';
+        else if (p.holdDays >= cfg.maxHold) p.exitAtOpen = 'max_hold';
+      }
+      for (const code of mom) {
+        if (book.positions[code] || Object.keys(book.positions).length >= cfg.slots) continue;
+        const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
+        if (i == null || i < cfg.lookback + 1) continue;
+        let prevHigh = 0;
+        for (let j = i - cfg.lookback; j < i; j++) prevHigh = Math.max(prevHigh, cd.h[j]);
+        if (cd.c[i] > prevHigh) buy(book, day, code, cd.c[i], budget());
+      }
+    } else if (k === 'rsi2') {
+      for (const [code, p] of Object.entries(book.positions)) {
+        const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
+        if (i == null) continue;
+        let ma5 = 0; const n = Math.min(5, i + 1);
+        for (let j = i - n + 1; j <= i; j++) ma5 += cd.c[j];
+        ma5 /= n;
+        if (cd.c[i] <= p.entry * (1 - cfg.stopPct / 100)) p.exitAtOpen = 'stop_loss';
+        else if (cd.c[i] > ma5) p.exitAtOpen = 'ma5_exit';
+        else if (p.holdDays >= cfg.maxHold) p.exitAtOpen = 'max_hold';
+      }
+      for (const code of largeCaps) {
+        if (book.positions[code] || Object.keys(book.positions).length >= cfg.slots) continue;
+        const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
+        if (i == null || i < 3) continue;
+        if (rsi2(cd, i) < cfg.rsiMax) buy(book, day, code, cd.c[i], budget());
+      }
+    }
+
+    // ③ 자산·MDD·월별 수익 추적
+    const eq = equity(book, day);
+    book.peak = Math.max(book.peak, eq);
+    book.maxDD = Math.max(book.maxDD, (book.peak - eq) / book.peak * 100);
+    const mon = day.slice(0, 6);
+    if (!book.monthly.has(mon)) book.monthly.set(mon, { start: book.lastEq, end: eq });
+    book.monthly.get(mon).end = eq;
+    book.lastEq = eq;
+  }
+  if ((di + 1) % 60 === 0) console.log(`[${di + 1}/${tradingDays.length}] ${fmtDay(day)} | ` + ACTIVE.map(([k]) => `${k}:${((equity(books[k], day) / CAPITAL - 1) * 100).toFixed(0)}%`).join(' '));
+}
+
+const lastDay = tradingDays[tradingDays.length - 1];
+for (const [k] of ACTIVE) {
+  const book = books[k];
+  for (const code of Object.keys(book.positions)) {
+    const cd = candles.get(code);
+    const i = cd ? indexOfDate(cd, lastDay) ?? lastIndexBefore(cd, lastDay) : null;
+    sell(book, lastDay, code, i != null && i >= 0 ? cd.c[i] : book.positions[code].entry, 'eov');
+  }
+}
+
+// ── 요약: 복리 안정성 관점 ────────────────────────────────────
+const years = tradingDays.length / 248;
+console.log(`\n=== 전략 비교 (${fmtDay(FROM)}~${fmtDay(TO)}, ${tradingDays.length}영업일 ≈ ${years.toFixed(1)}년) ===`);
+console.log('전략         체결    승률   PF     CAGR     MDD    월승률   평균보유  최종자본');
+console.log('─'.repeat(95));
+for (const [k] of ACTIVE) {
+  const b = books[k];
+  const wins = b.trades.filter(t => t.pnl > 0);
+  const losses = b.trades.filter(t => t.pnl <= 0);
+  const grossW = wins.reduce((s, t) => s + t.pnl, 0);
+  const grossL = -losses.reduce((s, t) => s + t.pnl, 0);
+  const pf = grossL > 0 ? (grossW / grossL).toFixed(2) : '∞';
+  const months = [...b.monthly.values()];
+  const monWin = months.length ? Math.round(months.filter(m => m.end > m.start).length / months.length * 100) : 0;
+  const cagr = (Math.pow(b.cash / CAPITAL, 1 / years) - 1) * 100;
+  const avgHold = b.trades.length ? (b.trades.reduce((s, t) => s + t.hold, 0) / b.trades.length).toFixed(1) : '-';
+  console.log(
+    `${k.padEnd(12)} ${String(b.trades.length).padStart(4)}  ${String(b.trades.length ? Math.round(wins.length / b.trades.length * 100) : 0).padStart(4)}%  ${String(pf).padStart(5)}  ${cagr.toFixed(1).padStart(6)}%  ${b.maxDD.toFixed(1).padStart(5)}%  ${String(monWin).padStart(4)}%  ${String(avgHold).padStart(6)}일  ${b.cash.toLocaleString()}원`
+  );
+}
+
+// 연도별 수익률 분해 (레짐별 일관성)
+console.log('\n연도별 수익률:');
+const yearsList = [...new Set(tradingDays.map(d => d.slice(0, 4)))];
+for (const [k] of ACTIVE) {
+  const b = books[k];
+  const byYear = yearsList.map(y => {
+    const months = [...b.monthly.entries()].filter(([m]) => m.startsWith(y)).map(([, v]) => v);
+    if (!months.length) return `${y}: -`;
+    const ret = (months[months.length - 1].end / months[0].start - 1) * 100;
+    return `${y}: ${ret >= 0 ? '+' : ''}${ret.toFixed(1)}%`;
+  });
+  console.log(`  ${k.padEnd(12)} ${byYear.join('  ')}`);
+}
+console.log(`\n비용: 수수료 ${FEE_BPS}bp×2 + 거래세 ${TAX_BPS}bp + 슬리피지 ±1틱 | 풀: 현재 상장 ${candles.size}종목 (생존 편향) | swing-rank: 랭킹 ${rankByDay.size}일치`);
