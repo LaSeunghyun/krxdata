@@ -58,7 +58,7 @@ async function rateSlot() {
   if (wait > 0) await sleep(wait);
 }
 
-async function tossGet(apiPath, params = {}) {
+async function tossGet(apiPath, params = {}, extraHeaders = {}) {
   const url = new URL(`${TOSS_BASE}${apiPath}`);
   for (const [k, v] of Object.entries(params)) {
     if (v != null) url.searchParams.set(k, String(v));
@@ -67,7 +67,7 @@ async function tossGet(apiPath, params = {}) {
   for (let attempt = 0; ; attempt++) {
     await rateSlot();
     const res = await fetchT(url.toString(), {
-      headers: { Authorization: `Bearer ${await getToken()}` },
+      headers: { Authorization: `Bearer ${await getToken()}`, ...extraHeaders },
     });
     if (res.ok) return (await res.json())?.result;
     if (res.status === 401 && !refreshed) { token = null; refreshed = true; attempt--; continue; }
@@ -78,6 +78,59 @@ async function tossGet(apiPath, params = {}) {
     }
     throw new Error(`토스 API ${apiPath}: ${res.status} ${await res.text()}`);
   }
+}
+
+// 주문/취소는 멱등하지 않아 자동 재시도 금지 — 실패는 즉시 throw하고 호출부가 판단
+async function tossPost(apiPath, body = {}, extraHeaders = {}) {
+  await rateSlot();
+  const res = await fetchT(`${TOSS_BASE}${apiPath}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${await getToken()}`,
+      "Content-Type": "application/json",
+      ...extraHeaders,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`토스 API ${apiPath}: ${res.status} ${await res.text()}`);
+  return (await res.json())?.result;
+}
+
+function accountHeader(accountSeq) {
+  return { "X-Tossinvest-Account": String(accountSeq) };
+}
+
+/** 계좌 목록 — X-Tossinvest-Account 헤더에는 accountSeq 사용 */
+export async function getAccounts() {
+  return (await tossGet("/api/v1/accounts")) ?? [];
+}
+
+/** 국내 장 운영 캘린더 — 휴장일이면 해당 일자 integrated가 null */
+export async function getKrMarketCalendar(date) {
+  return tossGet("/api/v1/market-calendar/KR", date ? { date } : {});
+}
+
+/** 종목 경고 조회 — 투자경고·단기과열·정리매매 등 [{ warningType, exchange, startDate, endDate }] */
+export async function getStockWarnings(symbol) {
+  return (await tossGet(`/api/v1/stocks/${symbol}/warnings`)) ?? [];
+}
+
+/** 주문 생성 — body: { symbol, side: BUY|SELL, orderType: LIMIT|MARKET, quantity, price? } */
+export async function createOrder(accountSeq, body) {
+  return tossPost("/api/v1/orders", body, accountHeader(accountSeq));
+}
+
+export async function cancelOrder(accountSeq, orderId) {
+  return tossPost(`/api/v1/orders/${orderId}/cancel`, {}, accountHeader(accountSeq));
+}
+
+/** 주문 상태 — status: PENDING|PARTIAL_FILLED|FILLED|CANCELED|REJECTED 등 */
+export async function getOrder(accountSeq, orderId) {
+  return tossGet(`/api/v1/orders/${orderId}`, {}, accountHeader(accountSeq));
+}
+
+export async function getBuyingPower(accountSeq, params = {}) {
+  return tossGet("/api/v1/buying-power", params, accountHeader(accountSeq));
 }
 
 function chunk(arr, size) {
@@ -106,14 +159,22 @@ export async function getStocksMap(symbols) {
   return map;
 }
 
+/** 1분봉 조회 — 최신순. before(ISO 8601)로 과거 시점 페이지네이션 가능 */
+export async function getCandles1m(symbol, total = 30, before = null) {
+  return getCandlesPaged(symbol, "1m", total, before);
+}
+
 /** 일봉 조회(수정주가) — 최신순 [{ timestamp, open, high, low, close, volume }] */
 export async function getDailyCandles(symbol, total = 252) {
+  return getCandlesPaged(symbol, "1d", total, null);
+}
+
+async function getCandlesPaged(symbol, interval, total, before) {
   const candles = [];
-  let before = null;
   while (candles.length < total) {
     const r = await tossGet("/api/v1/candles", {
       symbol,
-      interval: "1d",
+      interval,
       count: Math.min(200, total - candles.length),
       before,
     });

@@ -109,11 +109,13 @@ jobs:
       - name: Save daily prices to stock_prices
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'ranking'
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_MANAGEMENT_KEY: ${{ secrets.SUPABASE_MANAGEMENT_KEY }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+          TOSS_CLIENT_ID: ${{ secrets.TOSS_CLIENT_ID }}
+          TOSS_CLIENT_SECRET: ${{ secrets.TOSS_CLIENT_SECRET }}
         run: |
           echo "=== 일별 종가 stock_prices 적재 ($(TZ='Asia/Seoul' date)) ==="
-          node save-prices.mjs
+          node save-prices.mjs --backfill 7
 
       - name: Report summary
         if: always()
