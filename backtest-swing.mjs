@@ -334,6 +334,20 @@ for (const r of allRows) {
 const largeCaps = (await dbQuery(`SELECT stock_code FROM stock_analysis WHERE current_price >= ${MIN_PRICE} ORDER BY market_cap_tril DESC LIMIT 30`)).map(r => r.stock_code);
 await loadPool(allCodes);
 
+// MC (--seed N --subsample 0.8): 시드 기반 유니버스 무작위 표본 — 몬테카를로 강건성 검증용
+const MC_SEED = Number(argOf('--seed', 0));
+const SUBSAMPLE = Number(argOf('--subsample', 1));
+if (SUBSAMPLE < 1) {
+  const mulberry32 = (a) => () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  const rng = mulberry32(MC_SEED || 1);
+  let dropped = 0;
+  for (const code of [...candles.keys()]) {
+    if (code === '005930') continue; // 레짐 프록시·거래일 기준 유지
+    if (rng() > SUBSAMPLE) { candles.delete(code); dropped++; }
+  }
+  console.log(`[MC] seed=${MC_SEED} subsample=${SUBSAMPLE} — ${dropped}종목 제외`);
+}
+
 const krx = candles.get('005930');
 const tradingDays = krx.d.filter(d => d >= FROM && d <= TO);
 console.log(`영업일 ${tradingDays.length}일 | 풀 ${candles.size}종목 (※ 현재 상장 기준 — 생존 편향 존재)`);
