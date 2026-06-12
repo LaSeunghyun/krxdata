@@ -44,7 +44,9 @@ const STRATEGIES = {
   'vb':         { slots: 5, k: 0.5 },                                 // 변동성 돌파, 익일 시가 청산
   'overnight':  { slots: 5 },                                         // 종가 매수 → 익일 시가
   'hi120':      { slots: 10, lookback: 120, trailPct: 10, maxHold: 60 }, // 120일 신고가 + 트레일링
-  'rsi2':       { slots: 5, rsiMax: 10, stopPct: 7, maxHold: 10 },    // 과매도 반등 (대형주)
+  'rsi2':       { slots: 5, rsiMax: 10, stopPct: 7, maxHold: 10 },    // 과매도 반등 (현재 시총 상위 — lookahead 주의)
+  'rsi2-pit':   { slots: 5, rsiMax: 10, stopPct: 7, maxHold: 10 },    // 과매도 반등 (PIT 20일 거래대금 상위 — 테마주 포함)
+  'rsi2-mcap':  { slots: 5, rsiMax: 10, stopPct: 7, maxHold: 10 },    // 과매도 반등 (PIT 시총 상위 = 당시 가격×발행주식수)
 };
 const ACTIVE = Object.entries(STRATEGIES).filter(([k]) => !ONLY.length || ONLY.includes(k));
 
@@ -153,6 +155,44 @@ function momUniverse(day) {
   return universeCache.get(wk);
 }
 
+// PIT 유동성 상위 30 (20일 평균 거래대금) — rsi2-pit용, 시총 lookahead 제거
+const liqCache = new Map();
+function liqUniverse(day) {
+  const wk = weekKey(day);
+  if (liqCache.has(wk)) return liqCache.get(wk);
+  const scored = [];
+  for (const [code, cd] of candles) {
+    const i = lastIndexBefore(cd, day);
+    if (i < 20) continue;
+    if (cd.c[i] < MIN_PRICE) continue;
+    let turnover = 0;
+    for (let j = i - 19; j <= i; j++) turnover += cd.c[j] * cd.v[j];
+    scored.push({ code, turnover: turnover / 20 });
+  }
+  scored.sort((a, b) => b.turnover - a.turnover);
+  liqCache.set(wk, scored.slice(0, 30).map(s => s.code));
+  return liqCache.get(wk);
+}
+
+// PIT 시총 상위 30 — 발행주식수(현재값 근사) × 당시 종가. 주식수 변동은 가격 대비 미미
+const sharesEst = new Map(); // code → 추정 발행주식수
+const mcapCache = new Map();
+function mcapUniverse(day) {
+  const wk = weekKey(day);
+  if (mcapCache.has(wk)) return mcapCache.get(wk);
+  const scored = [];
+  for (const [code, cd] of candles) {
+    const sh = sharesEst.get(code);
+    if (!sh) continue;
+    const i = lastIndexBefore(cd, day);
+    if (i < 3 || cd.c[i] < MIN_PRICE) continue;
+    scored.push({ code, mcap: sh * cd.c[i] });
+  }
+  scored.sort((a, b) => b.mcap - a.mcap);
+  mcapCache.set(wk, scored.slice(0, 30).map(s => s.code));
+  return mcapCache.get(wk);
+}
+
 // ── 포트폴리오 ───────────────────────────────────────────────
 function makeBook() { return { cash: CAPITAL, positions: {}, trades: [], peak: CAPITAL, maxDD: 0, monthly: new Map(), lastEq: CAPITAL }; }
 function equity(book, day) {
@@ -196,7 +236,12 @@ function rsi2(cd, i) {
 // ── 메인 ─────────────────────────────────────────────────────
 console.log(`=== 스윙 전략 비교 v2 ${fmtDay(FROM)} ~ ${fmtDay(TO)} | 자본 ${CAPITAL.toLocaleString()}원 | ${ACTIVE.map(([k]) => k).join(', ')} ===`);
 
-const allCodes = (await dbQuery(`SELECT stock_code FROM stock_analysis WHERE current_price > 0`)).map(r => r.stock_code);
+const allRows = await dbQuery(`SELECT stock_code, current_price, market_cap_tril FROM stock_analysis WHERE current_price > 0`);
+const allCodes = allRows.map(r => r.stock_code);
+for (const r of allRows) {
+  const sh = (Number(r.market_cap_tril) * 1e12) / Number(r.current_price);
+  if (Number.isFinite(sh) && sh > 0) sharesEst.set(r.stock_code, sh);
+}
 const largeCaps = (await dbQuery(`SELECT stock_code FROM stock_analysis WHERE current_price >= ${MIN_PRICE} ORDER BY market_cap_tril DESC LIMIT 30`)).map(r => r.stock_code);
 await loadPool(allCodes);
 
@@ -293,7 +338,8 @@ for (let di = 0; di < tradingDays.length; di++) {
         for (let j = i - cfg.lookback; j < i; j++) prevHigh = Math.max(prevHigh, cd.h[j]);
         if (cd.c[i] > prevHigh) buy(book, day, code, cd.c[i], budget());
       }
-    } else if (k === 'rsi2') {
+    } else if (k === 'rsi2' || k === 'rsi2-pit' || k === 'rsi2-mcap') {
+      const uni = k === 'rsi2' ? largeCaps : k === 'rsi2-pit' ? liqUniverse(day) : mcapUniverse(day);
       for (const [code, p] of Object.entries(book.positions)) {
         const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
         if (i == null) continue;
@@ -304,7 +350,7 @@ for (let di = 0; di < tradingDays.length; di++) {
         else if (cd.c[i] > ma5) p.exitAtOpen = 'ma5_exit';
         else if (p.holdDays >= cfg.maxHold) p.exitAtOpen = 'max_hold';
       }
-      for (const code of largeCaps) {
+      for (const code of uni) {
         if (book.positions[code] || Object.keys(book.positions).length >= cfg.slots) continue;
         const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
         if (i == null || i < 3) continue;
