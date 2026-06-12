@@ -24,12 +24,15 @@ const CAPITAL = 10_000_000;
 const FEE_BPS = 1.5, TAX_BPS = 15;
 const MIN_PRICE = 2_000;
 
+// 백테스트(2023~2026) 검증 결과 반영: swing-mom·overnight 탈락, combo(v2) 추가
 const STRATEGIES = {
-  'swing-mom': { slots: 10 },
-  'hi120':     { slots: 10, lookback: 120, trailPct: 10, maxHold: 60 },
-  'rsi2':      { slots: 5, rsiMax: 10, stopPct: 7, maxHold: 10 },
-  'overnight': { slots: 5 },
+  'hi120': { slots: 10, lookback: 120, trailPct: 10, maxHold: 60 },
+  'rsi2':  { slots: 5, rsiMax: 10, stopPct: 7, maxHold: 10 },
+  // combo: 레짐 적응형 (UP: hi120 6+rsi2 4 / NEUTRAL: hi120 2+rsi2 6 / DOWN: rsi2 4만)
+  // 사유 분석 반영 룰: hi120 돌파폭 3%+만, rsi2 서브 최대보유 5일
+  'combo': { slots: 10, rsiMax: 10, stopPct: 7, maxHoldR: 5, lookback: 120, trailPct: 10, maxHoldH: 60, minBreakout: 3 },
 };
+const COMBO_CAPS = { UP: { hi120: 6, rsi2: 4 }, NEUTRAL: { hi120: 2, rsi2: 6 }, DOWN: { hi120: 0, rsi2: 4 } };
 
 const kst = () => new Date(Date.now() + 9 * 3600 * 1000);
 const kstDate = () => kst().toISOString().slice(0, 10).replace(/-/g, '');
@@ -74,13 +77,30 @@ async function ensureTables() {
       positions INT, PRIMARY KEY (date, strat));
     CREATE TABLE IF NOT EXISTS paper_journal (date TEXT PRIMARY KEY, data JSONB, notes TEXT, created_at TIMESTAMPTZ DEFAULT NOW());
     CREATE TABLE IF NOT EXISTS paper_market_brief (date TEXT PRIMARY KEY, data JSONB, notes TEXT, created_at TIMESTAMPTZ DEFAULT NOW());
+    ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS ctx JSONB;
     SELECT 1
   `);
 }
 async function loadBooks() {
   const rows = await dbQuery(`SELECT data FROM paper_state WHERE k = 'books'`);
-  if (rows.length && rows[0].data) return typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
-  return Object.fromEntries(Object.keys(STRATEGIES).map(k => [k, { cash: CAPITAL, positions: {}, startedAt: kstDate() }]));
+  const saved = rows.length && rows[0].data
+    ? (typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data)
+    : {};
+  const books = {};
+  for (const k of Object.keys(STRATEGIES)) {
+    books[k] = saved[k] ?? { cash: CAPITAL, positions: {}, startedAt: kstDate() };
+  }
+  // 폐지된 전략 북: 보유분 종가 청산 기록 후 제거
+  for (const [k, book] of Object.entries(saved)) {
+    if (STRATEGIES[k]) continue;
+    for (const [code, p] of Object.entries(book.positions ?? {})) {
+      const t = lastBar(await bars(code, 3));
+      const tmp = { [k]: book };
+      paperSell(tmp, k, code, t?.close ?? p.entry, 'strategy_removed');
+    }
+    log(`전략 폐지: ${k} (최종 현금 ${Math.round(book.cash).toLocaleString()}원 기록 후 제거)`);
+  }
+  return books;
 }
 async function saveBooks(b) {
   const json = JSON.stringify(b).replace(/\$/g, ''); // dollar-quote 충돌 방지 ($ 미사용 데이터)
@@ -94,9 +114,9 @@ async function flushTrades() {
   const esc = (s) => s == null ? 'NULL' : `$s$${String(s).replace(/\$/g, '')}$s$`;
   const num = (v) => Number.isFinite(v) ? v : 'NULL';
   const vals = tradeQueue.map(t =>
-    `(${esc(t.ts)}::timestamptz, ${esc(t.strat)}, ${esc(t.type)}, ${esc(t.code)}, ${esc(t.name)}, ${num(t.qty)}, ${num(t.price)}, ${num(t.entry)}, ${num(t.pnl)}, ${esc(t.reason)})`
+    `(${esc(t.ts)}::timestamptz, ${esc(t.strat)}, ${esc(t.type)}, ${esc(t.code)}, ${esc(t.name)}, ${num(t.qty)}, ${num(t.price)}, ${num(t.entry)}, ${num(t.pnl)}, ${esc(t.reason)}, ${t.ctx ? `$j$${JSON.stringify(t.ctx).replace(/\$/g, '')}$j$::jsonb` : 'NULL'})`
   ).join(',');
-  await dbQuery(`INSERT INTO paper_trades (ts, strat, type, code, name, qty, price, entry, pnl, reason) VALUES ${vals}`);
+  await dbQuery(`INSERT INTO paper_trades (ts, strat, type, code, name, qty, price, entry, pnl, reason, ctx) VALUES ${vals}`);
   tradeQueue.length = 0;
 }
 
@@ -119,7 +139,7 @@ function paperSell(books, strat, code, fillRaw, reason, qtyArg) {
   const fill = tickDn(fillRaw);
   const pnl = netPnl(p.entry, fill, qty);
   book.cash += fill * qty;
-  recordTrade({ ts: kst().toISOString(), strat, type: 'sell', code, name: p.name, qty, price: fill, entry: p.entry, pnl, reason });
+  recordTrade({ ts: kst().toISOString(), strat, type: 'sell', code, name: p.name, qty, price: fill, entry: p.entry, pnl, reason, ctx: { ...(p.ctx ?? {}), hold: p.holdDays ?? 0 } });
   log(`${pnl >= 0 ? '🔵' : '🔴'} [${strat}] 매도 ${p.name ?? code} ${qty}주 @${fill.toLocaleString()} (${pnl >= 0 ? '+' : ''}${pnl.toLocaleString()}원, ${reason})`);
   p.qty -= qty;
   if (p.qty < 1) delete book.positions[code];
@@ -132,8 +152,8 @@ function paperBuy(books, strat, code, name, fillRaw, meta = {}) {
   if (qty < 1) return;
   book.cash -= fill * qty;
   book.positions[code] = { name, qty, entry: fill, entryDay: kstDate(), hi: fill, holdDays: 0, ...meta };
-  recordTrade({ ts: kst().toISOString(), strat, type: 'buy', code, name, qty, price: fill });
-  log(`🟢 [${strat}] 매수 ${name ?? code} ${qty}주 @${fill.toLocaleString()}`);
+  recordTrade({ ts: kst().toISOString(), strat, type: 'buy', code, name, qty, price: fill, ctx: meta.ctx });
+  log(`🟢 [${strat}] 매수 ${name ?? code} ${qty}주 @${fill.toLocaleString()}${meta.ctx ? ` (${Object.entries(meta.ctx).map(([k2, v]) => k2 + '=' + v).join(', ')})` : ''}`);
 }
 
 function rsi2val(closes, i) {
@@ -287,6 +307,23 @@ async function buildJournal() {
     const cold = r.n >= 5 && wr < 30;
     lines.push(`  [${r.strat}] 최근 ${r.n}거래 승률 ${wr}% 누적 ${Number(r.sum_pnl).toLocaleString()}원${cold ? ' ⚠️ 쿨다운: 내일 신규 슬롯 절반' : ''}`);
   }
+
+  // 조건별 누적 성적 → 해야할 것/하지말아야할 것 (ctx 기록 기반, 표본 10건 이상)
+  const conds = await dbQuery(`
+    SELECT COALESCE(ctx->>'sub', strat) sub, ctx->>'regime' regime,
+           COUNT(*) n, COUNT(*) FILTER (WHERE pnl > 0) w, ROUND(SUM(pnl)) sum_pnl
+    FROM paper_trades WHERE type = 'sell' AND ctx IS NOT NULL AND ctx->>'regime' IS NOT NULL
+    GROUP BY 1, 2 HAVING COUNT(*) >= 10
+    ORDER BY COUNT(*) FILTER (WHERE pnl > 0)::NUMERIC / COUNT(*) DESC
+  `);
+  if (conds.length) {
+    lines.push('  ── 조건별 누적 (전진 검증) ──');
+    for (const c of conds) {
+      const wr = Math.round(c.w / c.n * 100);
+      const mark = wr >= 55 && Number(c.sum_pnl) > 0 ? '✅' : (wr < 40 || Number(c.sum_pnl) < 0) ? '⛔' : '·';
+      lines.push(`  ${mark} ${c.sub} × ${c.regime}: n=${c.n} 승률 ${wr}% 누적 ${Number(c.sum_pnl).toLocaleString()}원`);
+    }
+  }
   const notes = lines.length ? lines.join('\n') : '  (당일 체결 없음)';
   const data = { sells, buys: buys.map(b => ({ strat: b.strat, code: b.code, name: b.name })), recent };
   await dbQuery(`INSERT INTO paper_journal (date, data, notes) VALUES ('${today}', $j$${JSON.stringify(data).replace(/\$/g, '')}$j$::jsonb, $n$${notes.replace(/\$/g, '')}$n$)
@@ -337,11 +374,26 @@ async function morningPhase(books) {
 }
 
 // ── close: 종가 시그널 평가 ──────────────────────────────────
+// 시장 레짐 (005930, 당일 종가): UP / NEUTRAL / DOWN
+async function marketRegime() {
+  const list = await bars('005930', 70);
+  if (list.length < 61) return 'NEUTRAL';
+  const closes = list.map(b => b.close);
+  const i = closes.length - 1;
+  const avg = (n) => closes.slice(i - n + 1, i + 1).reduce((s, v) => s + v, 0) / n;
+  const ma20 = avg(20), ma60 = avg(60);
+  const ret5 = (closes[i] / closes[i - 5] - 1) * 100;
+  if (closes[i] > ma20 && ma20 > ma60) return 'UP';
+  if (closes[i] < ma20 && ret5 < -3) return 'DOWN';
+  return 'NEUTRAL';
+}
+
 async function closePhase(books) {
   const universe = await momUniverse();
   const largeCaps = await dbQuery(`SELECT stock_code, corp_name FROM stock_analysis WHERE current_price >= ${MIN_PRICE} ORDER BY market_cap_tril DESC LIMIT 30`);
   const today = kstDate();
-  const isMonday = kst().getUTCDay() === 1;
+  const regime = await marketRegime();
+  log(`시장 레짐: ${regime} (combo 슬롯 — hi120 ${COMBO_CAPS[regime].hi120} / rsi2 ${COMBO_CAPS[regime].rsi2})`);
 
   // 마켓 브리핑 적용 (morning에 생성된 것 로드, 없으면 즉석 생성)
   const brief = (await loadTodayBrief()) ?? (await buildMarketBrief(books, universe, largeCaps).catch(() => null));
@@ -361,68 +413,77 @@ async function closePhase(books) {
       p.holdDays = (p.holdDays ?? 0) + 1;
       p.hi = Math.max(p.hi ?? 0, t.high);
       const close = t.close;
-      if (strat === 'swing-mom') {
-        if (close <= p.entry * 0.75) p.exitAtOpen = 'stop_loss';
-        else if (!p.halfDone && close >= p.entry * 2) { p.exitAtOpen = 'half_profit'; p.exitQty = Math.floor(p.qty / 2); p.halfDone = true; }
-        else if (isMonday && !universe.slice(0, 20).some(u => u.stock_code === code)) p.exitAtOpen = 'rebalance';
-      } else if (strat === 'hi120') {
-        if (close <= p.hi * (1 - cfg.trailPct / 100)) p.exitAtOpen = 'trailing';
-        else if (p.holdDays >= cfg.maxHold) p.exitAtOpen = 'max_hold';
-      } else if (strat === 'rsi2') {
+      const sub = strat === 'combo' ? p.sub : strat; // combo는 서브 전략 규칙 적용
+      if (sub === 'hi120') {
+        const trail = cfg.trailPct;
+        const maxH = strat === 'combo' ? cfg.maxHoldH : cfg.maxHold;
+        if (close <= p.hi * (1 - trail / 100)) p.exitAtOpen = 'trailing';
+        else if (p.holdDays >= maxH) p.exitAtOpen = 'max_hold';
+      } else if (sub === 'rsi2') {
         const closes = list.map(b => b.close);
         const i = closes.length - 1;
         let ma5 = 0; const n = Math.min(5, closes.length);
         for (let j = i - n + 1; j <= i; j++) ma5 += closes[j];
         ma5 /= n;
+        const maxH = strat === 'combo' ? cfg.maxHoldR : cfg.maxHold;
         if (close <= p.entry * (1 - cfg.stopPct / 100)) p.exitAtOpen = 'stop_loss';
         else if (close > ma5) p.exitAtOpen = 'ma5_exit';
-        else if (p.holdDays >= cfg.maxHold) p.exitAtOpen = 'max_hold';
+        else if (p.holdDays >= maxH) p.exitAtOpen = 'max_hold';
       }
-      // overnight 보유분은 morning에서 무조건 청산되므로 여기선 없음
     }
   }
 
   // 진입 시그널 (브리핑 반영 유니버스 uApplied + 쿨다운 slotCap)
-  // swing-mom: 월요일 종가 리밸런스
-  if (isMonday) {
-    for (const u of uApplied.slice(0, 10)) {
-      const book = books['swing-mom'];
-      if (book.positions[u.stock_code] || Object.keys(book.positions).length >= slotCap('swing-mom')) continue;
-      const t = lastBar(await bars(u.stock_code));
-      if (t) paperBuy(books, 'swing-mom', u.stock_code, u.corp_name, t.close);
-    }
-  }
-  // hi120: 모멘텀 top30 중 120일 신고가 돌파
-  for (const u of uApplied) {
-    const book = books['hi120'];
-    if (book.positions[u.stock_code] || Object.keys(book.positions).length >= slotCap('hi120')) continue;
-    const list = await bars(u.stock_code, 130);
-    if (list.length < 122) continue;
+  const badCodes = new Set((brief?.disclosures ?? []).filter(d => d.tone === 'bad').map(d => d.code));
+
+  // hi120 신고가 돌파 시그널 수집 헬퍼 (단독·combo 공용)
+  async function hi120Signal(code) {
+    const list = await bars(code, 130);
+    if (list.length < 122) return null;
     const i = list.length - 1;
     let prevHigh = 0;
     for (let j = i - 120; j < i; j++) prevHigh = Math.max(prevHigh, list[j].high);
-    if (list[i].close > prevHigh) paperBuy(books, 'hi120', u.stock_code, u.corp_name, list[i].close);
+    if (list[i].close <= prevHigh) return null;
+    return { close: list[i].close, breakoutPct: ((list[i].close / prevHigh - 1) * 100) };
   }
-  // rsi2: 시총 상위 30 과매도 (악재 공시만 제외 — 섹터 후순위는 미적용, 역추세 특성)
-  const badCodes = new Set((brief?.disclosures ?? []).filter(d => d.tone === 'bad').map(d => d.code));
+  async function rsi2Signal(code) {
+    const list = await bars(code, 10);
+    if (list.length < 4) return null;
+    const closes = list.map(b => b.close);
+    const r = rsi2val(closes, closes.length - 1);
+    return r < 10 ? { close: closes[closes.length - 1], rsi: r } : null;
+  }
+
+  // hi120 단독: 모멘텀 top30 중 신고가 돌파
+  for (const u of uApplied) {
+    const book = books['hi120'];
+    if (book.positions[u.stock_code] || Object.keys(book.positions).length >= slotCap('hi120')) continue;
+    const sig = await hi120Signal(u.stock_code);
+    if (sig) paperBuy(books, 'hi120', u.stock_code, u.corp_name, sig.close, { ctx: { regime, breakoutPct: sig.breakoutPct.toFixed(1) } });
+  }
+  // rsi2 단독: 시총 상위 30 과매도 (악재 공시 제외)
   for (const r of largeCaps) {
     const book = books['rsi2'];
     if (badCodes.has(r.stock_code)) continue;
     if (book.positions[r.stock_code] || Object.keys(book.positions).length >= slotCap('rsi2')) continue;
-    const list = await bars(r.stock_code, 10);
-    if (list.length < 4) continue;
-    const closes = list.map(b => b.close);
-    if (rsi2val(closes, closes.length - 1) < STRATEGIES['rsi2'].rsiMax)
-      paperBuy(books, 'rsi2', r.stock_code, r.corp_name, closes[closes.length - 1]);
+    const sig = await rsi2Signal(r.stock_code);
+    if (sig) paperBuy(books, 'rsi2', r.stock_code, r.corp_name, sig.close, { ctx: { regime, rsi: sig.rsi.toFixed(0) } });
   }
-  // overnight: 모멘텀 top5 종가 매수 → 익일 시가 청산 예약
-  for (const u of uApplied.slice(0, 5)) {
-    const book = books['overnight'];
-    if (book.positions[u.stock_code] || Object.keys(book.positions).length >= slotCap('overnight')) continue;
-    const t = lastBar(await bars(u.stock_code));
-    if (t) {
-      paperBuy(books, 'overnight', u.stock_code, u.corp_name, t.close);
-      if (books['overnight'].positions[u.stock_code]) books['overnight'].positions[u.stock_code].exitAtOpen = 'overnight_exit';
+  // combo: 레짐 캡 + 사유 분석 룰 (hi120 돌파폭 3%+, rsi2 maxHold 5)
+  {
+    const book = books['combo'];
+    const caps = COMBO_CAPS[regime];
+    const countSub = (sub) => Object.values(book.positions).filter(p => p.sub === sub).length;
+    for (const u of uApplied) {
+      if (countSub('hi120') >= Math.min(caps.hi120, slotCap('combo')) || book.positions[u.stock_code]) continue;
+      const sig = await hi120Signal(u.stock_code);
+      if (sig && sig.breakoutPct >= STRATEGIES['combo'].minBreakout)
+        paperBuy(books, 'combo', u.stock_code, u.corp_name, sig.close, { sub: 'hi120', ctx: { sub: 'hi120', regime, breakoutPct: sig.breakoutPct.toFixed(1) } });
+    }
+    for (const r of largeCaps) {
+      if (countSub('rsi2') >= caps.rsi2 || badCodes.has(r.stock_code) || book.positions[r.stock_code]) continue;
+      const sig = await rsi2Signal(r.stock_code);
+      if (sig) paperBuy(books, 'combo', r.stock_code, r.corp_name, sig.close, { sub: 'rsi2', ctx: { sub: 'rsi2', regime, rsi: sig.rsi.toFixed(0) } });
     }
   }
 
