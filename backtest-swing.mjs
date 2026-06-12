@@ -56,7 +56,7 @@ const STRATEGIES = {
 // 가설 플래그: --volx N (hi120 돌파일 거래량 > 20일평균 ×N), --rsidays N (rsi2 N일 연속 과매도),
 //             --downsize 0.5 (DOWN 레짐 rsi2 사이즈 배수), --tp1r 1 (1R 도달 시 절반 익절)
 for (const [flag, key] of [['--trail', 'trailPct'], ['--minbreak', 'minBreakout'], ['--maxholdr', 'maxHoldR'], ['--stoppct', 'stopPct'],
-  ['--volx', 'volX'], ['--rsidays', 'rsiDays'], ['--downsize', 'downSize'], ['--tp1r', 'tp1R'], ['--intraday', 'intradayExit'], ['--maxholdh', 'maxHoldH'], ['--rsiuni', 'rsiUni'], ['--entryopen', 'entryOpen'], ['--downflat', 'downFlat'], ['--rsima', 'rsiMa'], ['--tp2r', 'tp2R'], ['--trailwide', 'trailWide'], ['--maxbreak', 'maxBreak'], ['--atrsize', 'atrSize'], ['--lookback', 'lookback'], ['--rsitp', 'rsiTp'], ['--closeloc', 'closeLoc'], ['--rsivol', 'rsiVol']]) {
+  ['--volx', 'volX'], ['--rsidays', 'rsiDays'], ['--downsize', 'downSize'], ['--tp1r', 'tp1R'], ['--intraday', 'intradayExit'], ['--maxholdh', 'maxHoldH'], ['--rsiuni', 'rsiUni'], ['--entryopen', 'entryOpen'], ['--downflat', 'downFlat'], ['--rsima', 'rsiMa'], ['--tp2r', 'tp2R'], ['--trailwide', 'trailWide'], ['--maxbreak', 'maxBreak'], ['--atrsize', 'atrSize'], ['--lookback', 'lookback'], ['--rsitp', 'rsiTp'], ['--closeloc', 'closeLoc'], ['--rsivol', 'rsiVol'], ['--breakfail', 'breakFail']]) {
   const v = argOf(flag, null);
   if (v != null) STRATEGIES['combo-v2'][key] = Number(v);
 }
@@ -453,6 +453,8 @@ for (let di = 0; di < tradingDays.length; di++) {
         }
         if (p.sub === 'hi120') {
           if (cfg.downFlat && regime === 'DOWN' && !p.exitAtOpen) { p.exitAtOpen = 'regime_flat'; continue; }
+          // C26 (--breakfail 1): 돌파 실패 청산 — 종가가 돌파 기준선(직전 120일 고가) 아래 회귀 시 즉시 청산
+          if (cfg.breakFail > 0 && !p.halfDone && p.breakLv > 0 && cd.c[i] < p.breakLv) { p.exitAtOpen = 'break_fail'; continue; }
           // H6 (--tp1r N): 진입가 +trailPct×N 도달 시 절반 익절 (잔량은 트레일링 지속)
           if (cfg.tp1R > 0 && !p.halfDone && cd.c[i] >= p.entry * (1 + cfg.trailPct / 100 * cfg.tp1R) && Math.floor(p.qty / 2) >= 1) {
             p.exitAtOpen = 'tp_half'; p.exitQty = Math.floor(p.qty / 2); p.halfDone = true;
@@ -497,8 +499,8 @@ for (let di = 0; di < tradingDays.length; di++) {
         const clOk = !(cfg.closeLoc > 0) || (cd.h[i] > cd.l[i] && (cd.c[i] - cd.l[i]) / (cd.h[i] - cd.l[i]) >= cfg.closeLoc);
         if (cd.c[i] > prevHigh && breakoutPct >= (cfg.minBreakout ?? 0) && breakCapOk && clOk && volOk) {
           const ctxE = { sub: 'hi120', regime, breakoutPct: breakoutPct.toFixed(1) };
-          if (cfg.entryOpen) (book.pendingBuys ??= []).push({ code, ctx: ctxE });
-          else buy(book, day, code, cd.c[i], Math.floor(budget() * atrMult(cd, i, cfg)), { sub: 'hi120', ctx: ctxE });
+          if (cfg.entryOpen) (book.pendingBuys ??= []).push({ code, ctx: ctxE, breakLv: prevHigh });
+          else buy(book, day, code, cd.c[i], Math.floor(budget() * atrMult(cd, i, cfg)), { sub: 'hi120', ctx: ctxE, breakLv: prevHigh });
         }
       }
       // rsi2 서브 진입 (PIT 시총 상위 과매도)
