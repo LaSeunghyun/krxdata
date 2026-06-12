@@ -33,7 +33,7 @@ const STRATEGIES = {
   'rsi2':  { slots: 5, rsiMax: 10, stopPct: 7, maxHold: 10 },
   // combo: 레짐 적응형 (UP: hi120 6+rsi2 4 / NEUTRAL: hi120 2+rsi2 6 / DOWN: rsi2 4만)
   // 사유 분석 반영 룰: hi120 돌파폭 3%+만, rsi2 서브 최대보유 5일
-  'combo': { slots: 10, rsiMax: 10, stopPct: 7, maxHoldR: 5, lookback: 120, trailPct: 10, maxHoldH: 60, minBreakout: 3 },
+  'combo': { slots: 10, rsiMax: 10, stopPct: 7, maxHoldR: 5, lookback: 120, trailPct: 8, maxHoldH: 60, minBreakout: 3 },
 };
 const COMBO_CAPS = { UP: { hi120: 6, rsi2: 4 }, NEUTRAL: { hi120: 2, rsi2: 6 }, DOWN: { hi120: 0, rsi2: 4 } };
 
