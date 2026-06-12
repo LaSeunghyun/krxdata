@@ -56,7 +56,7 @@ const STRATEGIES = {
 // 가설 플래그: --volx N (hi120 돌파일 거래량 > 20일평균 ×N), --rsidays N (rsi2 N일 연속 과매도),
 //             --downsize 0.5 (DOWN 레짐 rsi2 사이즈 배수), --tp1r 1 (1R 도달 시 절반 익절)
 for (const [flag, key] of [['--trail', 'trailPct'], ['--minbreak', 'minBreakout'], ['--maxholdr', 'maxHoldR'], ['--stoppct', 'stopPct'],
-  ['--volx', 'volX'], ['--rsidays', 'rsiDays'], ['--downsize', 'downSize'], ['--tp1r', 'tp1R'], ['--intraday', 'intradayExit'], ['--maxholdh', 'maxHoldH'], ['--rsiuni', 'rsiUni'], ['--entryopen', 'entryOpen'], ['--downflat', 'downFlat'], ['--rsima', 'rsiMa'], ['--tp2r', 'tp2R'], ['--trailwide', 'trailWide'], ['--maxbreak', 'maxBreak'], ['--atrsize', 'atrSize'], ['--lookback', 'lookback'], ['--rsitp', 'rsiTp']]) {
+  ['--volx', 'volX'], ['--rsidays', 'rsiDays'], ['--downsize', 'downSize'], ['--tp1r', 'tp1R'], ['--intraday', 'intradayExit'], ['--maxholdh', 'maxHoldH'], ['--rsiuni', 'rsiUni'], ['--entryopen', 'entryOpen'], ['--downflat', 'downFlat'], ['--rsima', 'rsiMa'], ['--tp2r', 'tp2R'], ['--trailwide', 'trailWide'], ['--maxbreak', 'maxBreak'], ['--atrsize', 'atrSize'], ['--lookback', 'lookback'], ['--rsitp', 'rsiTp'], ['--closeloc', 'closeLoc']]) {
   const v = argOf(flag, null);
   if (v != null) STRATEGIES['combo-v2'][key] = Number(v);
 }
@@ -493,7 +493,9 @@ for (let di = 0; di < tradingDays.length; di++) {
         }
         // C16 (--maxbreak N): 돌파폭 과열 상한 — 파라볼릭 진입 제외
         const breakCapOk = !(cfg.maxBreak > 0) || breakoutPct <= cfg.maxBreak;
-        if (cd.c[i] > prevHigh && breakoutPct >= (cfg.minBreakout ?? 0) && breakCapOk && volOk) {
+        // C24 (--closeloc N): 돌파일 종가 위치 필터 — (c-l)/(h-l) >= N, 장중 되돌림 없는 강한 마감만
+        const clOk = !(cfg.closeLoc > 0) || (cd.h[i] > cd.l[i] && (cd.c[i] - cd.l[i]) / (cd.h[i] - cd.l[i]) >= cfg.closeLoc);
+        if (cd.c[i] > prevHigh && breakoutPct >= (cfg.minBreakout ?? 0) && breakCapOk && clOk && volOk) {
           const ctxE = { sub: 'hi120', regime, breakoutPct: breakoutPct.toFixed(1) };
           if (cfg.entryOpen) (book.pendingBuys ??= []).push({ code, ctx: ctxE });
           else buy(book, day, code, cd.c[i], Math.floor(budget() * atrMult(cd, i, cfg)), { sub: 'hi120', ctx: ctxE });
