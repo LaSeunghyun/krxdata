@@ -118,6 +118,7 @@ jobs:
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
           TOSS_CLIENT_ID: ${{ secrets.TOSS_CLIENT_ID }}
           TOSS_CLIENT_SECRET: ${{ secrets.TOSS_CLIENT_SECRET }}
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
         run: |
           echo "=== 페이퍼 트레이딩 close 페이즈 ($(TZ='Asia/Seoul' date)) ==="
           node paper-swing.js
