@@ -33,7 +33,7 @@ const STRATEGIES = {
   'rsi2':  { slots: 5, rsiMax: 10, stopPct: 7, maxHold: 10 },
   // combo: 레짐 적응형 (UP: hi120 6+rsi2 4 / NEUTRAL: hi120 2+rsi2 6 / DOWN: rsi2 4만)
   // 사유 분석 반영 룰: hi120 돌파폭 3%+만, rsi2 서브 최대보유 5일
-  'combo': { slots: 10, rsiMax: 10, stopPct: 7, maxHoldR: 5, lookback: 120, trailPct: 8, maxHoldH: 60, minBreakout: 3, rsiDays: 2 },
+  'combo': { slots: 10, rsiMax: 10, stopPct: 7, maxHoldR: 5, lookback: 120, trailPct: 8, maxHoldH: 60, minBreakout: 3, rsiDays: 2, tp1R: 1 },
 };
 const COMBO_CAPS = { UP: { hi120: 6, rsi2: 4 }, NEUTRAL: { hi120: 2, rsi2: 6 }, DOWN: { hi120: 0, rsi2: 4 } };
 
@@ -370,6 +370,7 @@ async function morningPhase(books) {
         log(`[${strat}] ${code} 오늘 봉 없음 — 집행 보류`); continue;
       }
       paperSell(books, strat, code, today.open, p.exitAtOpen, p.exitQty);
+      if (book.positions[code]) { delete book.positions[code].exitAtOpen; delete book.positions[code].exitQty; } // 부분익절 잔량 보호
       executed++;
     }
   }
@@ -606,7 +607,10 @@ async function closePhase(books) {
       if (sub === 'hi120') {
         const trail = cfg.trailPct;
         const maxH = strat === 'combo' ? cfg.maxHoldH : cfg.maxHold;
-        if (close <= p.hi * (1 - trail / 100)) p.exitAtOpen = 'trailing';
+        if (cfg.tp1R > 0 && !p.halfDone && close >= p.entry * (1 + trail / 100 * cfg.tp1R) && Math.floor(p.qty / 2) >= 1) {
+          p.exitAtOpen = 'tp_half'; p.exitQty = Math.floor(p.qty / 2); p.halfDone = true;
+        }
+        else if (close <= p.hi * (1 - trail / 100)) p.exitAtOpen = 'trailing';
         else if (p.holdDays >= maxH) p.exitAtOpen = 'max_hold';
       } else if (sub === 'rsi2') {
         const closes = list.map(b => b.close);

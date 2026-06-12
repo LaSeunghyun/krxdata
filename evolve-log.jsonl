@@ -1,0 +1,6 @@
+{"cycle":1,"hypothesis":"H3 hi120 거래량필터 volx=2","train":{"pf":0.98,"cagr":5.0,"mdd":18.8},"valid":{"pf":1.57,"cagr":71.6,"mdd":14.9},"verdict":"기각","notes":"양 기간 모두 PF/CAGR 악화 — minbreak 3%가 이미 강도 필터 역할, 저거래량 돌파도 수익 기여"}
+{"cycle":2,"hypothesis":"H7 rsi2 2일 연속 과매도 (rsiDays=2)","train":{"pf":1.19,"cagr":28.3,"mdd":22.8},"valid":{"pf":1.70,"cagr":108.3,"mdd":16.0},"verdict":"채택","notes":"양 기간 PF/CAGR 개선 — 이틀 연속 과매도=진짜 투매. 새 베이스라인"}
+{"cycle":3,"hypothesis":"H2 DOWN 레짐 rsi2 사이즈 0.5","train":{"pf":1.20,"cagr":27.8},"valid":{"pf":1.66,"cagr":99.5},"verdict":"기각","notes":"valid 악화 — DOWN 투매 반등이 수익원, 축소 손해"}
+{"cycle":5,"hypothesis":"H1/H4 장중 청산 전면 적용 (--intraday 1)","train":{"pf":1.20,"cagr":29.4,"mdd":16.9},"valid":{"pf":1.48,"cagr":79.7,"mdd":13.5},"verdict":"기각","notes":"MDD는 양 기간 대폭 개선(-5.9/-2.5%p)이나 valid PF/CAGR 악화 — 장중 터치 후 회복하는 추세 트레이드를 휩쏘로 날림. 하이브리드(rsi2 스톱만 장중) 시도"}
+{"cycle":6,"hypothesis":"rsi2 스톱만 장중 (--intraday 2)","train":{"pf":1.19,"cagr":28.6},"valid":{"pf":1.62,"cagr":99.0},"verdict":"기각","notes":"rsi2 엣지=장중 패닉 매수라 장중 손절은 자기모순. 장중청산 계열(C4~C6) 종료 — 종가판정 구조 확정"}
+{"cycle":7,"hypothesis":"H6 hi120 1R(+8%) 절반익절 (tp1R=1)","train":{"pf":1.20,"cagr":29.8,"mdd":17.5},"valid":{"pf":1.88,"cagr":121.7,"mdd":14.4},"verdict":"채택","notes":"전 지표 양 기간 개선. max_hold 반납 패턴 해결. 새 베이스라인"}

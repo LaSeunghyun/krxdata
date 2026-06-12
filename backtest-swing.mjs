@@ -50,13 +50,13 @@ const STRATEGIES = {
   // combo: 레짐 적응형 — 상승장 hi120 비중↑, 중립 rsi2 비중↑, 하락장 rsi2 소량+현금
   'combo':      { slots: 10, rsiMax: 10, stopPct: 7, maxHoldR: 10, lookback: 120, trailPct: 10, maxHoldH: 60 },
   // combo-v2: 사유 기록 분석 반영 — hi120 돌파폭 3%+만, rsi2 최대보유 5일, NEUTRAL hi120 슬롯 2
-  'combo-v2':   { slots: 10, rsiMax: 10, stopPct: 7, maxHoldR: 5, lookback: 120, trailPct: 8, maxHoldH: 60, minBreakout: 3, rsiDays: 2, v2: true },
+  'combo-v2':   { slots: 10, rsiMax: 10, stopPct: 7, maxHoldR: 5, lookback: 120, trailPct: 8, maxHoldH: 60, minBreakout: 3, rsiDays: 2, tp1R: 1, v2: true },
 };
 // combo-v2 파라미터 오버라이드 (스윕용): --trail 8 --minbreak 5 --maxholdr 3 --stoppct 5
 // 가설 플래그: --volx N (hi120 돌파일 거래량 > 20일평균 ×N), --rsidays N (rsi2 N일 연속 과매도),
 //             --downsize 0.5 (DOWN 레짐 rsi2 사이즈 배수), --tp1r 1 (1R 도달 시 절반 익절)
 for (const [flag, key] of [['--trail', 'trailPct'], ['--minbreak', 'minBreakout'], ['--maxholdr', 'maxHoldR'], ['--stoppct', 'stopPct'],
-  ['--volx', 'volX'], ['--rsidays', 'rsiDays'], ['--downsize', 'downSize'], ['--tp1r', 'tp1R']]) {
+  ['--volx', 'volX'], ['--rsidays', 'rsiDays'], ['--downsize', 'downSize'], ['--tp1r', 'tp1R'], ['--intraday', 'intradayExit']]) {
   const v = argOf(flag, null);
   if (v != null) STRATEGIES['combo-v2'][key] = Number(v);
 }
@@ -317,6 +317,7 @@ for (let di = 0; di < tradingDays.length; di++) {
       const i = cd ? indexOfDate(cd, day) : null;
       if (i == null) continue;
       if (p.exitAtOpen) { sell(book, day, code, cd.o[i], p.exitAtOpen, p.exitQty); delete p.exitAtOpen; delete p.exitQty; continue; }
+      p.hiPrev = p.hi; // 전일까지의 고점 (장중 트레일링 레벨용 — 당일 고가 lookahead 방지)
       p.hi = Math.max(p.hi, cd.h[i]);
     }
 
@@ -385,8 +386,22 @@ for (let di = 0; di < tradingDays.length; di++) {
       for (const [code, p] of Object.entries(book.positions)) {
         const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
         if (i == null) continue;
+        // H1/H4 (--intraday 1): 당일 장중 레벨 터치 시 즉시 청산 (level 또는 갭 시 시가, 전일 기준 레벨)
+        if (cfg.intradayExit && !p.exitAtOpen && (cfg.intradayExit === 1 || p.sub === 'rsi2')) { // 2=rsi2 스톱만
+          const level = p.sub === 'hi120'
+            ? (p.hiPrev ?? p.hi) * (1 - cfg.trailPct / 100) // 전일 고점 기준 (당일 고가 lookahead 방지)
+            : p.entry * (1 - cfg.stopPct / 100);
+          if (cd.l[i] <= level && p.holdDays >= 1) {     // 진입 당일 제외
+            sell(book, day, code, Math.min(level, cd.o[i]), p.sub === 'hi120' ? 'trailing_intraday' : 'stop_intraday');
+            continue;
+          }
+        }
         if (p.sub === 'hi120') {
-          if (cd.c[i] <= p.hi * (1 - cfg.trailPct / 100)) p.exitAtOpen = 'trailing';
+          // H6 (--tp1r N): 진입가 +trailPct×N 도달 시 절반 익절 (잔량은 트레일링 지속)
+          if (cfg.tp1R > 0 && !p.halfDone && cd.c[i] >= p.entry * (1 + cfg.trailPct / 100 * cfg.tp1R) && Math.floor(p.qty / 2) >= 1) {
+            p.exitAtOpen = 'tp_half'; p.exitQty = Math.floor(p.qty / 2); p.halfDone = true;
+          }
+          else if (cd.c[i] <= p.hi * (1 - cfg.trailPct / 100)) p.exitAtOpen = 'trailing';
           else if (p.holdDays >= cfg.maxHoldH) p.exitAtOpen = 'max_hold';
         } else {
           let ma5 = 0; const n = Math.min(5, i + 1);
