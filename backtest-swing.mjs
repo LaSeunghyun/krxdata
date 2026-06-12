@@ -34,7 +34,10 @@ const BARS_DEPTH = Number(argOf('--bars', '1150')); // 2022-01~ (FROM 이전 룩
 const ONLY = argOf('--strategies', '').split(',').filter(Boolean);
 const CACHE_FILE = join(__dirname, 'candles-daily.jsonl');
 
-const FEE_BPS = 1.5, TAX_BPS = 15;
+// C31 (--stress 1): 슬리피지 ±2틱 + 수수료 2배 비관 시나리오
+const STRESS = Number(argOf('--stress', 0));
+const FEE_BPS = STRESS ? 3 : 1.5, TAX_BPS = 15;
+const SLIP_TICKS = STRESS ? 2 : 1;
 const MIN_PRICE = 2_000;
 const MIN_TURNOVER = 5e8; // 20일 평균 거래대금 5억 미만 제외 (유동성)
 
@@ -73,8 +76,8 @@ function tickSize(p) {
   if (p < 500_000) return 500;
   return 1_000;
 }
-const tickUp = (p) => Math.round(p / tickSize(p)) * tickSize(p) + tickSize(p);
-const tickDn = (p) => Math.round(p / tickSize(p)) * tickSize(p) - tickSize(p);
+const tickUp = (p) => Math.round(p / tickSize(p)) * tickSize(p) + tickSize(p) * SLIP_TICKS;
+const tickDn = (p) => Math.round(p / tickSize(p)) * tickSize(p) - tickSize(p) * SLIP_TICKS;
 const fmtDay = (d) => `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
 function netPnl(entry, exit, qty) {
   const gross = (exit - entry) * qty;
