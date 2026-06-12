@@ -229,8 +229,10 @@ const CAPS_PRESETS = {
   A: COMBO_CAPS_V2,
   B: { UP: { hi120: 8, rsi2: 2 }, NEUTRAL: { hi120: 3, rsi2: 7 }, DOWN: { hi120: 0, rsi2: 5 } },
   C: { UP: { hi120: 5, rsi2: 5 }, NEUTRAL: { hi120: 2, rsi2: 8 }, DOWN: { hi120: 0, rsi2: 6 } },
-  // C19: NEUTRAL hi120 무수익(전기간 +18k/46건) → rsi2로 재배분
+  // C19: NEUTRAL hi120 무수익(전기간 +18k/46건) → rsi2로 재배분 — 기각 (Train 악화)
   D: { UP: { hi120: 6, rsi2: 4 }, NEUTRAL: { hi120: 0, rsi2: 8 }, DOWN: { hi120: 0, rsi2: 4 } },
+  // C20: UP에서 hi120 증강 (UP hi120이 전기간 최대 수익원 +26.3M)
+  E: { UP: { hi120: 8, rsi2: 2 }, NEUTRAL: { hi120: 2, rsi2: 6 }, DOWN: { hi120: 0, rsi2: 4 } },
 };
 const CAPS_SEL = argOf('--caps', 'A');
 // 레짐 MA 페어 (--regimema "20,60"): 빠른 스위치 vs 느린 스위치
