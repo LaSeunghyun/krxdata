@@ -43,7 +43,7 @@ test("daily-ranking env validation is explicit and import-safe", () => {
   assert.deepEqual(missing, [
     "SUPABASE_URL",
     "SUPABASE_KEY(또는 SUPABASE_SERVICE_KEY)",
-    "PUBLIC_DATA_API_KEY",
+    "PUBLIC_DATA_API_KEY(또는 TOSS_CLIENT_ID/SECRET 짝)",
     "DART_API_KEY",
     "SUPABASE_MANAGEMENT_KEY",
     "SUPABASE_PROJECT_REF",
@@ -57,6 +57,28 @@ test("daily-ranking env validation is explicit and import-safe", () => {
     SUPABASE_MANAGEMENT_KEY: "management-key",
     SUPABASE_PROJECT_REF: "project-ref",
   }), []);
+});
+
+test("toss credentials satisfy the price-source requirement without PUBLIC_DATA_API_KEY", () => {
+  assert.deepEqual(getMissingDailyRankingEnv({
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SERVICE_KEY: "service-key",
+    TOSS_CLIENT_ID: "c_test",
+    TOSS_CLIENT_SECRET: "s_test",
+    DART_API_KEY: "dart-key",
+    SUPABASE_MANAGEMENT_KEY: "management-key",
+    SUPABASE_PROJECT_REF: "project-ref",
+  }), []);
+
+  // TOSS_CLIENT_ID만 있으면(짝 미완성) 공공데이터 키가 여전히 필요
+  assert.ok(getMissingDailyRankingEnv({
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SERVICE_KEY: "service-key",
+    TOSS_CLIENT_ID: "c_test",
+    DART_API_KEY: "dart-key",
+    SUPABASE_MANAGEMENT_KEY: "management-key",
+    SUPABASE_PROJECT_REF: "project-ref",
+  }).some((k) => k.startsWith("PUBLIC_DATA_API_KEY")));
 });
 
 test("ranking refresh SQL upserts rows and removes stale rows in one statement", () => {

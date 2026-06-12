@@ -14,6 +14,7 @@ import {
   ANALYSIS_YEAR_PREV2 as YEAR_PREV2,
   FETCH_TIMEOUT_MS,
 } from './config.js';
+import { isTossConfigured, getPricesMap, getStocksMap, getDailyCandles } from './toss-api.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STATUS_FILE = join(__dirname, '.update-status.json');
@@ -49,10 +50,12 @@ const SUPABASE_PROJECT_REF = process.env.SUPABASE_PROJECT_REF;
 
 export function getMissingDailyRankingEnv(env = process.env) {
   const supabaseKey = env.SUPABASE_KEY ?? env.SUPABASE_SERVICE_KEY;
+  // 가격 소스: 토스 Open API(TOSS_CLIENT_ID/SECRET) 또는 공공데이터 키 중 하나면 충분
+  const priceSource = isTossConfigured(env) ? "toss" : env.PUBLIC_DATA_API_KEY;
   return [
     ["SUPABASE_URL", env.SUPABASE_URL],
     ["SUPABASE_KEY(또는 SUPABASE_SERVICE_KEY)", supabaseKey],
-    ["PUBLIC_DATA_API_KEY", env.PUBLIC_DATA_API_KEY],
+    ["PUBLIC_DATA_API_KEY(또는 TOSS_CLIENT_ID/SECRET 짝)", priceSource],
     ["DART_API_KEY", env.DART_API_KEY],
     ["SUPABASE_MANAGEMENT_KEY", env.SUPABASE_MANAGEMENT_KEY],
     ["SUPABASE_PROJECT_REF", env.SUPABASE_PROJECT_REF],
@@ -174,11 +177,11 @@ async function updatePrices() {
   const stocks = await dbQuery(`SELECT stock_code FROM stock_analysis WHERE market_cap_tril >= 0`);
   const codes = stocks.map(s => s.stock_code);
 
-  const skipPrice = process.argv.includes('--skip-price');
   const refresh52w = shouldRefresh52w(process.argv.slice(2));
   // full 모드(--skip-price 없음)에서는 항상 52w 갱신
   // ranking 모드(--skip-price)에서는 --refresh-52w일 때만 별도 갱신
-  console.log(`[가격 업데이트] ${codes.length}개 종목 시작 (52주 갱신: ${refresh52w ? 'ON' : 'OFF'}, concurrency=10)`);
+  const useToss = isTossConfigured();
+  console.log(`[가격 업데이트] ${codes.length}개 종목 시작 (소스: ${useToss ? '토스 Open API' : '공공데이터'}, 52주 갱신: ${refresh52w ? 'ON' : 'OFF'}, concurrency=10)`);
   patchStatus({ progress: 0, total: codes.length, current: `가격 업데이트 시작 (${codes.length}개)` });
 
   let updated = 0, skipped = 0, done = 0;
@@ -207,7 +210,7 @@ async function updatePrices() {
       await dbQuery(`
         UPDATE stock_analysis AS sa
         SET current_price     = v.current_price,
-            market_cap_tril   = v.market_cap_tril,
+            market_cap_tril   = COALESCE(v.market_cap_tril::numeric, sa.market_cap_tril),
             high_52w          = COALESCE(v.high_52w, sa.high_52w),
             low_52w           = COALESCE(v.low_52w, sa.low_52w),
             week52_updated_at = CASE WHEN v.refreshed THEN NOW() ELSE sa.week52_updated_at END,
@@ -221,21 +224,7 @@ async function updatePrices() {
     return flushChain;
   }
 
-  const tasks = codes.map(code => async () => {
-    const q = await getPublicDataQuote(code, refresh52w);
-    if (q && q.price > 0) {
-      const cap = parseFloat((q.market_cap / 1e12).toFixed(4));
-      buffer.push({
-        code,
-        price: q.price,
-        cap: Number.isFinite(cap) ? cap : 0,
-        high: q.high_52w ?? null,
-        low:  q.low_52w  ?? null,
-      });
-      updated++;
-    } else {
-      skipped++;
-    }
+  async function onProgress() {
     done++;
     if (buffer.length >= SQL_BATCH) await flushBuffer();
     if (done % BATCH === 0) {
@@ -243,7 +232,67 @@ async function updatePrices() {
       console.log(`  진행: ${done}/${codes.length} (업데이트 ${updated}, 스킵 ${skipped})`);
       patchStatus({ progress: pct, current: `가격 업데이트 중 (${done}/${codes.length})` });
     }
-  });
+  }
+
+  let tasks;
+  let prices = null, infos = null;
+  if (useToss) {
+    // 현재가 200종목 일괄 선조회 (~14 요청, 수 초). 실패 시 공공데이터 키가 있으면 구 경로 폴백
+    try {
+      prices = await getPricesMap(codes);
+    } catch (e) {
+      if (!PUBLIC_KEY) throw e;
+      console.log(`[토스 API 실패 → 공공데이터 폴백] ${e.message}`);
+    }
+    if (prices) {
+      // 시총 미제공이라 발행주식수 × 현재가로 계산. 조회 실패는 비치명 — 시총 NULL 유지
+      try { infos = await getStocksMap(codes); }
+      catch (e) { console.log(`[토스 종목정보 실패 — 시총 갱신 생략] ${e.message}`); infos = new Map(); }
+    }
+  }
+  if (prices) {
+    const STALE_MS = 7 * 24 * 3600 * 1000; // 7일 넘게 멈춘 가격(장기 거래정지)은 구 경로처럼 스킵
+    tasks = codes.map(code => async () => {
+      const p = prices.get(code);
+      const stale = p?.timestamp && Date.now() - Date.parse(p.timestamp) > STALE_MS;
+      if (!p || !(p.price > 0) || stale) { skipped++; return onProgress(); }
+      let high = null, low = null;
+      if (refresh52w) {
+        // 일봉 252개(수정주가) 고저가 기준 — 분할·증자 후 가짜 52주 고점 방지
+        const candles = await getDailyCandles(code, 252).catch(() => []);
+        const highs = candles.map(c => c.high).filter(v => Number.isFinite(v) && v > 0);
+        const lows  = candles.map(c => c.low).filter(v => Number.isFinite(v) && v > 0);
+        if (highs.length && lows.length) { high = Math.max(...highs); low = Math.min(...lows); }
+      }
+      const shares = infos.get(code)?.sharesOutstanding;
+      // 발행주식수 결측 시 NULL → SQL COALESCE로 기존 시총 보존 (0 덮어쓰기 방지)
+      const cap = Number.isFinite(shares) && shares > 0
+        ? parseFloat(((shares * p.price) / 1e12).toFixed(4))
+        : null;
+      buffer.push({ code, price: p.price, cap, high, low });
+      updated++;
+      return onProgress();
+    });
+  } else {
+    tasks = codes.map(code => async () => {
+      const q = await getPublicDataQuote(code, refresh52w);
+      if (q && q.price > 0) {
+        const cap = parseFloat((q.market_cap / 1e12).toFixed(4));
+        buffer.push({
+          code,
+          price: q.price,
+          // 시총 미확인(0)이면 NULL → COALESCE로 기존 값 보존
+          cap: Number.isFinite(cap) && cap > 0 ? cap : null,
+          high: q.high_52w ?? null,
+          low:  q.low_52w  ?? null,
+        });
+        updated++;
+      } else {
+        skipped++;
+      }
+      return onProgress();
+    });
+  }
 
   await withConcurrency(tasks, 10);
   await flushBuffer(); // 나머지 flush
@@ -523,6 +572,22 @@ async function calcOpIncomeYoy() {
 // ETF API 미지원으로 삼성전자(KOSPI 비중 ~30%) 사용
 async function checkMarketRegime() {
   try {
+    if (isTossConfigured()) {
+      // 최신 봉은 당일 라이브(미완성) 봉일 수 있어 제외 — 09:03 실행 시 시초가 오염 방지
+      const kstToday = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+      const candles = (await getDailyCandles('005930', 22))
+        .filter(c => !String(c.timestamp).startsWith(kstToday));
+      if (candles.length < 6) return { status: 'unknown', warn: false };
+      const closes  = candles.map(c => c.close);
+      const latest  = closes[0];
+      const day5ago = closes[5];
+      const ma20    = closes.slice(0, Math.min(closes.length, 20))
+                            .reduce((s, v) => s + v, 0) / Math.min(closes.length, 20);
+      const ret5d   = ((latest - day5ago) / day5ago) * 100;
+      const belowMA = latest < ma20;
+      const warn    = belowMA && ret5d < -3;
+      return { latest, ma20: Math.round(ma20), ret5d: ret5d.toFixed(2), belowMA, warn };
+    }
     const url = new URL(`${PUBLIC_BASE}/getStockPriceInfo`);
     url.searchParams.set("serviceKey", decodeURIComponent(PUBLIC_KEY));
     url.searchParams.set("resultType", "json");

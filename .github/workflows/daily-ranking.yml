@@ -68,6 +68,8 @@ jobs:
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
           SUPABASE_MANAGEMENT_KEY: ${{ secrets.SUPABASE_MANAGEMENT_KEY }}
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+          TOSS_CLIENT_ID: ${{ secrets.TOSS_CLIENT_ID }}
+          TOSS_CLIENT_SECRET: ${{ secrets.TOSS_CLIENT_SECRET }}
         run: |
           echo "=== 가격+랭킹 업데이트 시작 ($(TZ='Asia/Seoul' date)) ==="
           node daily-ranking.js${{ github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_52w == 'true' && ' --refresh-52w' || '' }}
@@ -81,6 +83,8 @@ jobs:
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
           SUPABASE_MANAGEMENT_KEY: ${{ secrets.SUPABASE_MANAGEMENT_KEY }}
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+          TOSS_CLIENT_ID: ${{ secrets.TOSS_CLIENT_ID }}
+          TOSS_CLIENT_SECRET: ${{ secrets.TOSS_CLIENT_SECRET }}
         run: |
           echo "=== 랭킹 재계산 시작 ($(TZ='Asia/Seoul' date)) ==="
           node daily-ranking.js --skip-price${{ github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_52w == 'true' && ' --refresh-52w' || '' }}
@@ -94,6 +98,8 @@ jobs:
           DART_API_KEY: ${{ secrets.DART_API_KEY }}
           SUPABASE_MANAGEMENT_KEY: ${{ secrets.SUPABASE_MANAGEMENT_KEY }}
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+          TOSS_CLIENT_ID: ${{ secrets.TOSS_CLIENT_ID }}
+          TOSS_CLIENT_SECRET: ${{ secrets.TOSS_CLIENT_SECRET }}
         run: |
           echo "=== 재무 backfill 시작 ($(TZ='Asia/Seoul' date)) ==="
           node dart-financials-backfill.js --years 2023,2024,2025
