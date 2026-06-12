@@ -56,7 +56,7 @@ const STRATEGIES = {
 // 가설 플래그: --volx N (hi120 돌파일 거래량 > 20일평균 ×N), --rsidays N (rsi2 N일 연속 과매도),
 //             --downsize 0.5 (DOWN 레짐 rsi2 사이즈 배수), --tp1r 1 (1R 도달 시 절반 익절)
 for (const [flag, key] of [['--trail', 'trailPct'], ['--minbreak', 'minBreakout'], ['--maxholdr', 'maxHoldR'], ['--stoppct', 'stopPct'],
-  ['--volx', 'volX'], ['--rsidays', 'rsiDays'], ['--downsize', 'downSize'], ['--tp1r', 'tp1R'], ['--intraday', 'intradayExit'], ['--maxholdh', 'maxHoldH'], ['--rsiuni', 'rsiUni'], ['--entryopen', 'entryOpen'], ['--downflat', 'downFlat'], ['--rsima', 'rsiMa'], ['--tp2r', 'tp2R'], ['--trailwide', 'trailWide'], ['--maxbreak', 'maxBreak'], ['--atrsize', 'atrSize'], ['--lookback', 'lookback'], ['--rsitp', 'rsiTp'], ['--closeloc', 'closeLoc']]) {
+  ['--volx', 'volX'], ['--rsidays', 'rsiDays'], ['--downsize', 'downSize'], ['--tp1r', 'tp1R'], ['--intraday', 'intradayExit'], ['--maxholdh', 'maxHoldH'], ['--rsiuni', 'rsiUni'], ['--entryopen', 'entryOpen'], ['--downflat', 'downFlat'], ['--rsima', 'rsiMa'], ['--tp2r', 'tp2R'], ['--trailwide', 'trailWide'], ['--maxbreak', 'maxBreak'], ['--atrsize', 'atrSize'], ['--lookback', 'lookback'], ['--rsitp', 'rsiTp'], ['--closeloc', 'closeLoc'], ['--rsivol', 'rsiVol']]) {
   const v = argOf(flag, null);
   if (v != null) STRATEGIES['combo-v2'][key] = Number(v);
 }
@@ -511,7 +511,14 @@ for (let di = 0; di < tradingDays.length; di++) {
         const daysOk = !(cfg.rsiDays > 1) || rsi2(cd, i - 1) < cfg.rsiMax;
         // C18: stop_loss 쿨다운 중이면 재진입 금지
         if ((book.cool?.[code] ?? -1) > di) continue;
-        if (r < cfg.rsiMax && daysOk) {
+        // C25 (--rsivol 1): 투매 거래량 확인 — 당일 거래량 > 20일 평균
+        let rvOk = true;
+        if (cfg.rsiVol > 0 && i >= 21) {
+          let av = 0;
+          for (let j = i - 20; j < i; j++) av += cd.v[j];
+          rvOk = cd.v[i] > (av / 20) * cfg.rsiVol;
+        }
+        if (r < cfg.rsiMax && daysOk && rvOk) {
           // H2: DOWN 레짐 사이즈 축소 (--downsize 0.5)
           const sizeMult = (regime === 'DOWN' && cfg.downSize > 0) ? cfg.downSize : 1;
           buy(book, day, code, cd.c[i], Math.floor(budget() * sizeMult * atrMult(cd, i, cfg)), { sub: 'rsi2', ctx: { sub: 'rsi2', regime, rsi: r.toFixed(0) } });
