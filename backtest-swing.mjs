@@ -56,7 +56,7 @@ const STRATEGIES = {
 // 가설 플래그: --volx N (hi120 돌파일 거래량 > 20일평균 ×N), --rsidays N (rsi2 N일 연속 과매도),
 //             --downsize 0.5 (DOWN 레짐 rsi2 사이즈 배수), --tp1r 1 (1R 도달 시 절반 익절)
 for (const [flag, key] of [['--trail', 'trailPct'], ['--minbreak', 'minBreakout'], ['--maxholdr', 'maxHoldR'], ['--stoppct', 'stopPct'],
-  ['--volx', 'volX'], ['--rsidays', 'rsiDays'], ['--downsize', 'downSize'], ['--tp1r', 'tp1R'], ['--intraday', 'intradayExit'], ['--maxholdh', 'maxHoldH'], ['--rsiuni', 'rsiUni'], ['--entryopen', 'entryOpen'], ['--downflat', 'downFlat'], ['--rsima', 'rsiMa'], ['--tp2r', 'tp2R'], ['--trailwide', 'trailWide'], ['--maxbreak', 'maxBreak'], ['--atrsize', 'atrSize'], ['--lookback', 'lookback'], ['--rsitp', 'rsiTp'], ['--closeloc', 'closeLoc'], ['--rsivol', 'rsiVol'], ['--breakfail', 'breakFail'], ['--rsicut', 'rsiCut']]) {
+  ['--volx', 'volX'], ['--rsidays', 'rsiDays'], ['--downsize', 'downSize'], ['--tp1r', 'tp1R'], ['--intraday', 'intradayExit'], ['--maxholdh', 'maxHoldH'], ['--rsiuni', 'rsiUni'], ['--entryopen', 'entryOpen'], ['--downflat', 'downFlat'], ['--rsima', 'rsiMa'], ['--tp2r', 'tp2R'], ['--trailwide', 'trailWide'], ['--maxbreak', 'maxBreak'], ['--atrsize', 'atrSize'], ['--lookback', 'lookback'], ['--rsitp', 'rsiTp'], ['--closeloc', 'closeLoc'], ['--rsivol', 'rsiVol'], ['--breakfail', 'breakFail'], ['--rsicut', 'rsiCut'], ['--pyramid', 'pyramid']]) {
   const v = argOf(flag, null);
   if (v != null) STRATEGIES['combo-v2'][key] = Number(v);
 }
@@ -466,6 +466,16 @@ for (let di = 0; di < tradingDays.length; di++) {
           // C15 (--trailwide N): 절반익절 후 잔량 트레일링 폭 확대 (러너 추세 보존)
           else if (cd.c[i] <= p.hi * (1 - (p.halfDone && cfg.trailWide > 0 ? cfg.trailWide : cfg.trailPct) / 100)) p.exitAtOpen = 'trailing';
           else if (p.holdDays >= cfg.maxHoldH) p.exitAtOpen = 'max_hold';
+          // C28 (--pyramid 1): 1R 절반익절 확인 종목이 추가 신고가 갱신 시 1회 증액 (추세 검증된 종목에 집중)
+          else if (cfg.pyramid > 0 && p.halfDone && !p.pyrDone && cd.c[i] > (p.hiPrev ?? p.entry)) {
+            const fill = tickUp(cd.c[i]);
+            const q = Math.floor(Math.min(Math.floor(budget() * 0.5), book.cash) / fill);
+            if (q >= 1) {
+              book.cash -= fill * q;
+              p.entry = (p.entry * p.qty + fill * q) / (p.qty + q);
+              p.qty += q; p.pyrDone = true;
+            }
+          }
         } else {
           const maN = cfg.rsiMa || 5;
           let ma5 = 0; const n = Math.min(maN, i + 1);
