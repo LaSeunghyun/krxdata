@@ -207,8 +207,31 @@ function mcapUniverse(day) {
   return mcapCache.get(wk);
 }
 
+// C23 (--regimemode breadth): 시총 상위 30종목 중 20MA 위 비율로 레짐 판정
+const REGIME_MODE = argOf('--regimemode', 'proxy');
+const breadthCache = new Map();
+function breadthRegime(day) {
+  if (breadthCache.has(day)) return breadthCache.get(day);
+  let above = 0, total = 0;
+  for (const code of largeCaps) {
+    const cd = candles.get(code);
+    const i = cd ? indexOfDate(cd, day) ?? lastIndexBefore(cd, day) : null;
+    if (i == null || i < 20) continue;
+    let ma = 0;
+    for (let j = i - 19; j <= i; j++) ma += cd.c[j];
+    ma /= 20;
+    total++;
+    if (cd.c[i] > ma) above++;
+  }
+  const pct = total > 0 ? above / total : 0.5;
+  const r = pct >= 0.6 ? 'UP' : pct <= 0.35 ? 'DOWN' : 'NEUTRAL';
+  breadthCache.set(day, r);
+  return r;
+}
+
 // 시장 레짐 (005930 프록시, 당일 종가 기준): UP / NEUTRAL / DOWN
 function marketRegime(day) {
+  if (REGIME_MODE === 'breadth') return breadthRegime(day);
   const cd = candles.get('005930');
   const i = cd ? indexOfDate(cd, day) ?? lastIndexBefore(cd, day) : null;
   const [fast, slow] = REGIME_MAS;
