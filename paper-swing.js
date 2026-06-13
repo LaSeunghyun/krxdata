@@ -477,9 +477,19 @@ async function executeLiveQueue() {
       const fillPrice = Number(fill.filledPrice ?? fill.averageFilledPrice ?? fill.price ?? px);
       recordTrade({ ts: kst().toISOString(), strat: 'live', type: o.side.toLowerCase(), code: o.code, name: o.name, qty, price: fillPrice, entry: o.entry ?? null, pnl: o.side === 'SELL' && o.entry ? netPnl(o.entry, fillPrice, qty) : null, reason: o.reason, ctx: o.ctx });
       log(`💰 LIVE ${o.side === 'BUY' ? '매수' : '매도'} ${o.name ?? o.code} ${qty}주 @${fillPrice.toLocaleString()} (${o.reason})`);
+      const stratLine = `전략: ${o.ctx?.sub ?? 'combo'}` +
+        (o.ctx?.regime ? ` · ${o.ctx.regime} 레짐` : '') +
+        (o.ctx?.breakoutPct ? ` · 돌파 +${o.ctx.breakoutPct}%` : '') +
+        (o.ctx?.atrMult ? ` · ATR×${o.ctx.atrMult}` : '');
+      let pnlLine = '';
+      if (o.side === 'SELL' && o.entry) {
+        const pnl = netPnl(o.entry, fillPrice, qty);
+        const pct = pnl / (Number(o.entry) * qty) * 100;
+        pnlLine = `\n실현손익: ${pnl >= 0 ? '+' : ''}${pnl.toLocaleString()}원 (${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%) | 매수 평단 ${Number(o.entry).toLocaleString()}원 → 매도 ${fillPrice.toLocaleString()}원`;
+      }
       await notifyTelegram(
-        `💰 [실주문 체결] ${o.side === 'BUY' ? '매수' : '매도'} ${o.name ?? o.code} ${qty}주 @${fillPrice.toLocaleString()}원\n사유: ${o.reason}` +
-        (o.side === 'SELL' && o.entry ? `\n실현손익: ${netPnl(o.entry, fillPrice, qty).toLocaleString()}원 (평단 ${Number(o.entry).toLocaleString()}원)` : ''));
+        `💰 [실주문 체결] ${o.side === 'BUY' ? '매수' : '매도'} ${o.name ?? o.code} ${qty}주 @${fillPrice.toLocaleString()}원 (총 ${(fillPrice * qty).toLocaleString()}원)\n` +
+        `${stratLine}\n사유: ${o.reason}` + pnlLine);
       if (o.side === 'BUY') meta[o.code] = { sub: o.ctx?.sub ?? 'hi120', name: o.name, entry: fillPrice, entryDay: kstDate(), hi: fillPrice, holdDays: 0, ctx: o.ctx };
       else delete meta[o.code];
     } catch (e) {
@@ -735,9 +745,17 @@ async function closePhase(books) {
       }
       eqLines.push(`${strat}: ${((eq / CAPITAL - 1) * 100).toFixed(2)}% (보유 ${Object.keys(book.positions).length})`);
     }
+    // LIVE 누적 현황: 실현손익 합계 + 오늘 체결
+    let liveLine = '';
+    try {
+      const agg = await dbQuery(`SELECT COALESCE(SUM(pnl), 0) AS total, COUNT(*) FILTER (WHERE pnl IS NOT NULL) AS sells,
+                                        COUNT(*) FILTER (WHERE pnl > 0) AS wins FROM paper_trades WHERE strat = 'live'`);
+      const a = agg[0] ?? {};
+      if (Number(a.sells) > 0) liveLine = `LIVE 누적 실현손익: ${Number(a.total) >= 0 ? '+' : ''}${Number(a.total).toLocaleString()}원 (매도 ${a.sells}건, 승 ${a.wins})\n`;
+    } catch { /* 비치명 */ }
     await notifyTelegram(
       `📊 [장 마감 보고 ${kstDate()}] 레짐 ${regime}\n` +
-      `페이퍼: ${eqLines.join(' | ')}\n` +
+      `페이퍼: ${eqLines.join(' | ')}\n` + liveLine +
       (queueNow.length ? `내일 시가 실주문 예약: ${queueNow.map(q => `${q.side === 'BUY' ? '매수' : '매도'} ${q.name ?? q.code} ${q.qty}주 (${q.reason})`).join(' / ')}` : '내일 실주문 예약 없음'));
   } catch (e) { log(`마감 보고 실패 (비치명): ${e.message}`); }
 
