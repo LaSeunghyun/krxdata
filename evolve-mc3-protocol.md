@@ -137,6 +137,48 @@
 - [ ] I4: 30k 전용 최소예산 가드 — 슬롯예산 < 단가인 시그널 스킵이 아니라 차순위 후보 대체 로직
 - [ ] I5: 부트스트랩에 월간 블록(2~3개월) 리샘플 추가 — 런 내 자기상관 보존 민감도 확인
 
+## I14-I15: codex 토론 기반 레짐 강건성 교차검증 (2026-06-13, 루프 재기동)
+계기: 사용자 "투자 전략 리서치 + codex 토론 + 시뮬 재실행". 리서치(RSI2 OOS 감쇠·Turtle 1%리스크·KOSPI 200MA breadth) →
+codex(gpt-5.5)와 3라운드 토론 → caps D 과적합 가설 정면 검증.
+
+### I14 — caps D는 005930 프록시 artifact인가? (breadth 레짐 교차검증)
+- codex 제안: 레짐 프록시를 005930 단일종목 → 전체 유니버스 MA200 breadth(UP≥0.55/DOWN≤0.35)로 교체, caps만 비교
+- 구현: `--regimemode breadth --breadthma 200 --breadthuni all --breadthup 0.55 --breadthdown 0.35` (breadth 파라미터화)
+- 60시드 MC (subsample 0.8) 2×2 (proxy/breadth × capsA/capsD):
+
+  | config | p5 | p25 | med | p75 | 파산 |
+  |---|---|---|---|---|---|
+  | proxy A | 33,770 | 41,430 | 47,535 | 65,505 | 0% |
+  | **proxy D** | **38,150** | **50,575** | **74,125** | **85,365** | 0% |
+  | bread A | 33,330 | 39,565 | 48,875 | 63,750 | 0% |
+  | bread D | 31,425 | 34,145 | 38,045 | 41,595 | 0% |
+
+- paired sign test (D−A, 동일시드): **proxy z=+5.42 (51/60, D 강세)** / **bread z=−5.16 (10/60, D 약세)**
+- **판정**: caps D는 native proxy 레짐에서 유니버스 샘플링에 robust(z=+5.42) → 단일시드 artifact 아님, **검증 통과**.
+  단 breadth200 레짐에선 caps D가 역효과 — breadth가 너무 엄격해 "proxy라면 UP일 좋은 돌파일"을 NEUTRAL로 분류 후 차단.
+  → caps D는 "universal cap rule"이 아니라 **"proxy-regime-conditioned cap rule"**. proxy+capsD 조합이 4개 중 모든 지표 최우수.
+  → **breadth 레짐 자체는 기각** (수익·테일 모두 열위). 단일런 저MDD(5.4%)는 보호가 아닌 "거의 미거래(현금)"였음.
+
+### I15 — codex 헤지: breadth를 veto 아닌 OR 승격 + 리스크가드 (기각)
+- codex 라운드2 제안: `effectiveUp = proxyUp OR breadthUp` (breadth는 승격만, 차단 절대 금지) +
+  `if proxyUp AND breadthWeak(≤0.30): 진입예산 ×0.7` (out-of-sample 하방보험)
+- 구현: `--regimehedge 1 --hedgeup 0.55 --hedgeweak 0.30 --hedgecut 0.7` (기본 off, default behavior 불변)
+- 60시드 MC 2025-26: proxy D+hedge가 **전 분위수 개선** (p5 38,150→39,460, med 74,125→82,970, **z=+4.39 47/60**),
+  최악10시드도 39,316→44,980(+14%, 하방까지 개선), 파산 0%. 리스크가드는 인-샘플 미발동(불장이라 proxyUp+breadthWeak 0일).
+- **train-guard 2023-24 (out-of-period)**:
+  - 단일 풀런: base 38,275 → hedge 37,935 (**−0.9%**, 3건 감소)
+  - 24시드 MC: hedge−base **z=−0.85 (9/13, medianΔ −140원)** = 동전던지기, 엣지 없음
+- **판정**: 인-샘플 z=+4.39가 train-guard에서 완전 소멸 → **2025 레짐 외삽 과적합의 전형**.
+  OR 승격 이득 = "2025 불장에서 고-breadth NEUTRAL일에 돌파 잘 됐다"는 기간특정 현상. 리스크가드는 발화 0건 → 검증불가 분기.
+  codex 동의: "REJECT, risk-guard 단독도 발화 0이면 보험 아닌 검증불가 분기" → **기각**. 라이브 proxy+capsD 유지.
+
+### I14-I15 종합
+- **라이브 설정 무변경 재확인**: `combo-v2 --capital 30000 --slots 2 --atrsize 4 --caps D` (proxy 005930 레짐)
+- caps D 과적합 우려 해소: native 레짐에서 robust 입증. 단 "regime-classifier 의존적"임을 명시 — 2026H2가 중소형주 주도/횡보로
+  전환해 005930이 오분류하면 caps D 보호가 약화될 수 있음(데이터로 제거 불가한 잔여 위험, 정량화 완료).
+- 코드: backtest-swing.mjs에 breadth 파라미터화 + I15 헤지 플래그 보존(전부 opt-in, 기본 off) — 향후 레짐 리서치 재사용
+- codex 토론 산출: 4번째 수렴. 가설공간 추가 소진(레짐 정의 변경, OR 헤지). 루프 대기 복귀.
+
 ## 주의 (v2 프로토콜 승계)
 - 파라미터 미세튜닝 금지, 구조적 가설만. 소진 계열 재시도 금지 (evolve-protocol.md 참조)
 - 매 이터레이션 결과를 이 파일에 영속화. 생존 편향(현재 상장 기준 2,605종목) 항상 보고에 명시

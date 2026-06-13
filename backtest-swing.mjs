@@ -213,31 +213,80 @@ function mcapUniverse(day, top = MCAP_TOP) {
   return mcapCache.get(wk);
 }
 
-// C23 (--regimemode breadth): 시총 상위 30종목 중 20MA 위 비율로 레짐 판정
+// C23 (--regimemode breadth): 시장 breadth(MA 위 비율)로 레짐 판정
+//   --breadthma N    : breadth MA 윈도우 (기본 20 = 단기, 200 = 고전적 장기 breadth)
+//   --breadthuni X   : large=시총 top30(기본) | all=전체 상장 유니버스
+//   --breadthup/down : UP/DOWN 임계 비율 (기본 0.6 / 0.35)
+// I14 (codex 제안): --breadthma 200 --breadthuni all --breadthup 0.55 --breadthdown 0.35
+//   → 005930 단일종목 프록시 대신 시장 전체 MA200 breadth로 caps D 강건성 교차검증
 const REGIME_MODE = argOf('--regimemode', 'proxy');
-const breadthCache = new Map();
-function breadthRegime(day) {
-  if (breadthCache.has(day)) return breadthCache.get(day);
+const BREADTH_MA = Number(argOf('--breadthma', '20'));
+const BREADTH_UNI = argOf('--breadthuni', 'large');
+const BREADTH_UP = Number(argOf('--breadthup', '0.6'));
+const BREADTH_DOWN = Number(argOf('--breadthdown', '0.35'));
+const breadthCache = new Map();      // day → 'UP'|'NEUTRAL'|'DOWN'
+const breadthFracCache = new Map();  // day → 0..1 (MA 위 비율)
+function breadthFraction(day) {
+  if (breadthFracCache.has(day)) return breadthFracCache.get(day);
+  // breadth는 시장 전체 신호 — subsample과 무관하게 전체 종목으로 계산 (레짐 일관성)
+  const codes = BREADTH_UNI === 'all' ? allCodes : largeCaps;
   let above = 0, total = 0;
-  for (const code of largeCaps) {
+  for (const code of codes) {
     const cd = candles.get(code);
     const i = cd ? indexOfDate(cd, day) ?? lastIndexBefore(cd, day) : null;
-    if (i == null || i < 20) continue;
+    if (i == null || i < BREADTH_MA) continue;
     let ma = 0;
-    for (let j = i - 19; j <= i; j++) ma += cd.c[j];
-    ma /= 20;
+    for (let j = i - BREADTH_MA + 1; j <= i; j++) ma += cd.c[j];
+    ma /= BREADTH_MA;
     total++;
     if (cd.c[i] > ma) above++;
   }
   const pct = total > 0 ? above / total : 0.5;
-  const r = pct >= 0.6 ? 'UP' : pct <= 0.35 ? 'DOWN' : 'NEUTRAL';
+  breadthFracCache.set(day, pct);
+  return pct;
+}
+function breadthRegime(day) {
+  if (breadthCache.has(day)) return breadthCache.get(day);
+  const pct = breadthFraction(day);
+  const r = pct >= BREADTH_UP ? 'UP' : pct <= BREADTH_DOWN ? 'DOWN' : 'NEUTRAL';
   breadthCache.set(day, r);
   return r;
 }
+// I15 (codex 라운드2 헤지): breadth를 veto가 아닌 OR 승격 + 리스크가드로만 사용
+//   --regimehedge 1 : proxyUp OR breadthUp → UP 승격 (breadth는 차단 불가, 승격만)
+//   --hedgeup F     : breadthUp 임계 (MA200 breadth 비율, 기본 0.55)
+//   --hedgeweak F   : breadthWeak 임계 (기본 0.30) — proxyUp & breadthWeak이면 진입예산 축소
+//   --hedgecut F    : 약세확인 시 진입예산 배수 (기본 0.7)
+const REGIME_HEDGE = Number(argOf('--regimehedge', '0'));
+const HEDGE_UP = Number(argOf('--hedgeup', '0.55'));
+const HEDGE_WEAK = Number(argOf('--hedgeweak', '0.30'));
+const HEDGE_CUT = Number(argOf('--hedgecut', '0.7'));
+const HEDGE_MA = Number(argOf('--hedgema', '200'));
+function hedgeBreadthFrac(day) {
+  // 헤지용 breadth는 항상 전체 유니버스 MA(HEDGE_MA) — 메인 레짐모드와 독립
+  return _breadthFracMA(day, HEDGE_MA);
+}
+const _hedgeFracCache = new Map();
+function _breadthFracMA(day, ma) {
+  const key = day + ':' + ma;
+  if (_hedgeFracCache.has(key)) return _hedgeFracCache.get(key);
+  let above = 0, total = 0;
+  for (const code of allCodes) {
+    const cd = candles.get(code);
+    const i = cd ? indexOfDate(cd, day) ?? lastIndexBefore(cd, day) : null;
+    if (i == null || i < ma) continue;
+    let s = 0;
+    for (let j = i - ma + 1; j <= i; j++) s += cd.c[j];
+    if (cd.c[i] > s / ma) above++;
+    total++;
+  }
+  const pct = total > 0 ? above / total : 0.5;
+  _hedgeFracCache.set(key, pct);
+  return pct;
+}
 
 // 시장 레짐 (005930 프록시, 당일 종가 기준): UP / NEUTRAL / DOWN
-function marketRegime(day) {
-  if (REGIME_MODE === 'breadth') return breadthRegime(day);
+function proxyRegime(day) {
   const cd = candles.get('005930');
   const i = cd ? indexOfDate(cd, day) ?? lastIndexBefore(cd, day) : null;
   const [fast, slow] = REGIME_MAS;
@@ -250,6 +299,19 @@ function marketRegime(day) {
   if (cd.c[i] > maF && maF > maS) return 'UP';
   if (cd.c[i] < maF && ret5 < -3) return 'DOWN';
   return 'NEUTRAL';
+}
+// I15 헤지 진입예산 배수: proxyUp & breadthWeak이면 HEDGE_CUT 적용, 아니면 1
+function hedgeBudgetMult(day) {
+  if (!REGIME_HEDGE) return 1;
+  if (proxyRegime(day) === 'UP' && hedgeBreadthFrac(day) <= HEDGE_WEAK) return HEDGE_CUT;
+  return 1;
+}
+function marketRegime(day) {
+  if (REGIME_MODE === 'breadth') return breadthRegime(day);
+  const base = proxyRegime(day);
+  // I15 헤지: breadth가 명확히 UP이면 proxy 비-UP을 UP으로 승격 (차단은 절대 안 함)
+  if (REGIME_HEDGE && base !== 'UP' && hedgeBreadthFrac(day) >= HEDGE_UP) return 'UP';
+  return base;
 }
 const COMBO_CAPS = { UP: { hi120: 6, rsi2: 4 }, NEUTRAL: { hi120: 3, rsi2: 5 }, DOWN: { hi120: 0, rsi2: 4 } };
 const COMBO_CAPS_V2 = { UP: { hi120: 6, rsi2: 4 }, NEUTRAL: { hi120: 2, rsi2: 6 }, DOWN: { hi120: 0, rsi2: 4 } };
@@ -592,7 +654,7 @@ for (let di = 0; di < tradingDays.length; di++) {
         if (cd.c[i] > prevHigh && breakoutPct >= (cfg.minBreakout ?? 0) && breakCapOk && clOk && volOk) {
           const ctxE = { sub: 'hi120', regime, breakoutPct: breakoutPct.toFixed(1) };
           if (cfg.entryOpen) (book.pendingBuys ??= []).push({ code, ctx: ctxE, breakLv: prevHigh });
-          else buy(book, day, code, cd.c[i], Math.floor(budget() * atrMult(cd, i, cfg)), { sub: 'hi120', ctx: ctxE, breakLv: prevHigh });
+          else buy(book, day, code, cd.c[i], Math.floor(budget() * atrMult(cd, i, cfg) * hedgeBudgetMult(day)), { sub: 'hi120', ctx: ctxE, breakLv: prevHigh });
         }
       }
       // rsi2 서브 진입 (PIT 시총 상위 과매도)
