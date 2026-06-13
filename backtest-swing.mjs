@@ -261,6 +261,8 @@ const CAPS_PRESETS = {
   D: { UP: { hi120: 6, rsi2: 4 }, NEUTRAL: { hi120: 0, rsi2: 8 }, DOWN: { hi120: 0, rsi2: 4 } },
   // C20: UP에서 hi120 증강 (UP hi120이 전기간 최대 수익원 +26.3M)
   E: { UP: { hi120: 8, rsi2: 2 }, NEUTRAL: { hi120: 2, rsi2: 6 }, DOWN: { hi120: 0, rsi2: 4 } },
+  // MC3 I9 (30k 전용): D + UP rsi2 차단 — 소액 계좌에서 UP rsi2가 순손실(-374k/120런)이며 hi120 슬롯 잠식
+  F: { UP: { hi120: 6, rsi2: 0 }, NEUTRAL: { hi120: 0, rsi2: 8 }, DOWN: { hi120: 0, rsi2: 4 } },
 };
 const CAPS_SEL = argOf('--caps', 'A');
 // 레짐 MA 페어 (--regimema "20,60"): 빠른 스위치 vs 느린 스위치
