@@ -61,7 +61,7 @@ const STRATEGIES = {
 // 가설 플래그: --volx N (hi120 돌파일 거래량 > 20일평균 ×N), --rsidays N (rsi2 N일 연속 과매도),
 //             --downsize 0.5 (DOWN 레짐 rsi2 사이즈 배수), --tp1r 1 (1R 도달 시 절반 익절)
 for (const [flag, key] of [['--trail', 'trailPct'], ['--minbreak', 'minBreakout'], ['--maxholdr', 'maxHoldR'], ['--stoppct', 'stopPct'],
-  ['--volx', 'volX'], ['--rsidays', 'rsiDays'], ['--downsize', 'downSize'], ['--tp1r', 'tp1R'], ['--intraday', 'intradayExit'], ['--maxholdh', 'maxHoldH'], ['--rsiuni', 'rsiUni'], ['--entryopen', 'entryOpen'], ['--downflat', 'downFlat'], ['--rsima', 'rsiMa'], ['--tp2r', 'tp2R'], ['--trailwide', 'trailWide'], ['--maxbreak', 'maxBreak'], ['--atrsize', 'atrSize'], ['--lookback', 'lookback'], ['--rsitp', 'rsiTp'], ['--closeloc', 'closeLoc'], ['--rsivol', 'rsiVol'], ['--breakfail', 'breakFail'], ['--rsicut', 'rsiCut'], ['--pyramid', 'pyramid'], ['--slots', 'slots'], ['--rsiafford', 'rsiAfford']]) {
+  ['--volx', 'volX'], ['--rsidays', 'rsiDays'], ['--downsize', 'downSize'], ['--tp1r', 'tp1R'], ['--intraday', 'intradayExit'], ['--maxholdh', 'maxHoldH'], ['--rsiuni', 'rsiUni'], ['--entryopen', 'entryOpen'], ['--downflat', 'downFlat'], ['--rsima', 'rsiMa'], ['--tp2r', 'tp2R'], ['--trailwide', 'trailWide'], ['--maxbreak', 'maxBreak'], ['--atrsize', 'atrSize'], ['--lookback', 'lookback'], ['--rsitp', 'rsiTp'], ['--closeloc', 'closeLoc'], ['--rsivol', 'rsiVol'], ['--breakfail', 'breakFail'], ['--rsicut', 'rsiCut'], ['--pyramid', 'pyramid'], ['--slots', 'slots'], ['--rsiafford', 'rsiAfford'], ['--gapmax', 'gapMax']]) {
   const v = argOf(flag, null);
   if (v != null) STRATEGIES['combo-v2'][key] = Number(v);
 }
@@ -576,7 +576,9 @@ for (let di = 0; di < tradingDays.length; di++) {
           if (book.positions[pb.code]) continue;
           const cd2 = candles.get(pb.code); const i2 = cd2 ? indexOfDate(cd2, day) : null;
           if (i2 == null) continue;
-          buy(book, day, pb.code, cd2.o[i2], budget(), { sub: 'hi120', ctx: pb.ctx });
+          // I16 (--gapmax N): 시가가 시그널 종가 대비 N% 이상 갭상승하면 추격 안 함 (최악 체결 회피)
+          if (cfg.gapMax > 0 && pb.sigClose > 0 && (cd2.o[i2] / pb.sigClose - 1) * 100 > cfg.gapMax) continue;
+          buy(book, day, pb.code, cd2.o[i2], Math.floor(budget() * (pb.atrM ?? 1)), { sub: 'hi120', ctx: pb.ctx, breakLv: pb.breakLv });
         }
       }
       // 보유 관리: 서브 전략별 청산 규칙
@@ -653,8 +655,10 @@ for (let di = 0; di < tradingDays.length; di++) {
         const clOk = !(cfg.closeLoc > 0) || (cd.h[i] > cd.l[i] && (cd.c[i] - cd.l[i]) / (cd.h[i] - cd.l[i]) >= cfg.closeLoc);
         if (cd.c[i] > prevHigh && breakoutPct >= (cfg.minBreakout ?? 0) && breakCapOk && clOk && volOk) {
           const ctxE = { sub: 'hi120', regime, breakoutPct: breakoutPct.toFixed(1) };
-          if (cfg.entryOpen) (book.pendingBuys ??= []).push({ code, ctx: ctxE, breakLv: prevHigh });
-          else buy(book, day, code, cd.c[i], Math.floor(budget() * atrMult(cd, i, cfg) * hedgeBudgetMult(day)), { sub: 'hi120', ctx: ctxE, breakLv: prevHigh });
+          const am = atrMult(cd, i, cfg) * hedgeBudgetMult(day);  // 시그널 시점 ATR 사이징 (라이브 liveAtrMult와 동일 시점)
+          // I16: entryOpen 시 atrM·breakLv를 시그널 시점 값으로 보존 → 익일 시가 체결에 적용 (라이브 충실)
+          if (cfg.entryOpen) (book.pendingBuys ??= []).push({ code, ctx: ctxE, breakLv: prevHigh, atrM: am, sigClose: cd.c[i] });
+          else buy(book, day, code, cd.c[i], Math.floor(budget() * am), { sub: 'hi120', ctx: ctxE, breakLv: prevHigh });
         }
       }
       // rsi2 서브 진입 (PIT 시총 상위 과매도)
