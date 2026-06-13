@@ -34,14 +34,15 @@ async function getToken() {
 }
 
 async function issueToken() {
+  // 공식 문서: POST /oauth2/token, grant_type=client_credentials, -u 'ID:SECRET' (HTTP Basic Auth)
+  const basic = Buffer.from(`${process.env.TOSS_CLIENT_ID}:${process.env.TOSS_CLIENT_SECRET}`).toString("base64");
   const res = await fetchT(`${TOSS_BASE}/oauth2/token`, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "client_credentials",
-      client_id: process.env.TOSS_CLIENT_ID,
-      client_secret: process.env.TOSS_CLIENT_SECRET,
-    }),
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Authorization: `Basic ${basic}`,
+    },
+    body: new URLSearchParams({ grant_type: "client_credentials" }),
   });
   if (!res.ok) throw new Error(`토스 토큰 발급 실패: ${res.status} ${await res.text()}`);
   const data = await res.json();

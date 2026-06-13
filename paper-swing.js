@@ -580,25 +580,31 @@ async function evaluateLiveHoldings(regime, uApplied, badCodes) {
   const cash = Number(bp?.cashBuyingPower ?? 0);
   const heldCodes = new Set(items.map(i => i.symbol));
   const willSell = new Set(queue.filter(q => q.side === 'SELL').map(q => q.code));
-  const hasOpenSlot = [...heldCodes].filter(c => !willSell.has(c)).length === 0 && !queue.some(q => q.side === 'BUY');
-  if (cash > MIN_PRICE || willSell.size > 0) {
-    // MC3 I4 채택 (2026-06-13): UP 레짐에서만 신규 진입 (caps D — NEUTRAL/DOWN 돌파 진입은
-    // 소액 계좌에서 무엣지: 30k MC 중앙값 연 +44%→+73%, 2023-24 가드 통과)
-    if (hasOpenSlot && regime === 'UP') {
+  // MC3 I17 (2026-06-13): 라이브 slots 정합. 기존 단일슬롯(현금 전액 집중)은 de facto slots1 —
+  // 40시드 MC 원금손실 35% vs 동결 검증 구성 slots2 2.5% (paired z=3.79). slots2로 정합:
+  //   ① 슬롯당 예산 = floor(equity/SLOTS) (backtest budget()=floor(equity/slots)와 동일, 집행부에서 현금 재클램프)
+  //   ② 보유 < SLOTS면 빈 슬롯 수만큼 진입 (기존 hasOpenSlot은 보유 0일 때만 = 사실상 slots1)
+  const SLOTS = 2;
+  const heldKeep = [...heldCodes].filter(c => !willSell.has(c)).length; // 청산 예약 안 한 보유 종목 수
+  let openSlots = SLOTS - heldKeep - queue.filter(q => q.side === 'BUY').length;
+  if (openSlots > 0 && (cash > MIN_PRICE || willSell.size > 0)) {
+    // MC3 I4 채택: UP 레짐에서만 신규 진입 (caps D — NEUTRAL/DOWN 돌파는 소액 무엣지, 2023-24 가드 통과)
+    if (regime === 'UP') {
       for (const u of uApplied) {
-        if (heldCodes.has(u.stock_code) || badCodes.has(u.stock_code)) continue;
+        if (openSlots <= 0) break;
+        if (heldCodes.has(u.stock_code) || badCodes.has(u.stock_code) || queuedCodes.has(u.stock_code)) continue;
         const sig = await hi120SignalG(u.stock_code);
         if (sig && sig.breakoutPct >= cfg.minBreakout) {
-          const budgetEst = cash > MIN_PRICE ? cash : LIVE_MAX_ORDER_VALUE; // 매도 예약분은 집행 시점 잔고로 재계산
+          const budgetEst = Math.floor(totalNow / SLOTS); // equity/슬롯 — 집행 시 현금으로 재클램프(executeLiveQueue)
           const am = liveAtrMult(await bars(u.stock_code));
           const qty = Math.floor(Math.min(budgetEst, LIVE_MAX_ORDER_VALUE) * am / sig.close);
-          if (qty < 1) { log(`LIVE 매수 후보 ${u.corp_name} — ATR 사이징 후 1주 미만, 다음 후보로`); continue; }
+          if (qty < 1) { log(`LIVE 매수 후보 ${u.corp_name} — 슬롯예산 ${budgetEst.toLocaleString()}·ATR 사이징 후 1주 미만, 다음 후보로`); continue; }
           queue.push({ side: 'BUY', code: u.stock_code, name: u.corp_name, qty, reason: `combo hi120 돌파 +${sig.breakoutPct.toFixed(1)}%`, ctx: { sub: 'hi120', regime, breakoutPct: sig.breakoutPct.toFixed(1), atrMult: am.toFixed(2) } });
-          log(`LIVE 매수 예약: ${u.corp_name} ${qty}주 (돌파 +${sig.breakoutPct.toFixed(1)}%, ATR×${am.toFixed(2)}) — 익일 시가 집행`);
-          break;
+          log(`LIVE 매수 예약: ${u.corp_name} ${qty}주 (돌파 +${sig.breakoutPct.toFixed(1)}%, ATR×${am.toFixed(2)}, 슬롯 ${SLOTS - openSlots + 1}/${SLOTS}) — 익일 시가 집행`);
+          openSlots--;
         }
       }
-    } else if (hasOpenSlot && regime !== 'UP') {
+    } else {
       log(`LIVE 신규 진입 보류 — 레짐 ${regime} (caps D: UP에서만 진입)`);
     }
   }
