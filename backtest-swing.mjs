@@ -67,6 +67,7 @@ for (const [flag, key] of [['--trail', 'trailPct'], ['--minbreak', 'minBreakout'
 }
 const DUMP = argOf('--dump', null);
 const COOLDOWN = Number(argOf('--cooldown', 0));
+const DYNSLOT = Number(argOf('--dynslot', 0)); // MC3 I11: 포지션당 목표 예산(원), 0=비활성
 const ACTIVE = Object.entries(STRATEGIES).filter(([k]) => !ONLY.length || ONLY.includes(k));
 
 function tickSize(p) {
@@ -349,6 +350,13 @@ if (SUBSAMPLE < 1) {
   }
   console.log(`[MC] seed=${MC_SEED} subsample=${SUBSAMPLE} — ${dropped}종목 제외`);
 }
+// MC3 I10 (--exclude 065170,038500,...): 승자 제거 스트레스 — 지정 종목 유니버스에서 제외
+const EXCLUDE = argOf('--exclude', '');
+if (EXCLUDE) {
+  let exDropped = 0;
+  for (const code of EXCLUDE.split(',')) if (candles.delete(code.trim())) exDropped++;
+  console.log(`[EXCLUDE] ${exDropped}종목 제외 (승자 제거 스트레스)`);
+}
 
 const krx = candles.get('005930');
 const tradingDays = krx.d.filter(d => d >= FROM && d <= TO);
@@ -374,7 +382,13 @@ for (let di = 0; di < tradingDays.length; di++) {
 
   for (const [k, cfg] of ACTIVE) {
     const book = books[k];
-    const budget = () => Math.floor(equity(book, day) / cfg.slots);
+    // MC3 I11 (--dynslot N): 자본 성장 시 슬롯 자동 확대 — 포지션당 예산을 N원 목표로,
+    // slots ~ clamp(floor(equity/N), cfg.slots, 6). 소액일 땐 기존과 동일, 계좌 성장 시 집중 위험 축소
+    const budget = () => {
+      const eq = equity(book, day);
+      const sl = DYNSLOT > 0 ? Math.max(cfg.slots, Math.min(6, Math.floor(eq / DYNSLOT))) : cfg.slots;
+      return Math.floor(eq / sl);
+    };
 
     // ① 시가 집행 큐 + 보유일
     for (const [code, p] of Object.entries(book.positions)) {
