@@ -15,6 +15,7 @@
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import dotenv from 'dotenv';
+import { pickBuyCandidates, allocateSlots } from './slot-alloc.js';
 import {
   isTossConfigured, getDailyCandles, getKrMarketCalendar,
   getAccounts, getHoldings, getBuyingPower, getPricesMap, createOrder, getOrder, cancelOrder,
@@ -470,7 +471,12 @@ async function executeLiveQueue() {
       }
       if (px * qty > LIVE_MAX_ORDER_VALUE) { log(`LIVE 주문가치 상한 초과 (${(px * qty).toLocaleString()}원 > ${LIVE_MAX_ORDER_VALUE.toLocaleString()}) — 스킵`); continue; }
 
-      const order = await createOrder(seq, { symbol: o.code, side: o.side, orderType: 'MARKET', quantity: String(qty) });
+      // MC3 I17: 매수는 지정가(현재가)로 — 시장가는 상한가(+30%) 기준 증거금을 잡아 소액 계좌에서
+      // 매수가능금액 초과(422 insufficient-buying-power)로 거부됨. 매도(청산)는 즉시 체결 위해 시장가 유지.
+      const orderBody = o.side === 'BUY'
+        ? { symbol: o.code, side: 'BUY', orderType: 'LIMIT', price: String(px), quantity: String(qty) }
+        : { symbol: o.code, side: o.side, orderType: 'MARKET', quantity: String(qty) };
+      const order = await createOrder(seq, orderBody);
       const fill = await waitLiveFill(seq, order.orderId);
       executed++;
       if (!fill) { log(`LIVE ${o.side} ${o.name ?? o.code} 미체결/거부 — 다음 회차 보류`); remaining.push(o); continue; }
@@ -586,23 +592,28 @@ async function evaluateLiveHoldings(regime, uApplied, badCodes) {
   //   ② 보유 < SLOTS면 빈 슬롯 수만큼 진입 (기존 hasOpenSlot은 보유 0일 때만 = 사실상 slots1)
   const SLOTS = 2;
   const heldKeep = [...heldCodes].filter(c => !willSell.has(c)).length; // 청산 예약 안 한 보유 종목 수
-  let openSlots = SLOTS - heldKeep - queue.filter(q => q.side === 'BUY').length;
-  if (openSlots > 0 && (cash > MIN_PRICE || willSell.size > 0)) {
-    // MC3 I4 채택: UP 레짐에서만 신규 진입 (caps D — NEUTRAL/DOWN 돌파는 소액 무엣지, 2023-24 가드 통과)
+  const slotsToFill = SLOTS - heldKeep - queue.filter(q => q.side === 'BUY').length;
+  if (slotsToFill > 0 && (cash > MIN_PRICE || willSell.size > 0)) {
+    // MC3 I4 채택: UP 레짐에서만 신규 진입 (caps D — NEUTRAL/DOWN 돌파는 소액 무엣지)
+    // MC3 I17: 빈 슬롯 + 여유분을 momUniverse 우선순위로 후보 적재 → 집행 시 allocateSlots가 슬롯/예산 배분
     if (regime === 'UP') {
+      const HEADROOM = 3;
+      const ranked = [];
       for (const u of uApplied) {
-        if (openSlots <= 0) break;
-        if (heldCodes.has(u.stock_code) || badCodes.has(u.stock_code) || queuedCodes.has(u.stock_code)) continue;
+        if (heldCodes.has(u.stock_code) || queuedCodes.has(u.stock_code)) continue;
         const sig = await hi120SignalG(u.stock_code);
         if (sig && sig.breakoutPct >= cfg.minBreakout) {
-          const budgetEst = Math.floor(totalNow / SLOTS); // equity/슬롯 — 집행 시 현금으로 재클램프(executeLiveQueue)
           const am = liveAtrMult(await bars(u.stock_code));
-          const qty = Math.floor(Math.min(budgetEst, LIVE_MAX_ORDER_VALUE) * am / sig.close);
-          if (qty < 1) { log(`LIVE 매수 후보 ${u.corp_name} — 슬롯예산 ${budgetEst.toLocaleString()}·ATR 사이징 후 1주 미만, 다음 후보로`); continue; }
-          queue.push({ side: 'BUY', code: u.stock_code, name: u.corp_name, qty, reason: `combo hi120 돌파 +${sig.breakoutPct.toFixed(1)}%`, ctx: { sub: 'hi120', regime, breakoutPct: sig.breakoutPct.toFixed(1), atrMult: am.toFixed(2) } });
-          log(`LIVE 매수 예약: ${u.corp_name} ${qty}주 (돌파 +${sig.breakoutPct.toFixed(1)}%, ATR×${am.toFixed(2)}, 슬롯 ${SLOTS - openSlots + 1}/${SLOTS}) — 익일 시가 집행`);
-          openSlots--;
+          ranked.push({ code: u.stock_code, name: u.corp_name, close: sig.close, atrMult: am, breakoutPct: sig.breakoutPct });
         }
+        if (ranked.length >= slotsToFill + HEADROOM) break;
+      }
+      const candidates = pickBuyCandidates(ranked, badCodes, slotsToFill + HEADROOM);
+      for (const c of candidates) {
+        queue.push({ side: 'BUY', code: c.code, name: c.name, close: c.close, atrMult: c.atrMult,
+          reason: `combo hi120 돌파 +${c.breakoutPct.toFixed(1)}%`,
+          ctx: { sub: 'hi120', regime, breakoutPct: c.breakoutPct.toFixed(1), atrMult: c.atrMult.toFixed(2) } });
+        log(`LIVE 매수 후보 적재: ${c.name} (돌파 +${c.breakoutPct.toFixed(1)}%, ATR×${c.atrMult.toFixed(2)})`);
       }
     } else {
       log(`LIVE 신규 진입 보류 — 레짐 ${regime} (caps D: UP에서만 진입)`);
@@ -783,6 +794,13 @@ async function closePhase(books) {
 // ── 메인 ─────────────────────────────────────────────────────
 async function main() {
   if (!isTossConfigured()) throw new Error('TOSS_CLIENT_ID/SECRET 미설정');
+  if (process.env.LIVE_QUEUE_ONLY === '1') {
+    await ensureTables();
+    log('=== LIVE_QUEUE_ONLY: executeLiveQueue 수동 집행 (morning/close 로직 생략) ===');
+    await executeLiveQueue();
+    await flushTrades();
+    return;
+  }
   // 휴장 체크
   try {
     const cal = await getKrMarketCalendar();
