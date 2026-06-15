@@ -400,6 +400,7 @@ async function notifyTelegram(text) {
 // 가드: 주문당 10만원 상한, 하루 최대 3주문, paper_state k='live_halt' 존재 시 전면 중단
 const LIVE_MAX_ORDER_VALUE = 100_000;
 const LIVE_MAX_ORDERS_PER_DAY = 3;
+const LIVE_SLOTS = 2; // 라이브 슬롯 수 (MC3 I17 slots2 정합 — evaluateLiveHoldings·executeLiveQueue 공용)
 
 // MC3 I2 채택 (2026-06-13): ATR(14) 역비례 사이징 — 소액 계좌 MC에서 원금손실 12.5%→0.8%
 // 변동성 높은 돌파주 예산 축소 (atrSize 4% / ATR%, 0.5~1.5 클램프 — backtest-swing.mjs atrMult 동일)
@@ -464,8 +465,8 @@ async function executeLiveQueue() {
       // 매도(청산)는 즉시 체결 위해 시장가 유지
       const order = await createOrder(seq, { symbol: o.code, side: o.side, orderType: 'MARKET', quantity: String(qty) });
       const fill = await waitLiveFill(seq, order.orderId);
-      executed++;
       if (!fill) { log(`LIVE ${o.side} ${o.name ?? o.code} 미체결/거부 — 다음 회차 보류`); remaining.push(o); continue; }
+      executed++;
       const fillPrice = Number(fill.filledPrice ?? fill.averageFilledPrice ?? fill.price ?? px);
       recordTrade({ ts: kst().toISOString(), strat: 'live', type: 'sell', code: o.code, name: o.name, qty, price: fillPrice, entry: o.entry ?? null, pnl: o.entry ? netPnl(o.entry, fillPrice, qty) : null, reason: o.reason, ctx: o.ctx });
       log(`💰 LIVE 매도 ${o.name ?? o.code} ${qty}주 @${fillPrice.toLocaleString()} (${o.reason})`);
@@ -496,7 +497,6 @@ async function executeLiveQueue() {
   const buyOrders = queue.filter(o => o.side === 'BUY');
   const halted = await loadStateKey('live_halt', null);
   if (buyOrders.length && executed < LIVE_MAX_ORDERS_PER_DAY && !halted) {
-    const SLOTS = 2;
     const holdings = await getHoldings(seq).catch(() => null);
     const heldNow = (holdings?.items ?? []).filter(i => i.marketCountry === 'KR').length;
     const cashNow = Number((await getBuyingPower(seq, { currency: 'KRW' }).catch(() => null))?.cashBuyingPower ?? 0);
@@ -507,7 +507,7 @@ async function executeLiveQueue() {
       const px = (await getPricesMap([o.code])).get(o.code)?.price ?? o.close ?? 0;
       if (px > 0) priced.push({ code: o.code, name: o.name, price: px, atrMult: o.atrMult ?? 1, ctx: o.ctx });
     }
-    const allocations = allocateSlots(priced, heldNow, SLOTS, eqNow, cashNow);
+    const allocations = allocateSlots(priced, heldNow, LIVE_SLOTS, eqNow, cashNow);
     for (const a of allocations) {
       if (executed >= LIVE_MAX_ORDERS_PER_DAY) break;
       if (a.price * a.qty > LIVE_MAX_ORDER_VALUE) { log(`LIVE 주문가치 상한 초과 — ${a.name} 스킵`); continue; }
@@ -516,8 +516,8 @@ async function executeLiveQueue() {
       try {
         const order = await createOrder(seq, { symbol: a.code, side: 'BUY', orderType: 'LIMIT', price: String(a.price), quantity: String(a.qty) });
         const fill = await waitLiveFill(seq, order.orderId);
-        executed++;
         if (!fill) { log(`LIVE 매수 ${a.name} 미체결 — 보류`); remaining.push(buyOrders.find(o => o.code === a.code)); continue; }
+        executed++;
         const fp = Number(fill.filledPrice ?? fill.averageFilledPrice ?? fill.price ?? a.price);
         recordTrade({ ts: kst().toISOString(), strat: 'live', type: 'buy', code: a.code, name: a.name, qty: a.qty, price: fp, entry: null, pnl: null, reason: '차순위 분산 매수', ctx });
         meta[a.code] = { sub: ctx?.sub ?? 'hi120', name: a.name, entry: fp, entryDay: kstDate(), hi: fp, holdDays: 0, ctx };
@@ -617,9 +617,8 @@ async function evaluateLiveHoldings(regime, uApplied, badCodes) {
   // 40시드 MC 원금손실 35% vs 동결 검증 구성 slots2 2.5% (paired z=3.79). slots2로 정합:
   //   ① 슬롯당 예산 = floor(equity/SLOTS) (backtest budget()=floor(equity/slots)와 동일, 집행부에서 현금 재클램프)
   //   ② 보유 < SLOTS면 빈 슬롯 수만큼 진입 (기존 hasOpenSlot은 보유 0일 때만 = 사실상 slots1)
-  const SLOTS = 2;
   const heldKeep = [...heldCodes].filter(c => !willSell.has(c)).length; // 청산 예약 안 한 보유 종목 수
-  const slotsToFill = SLOTS - heldKeep - queue.filter(q => q.side === 'BUY').length;
+  const slotsToFill = LIVE_SLOTS - heldKeep - queue.filter(q => q.side === 'BUY').length;
   if (slotsToFill > 0 && (cash > MIN_PRICE || willSell.size > 0)) {
     // MC3 I4 채택: UP 레짐에서만 신규 진입 (caps D — NEUTRAL/DOWN 돌파는 소액 무엣지)
     // MC3 I17: 빈 슬롯 + 여유분을 momUniverse 우선순위로 후보 적재 → 집행 시 allocateSlots가 슬롯/예산 배분
