@@ -494,7 +494,8 @@ async function executeLiveQueue() {
 
   // BUY: 매도 집행 후 매수가능금액·현재가로 allocateSlots 재배분 (MC3 I17 차순위 분산)
   const buyOrders = queue.filter(o => o.side === 'BUY');
-  if (buyOrders.length && executed < LIVE_MAX_ORDERS_PER_DAY) {
+  const halted = await loadStateKey('live_halt', null);
+  if (buyOrders.length && executed < LIVE_MAX_ORDERS_PER_DAY && !halted) {
     const SLOTS = 2;
     const holdings = await getHoldings(seq).catch(() => null);
     const heldNow = (holdings?.items ?? []).filter(i => i.marketCountry === 'KR').length;
