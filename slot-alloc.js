@@ -16,3 +16,26 @@ export function pickBuyCandidates(rankedSignals, badCodes, maxN) {
   }
   return out;
 }
+
+/**
+ * 후보 리스트를 슬롯 예산(floor(equity/slots)) 단위로 배분. 총 보유 slots개 상한.
+ * 각 종목 살 수 있는 만큼(슬롯예산×atrMult & cashAvailable 클램프). 못 사면 다음 후보.
+ * backtest closePhase 신규진입(슬롯별 floor(equity/slots), atrMult 곱)과 동일 원리.
+ * @returns {Array<{code,name,qty,price}>}
+ */
+export function allocateSlots(candidates, heldSlots, slots, equity, cashAvailable) {
+  const slotBudget = Math.floor(equity / slots);
+  const out = [];
+  let cash = cashAvailable;
+  let held = heldSlots;
+  for (const c of candidates ?? []) {
+    if (held >= slots) break;
+    const budget = Math.min(slotBudget * (c.atrMult ?? 1), cash);
+    const qty = Math.floor(budget / (c.price * 1.01));
+    if (qty < 1) continue;
+    out.push({ code: c.code, name: c.name, qty, price: c.price });
+    cash -= qty * c.price * 1.01;
+    held++;
+  }
+  return out;
+}
