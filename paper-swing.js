@@ -451,6 +451,7 @@ async function executeLiveQueue() {
   const remaining = [];
   let executed = 0;
   const meta = await loadStateKey('live_meta', {});
+  const cashAtStart = Number((await getBuyingPower(seq, { currency: 'KRW' }).catch(() => null))?.cashBuyingPower ?? 0);
 
   // SELL 먼저 집행 — 현금 확보 후 BUY 배분
   for (const o of queue) {
@@ -497,6 +498,15 @@ async function executeLiveQueue() {
   const buyOrders = queue.filter(o => o.side === 'BUY');
   const halted = await loadStateKey('live_halt', null);
   if (buyOrders.length && executed < LIVE_MAX_ORDERS_PER_DAY && !halted) {
+    // ① SELL 집행됐으면 매도대금이 매수가능금액에 반영될 때까지 대기 (토스 결제 지연 — 최대 180초)
+    //    같은 회차 매도→매수(슬롯 교체) 시 매도대금 미반영으로 매수가 0주 스킵되던 문제 해소
+    if (executed > 0) {
+      for (let w = 0; w < 36; w++) {
+        const c = Number((await getBuyingPower(seq, { currency: 'KRW' }).catch(() => null))?.cashBuyingPower ?? 0);
+        if (c > cashAtStart) { log(`매도대금 반영 확인 (${cashAtStart.toLocaleString()}→${c.toLocaleString()}원)`); break; }
+        await new Promise(r => setTimeout(r, 5000));
+      }
+    }
     const holdings = await getHoldings(seq).catch(() => null);
     const heldNow = (holdings?.items ?? []).filter(i => i.marketCountry === 'KR').length;
     const cashNow = Number((await getBuyingPower(seq, { currency: 'KRW' }).catch(() => null))?.cashBuyingPower ?? 0);
@@ -529,6 +539,16 @@ async function executeLiveQueue() {
         await notifyTelegram(`⛔ [실주문 오류 — 전면 중단] ${e.message}`);
         remaining.push(buyOrders.find(o => o.code === a.code));
         break;
+      }
+    }
+    // ② 빈 슬롯 남았는데 예산 부족으로 배분 안 된 BUY 후보 보존 → 다음 회차(매도대금 반영 후) 재시도 (큐 유실 방지)
+    const needed = (LIVE_SLOTS - heldNow) - allocations.length;
+    if (needed > 0) {
+      const allocatedCodes = new Set(allocations.map(a => a.code));
+      let saved = 0;
+      for (const o of buyOrders) {
+        if (saved >= needed) break;
+        if (!allocatedCodes.has(o.code) && !remaining.includes(o)) { remaining.push(o); saved++; log(`LIVE 매수 보류(예산부족) — ${o.name} 다음 회차 재시도`); }
       }
     }
   }
