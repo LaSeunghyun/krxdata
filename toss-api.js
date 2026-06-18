@@ -139,6 +139,16 @@ export async function getHoldings(accountSeq) {
   return tossGet("/api/v1/holdings", {}, accountHeader(accountSeq));
 }
 
+/** 호가 조회 — { timestamp, asks:[{price,volume}], bids:[{price,volume}] } (KRX+NXT 통합) */
+export async function getOrderbook(symbol) {
+  return tossGet("/api/v1/orderbook", { symbol });
+}
+
+/** 최근 체결 조회 — [{ price, volume, timestamp }] 최신순 (KRX+NXT 통합) */
+export async function getTrades(symbol) {
+  return (await tossGet("/api/v1/trades", { symbol })) ?? [];
+}
+
 function chunk(arr, size) {
   const out = [];
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
