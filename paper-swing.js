@@ -558,7 +558,7 @@ async function executeLiveQueue() {
 }
 
 // close 페이즈: 실보유를 combo 룰로 판정 → 큐 적재
-async function evaluateLiveHoldings(regime, uApplied, badCodes) {
+async function evaluateLiveHoldings(regime, uApplied, badCodes, largeCaps = []) {
   if (await loadStateKey('live_halt', null)) return;
   const accounts = await getAccounts().catch(() => []);
   const seq = accounts[0]?.accountSeq;
@@ -640,35 +640,57 @@ async function evaluateLiveHoldings(regime, uApplied, badCodes) {
   const heldKeep = [...heldCodes].filter(c => !willSell.has(c)).length; // 청산 예약 안 한 보유 종목 수
   const slotsToFill = LIVE_SLOTS - heldKeep - queue.filter(q => q.side === 'BUY').length;
   if (slotsToFill > 0 && (cash > MIN_PRICE || willSell.size > 0)) {
-    // MC3 I4 채택: UP 레짐에서만 신규 진입 (caps D — NEUTRAL/DOWN 돌파는 소액 무엣지)
-    // MC3 I17: 빈 슬롯 + 여유분을 momUniverse 우선순위로 후보 적재 → 집행 시 allocateSlots가 슬롯/예산 배분
-    if (regime === 'UP') {
-      const HEADROOM = 3;
-      const ranked = [];
+    // 버그 수정(2026-06-18): 기존 라이브는 "UP 레짐 + hi120 돌파"만 진입 →
+    //   combo 설계의 rsi2(과매도 반등) 경로가 통째로 누락 → 비-UP장에서 매수 0 (매도만 발생).
+    //   페이퍼/백테스트 combo와 동일하게 레짐 캡(COMBO_CAPS) 기반 hi120+rsi2 둘 다 후보 적재.
+    //   hi120 = 돌파 모멘텀(UP 한정), rsi2 = 과매도 반등(전 레짐, NEUTRAL/DOWN 주력).
+    const caps = COMBO_CAPS[regime];
+    const HEADROOM = 3;
+    const ranked = [];
+    const seen = new Set([...heldCodes, ...queuedCodes]);
+    // hi120: UP 레짐 + 캡 허용 시 (돌파는 상승장에서만 엣지 — MC3 I4)
+    if (regime === 'UP' && caps.hi120 > 0) {
       for (const u of uApplied) {
-        if (heldCodes.has(u.stock_code) || queuedCodes.has(u.stock_code)) continue;
+        if (seen.has(u.stock_code)) continue;
         const sig = await hi120SignalG(u.stock_code);
         if (sig && sig.breakoutPct >= cfg.minBreakout) {
-          const am = liveAtrMult(await bars(u.stock_code));
-          ranked.push({ code: u.stock_code, name: u.corp_name, close: sig.close, atrMult: am, breakoutPct: sig.breakoutPct });
+          ranked.push({ code: u.stock_code, name: u.corp_name, close: sig.close, atrMult: liveAtrMult(await bars(u.stock_code)), sub: 'hi120', breakoutPct: sig.breakoutPct });
+          seen.add(u.stock_code);
         }
         if (ranked.length >= slotsToFill + HEADROOM) break;
       }
+    }
+    // rsi2: 전 레짐 (과매도 반등 — 시총 상위 2일 연속 과매도). 비-UP장 매수의 핵심 경로
+    if (caps.rsi2 > 0 && rsi2SignalG) {
+      for (const r of largeCaps) {
+        if (seen.has(r.stock_code) || badCodes.has(r.stock_code)) continue;
+        const sig = await rsi2SignalG(r.stock_code, cfg.rsiDays ?? 1);
+        if (sig) {
+          ranked.push({ code: r.stock_code, name: r.corp_name, close: sig.close, atrMult: liveAtrMult(await bars(r.stock_code)), sub: 'rsi2', rsi: sig.rsi });
+          seen.add(r.stock_code);
+        }
+        if (ranked.length >= slotsToFill + HEADROOM + 3) break;
+      }
+    }
+    if (ranked.length) {
       const candidates = pickBuyCandidates(ranked, badCodes, slotsToFill + HEADROOM);
       for (const c of candidates) {
-        queue.push({ side: 'BUY', code: c.code, name: c.name, close: c.close, atrMult: c.atrMult,
-          reason: `combo hi120 돌파 +${c.breakoutPct.toFixed(1)}%`,
-          ctx: { sub: 'hi120', regime, breakoutPct: c.breakoutPct.toFixed(1), atrMult: c.atrMult.toFixed(2) } });
-        log(`LIVE 매수 후보 적재: ${c.name} (돌파 +${c.breakoutPct.toFixed(1)}%, ATR×${c.atrMult.toFixed(2)})`);
+        const reason = c.sub === 'hi120' ? `combo hi120 돌파 +${c.breakoutPct.toFixed(1)}%` : `combo rsi2 과매도 (RSI2 ${Math.round(c.rsi)})`;
+        const ctx = c.sub === 'hi120'
+          ? { sub: 'hi120', regime, breakoutPct: c.breakoutPct.toFixed(1), atrMult: c.atrMult.toFixed(2) }
+          : { sub: 'rsi2', regime, rsi: Math.round(c.rsi).toString(), atrMult: c.atrMult.toFixed(2) };
+        queue.push({ side: 'BUY', code: c.code, name: c.name, close: c.close, atrMult: c.atrMult, reason, ctx });
+        log(`LIVE 매수 후보 적재: ${c.name} (${reason}, ATR×${c.atrMult.toFixed(2)})`);
       }
     } else {
-      log(`LIVE 신규 진입 보류 — 레짐 ${regime} (caps D: UP에서만 진입)`);
+      log(`LIVE 신규 진입 후보 없음 — 레짐 ${regime}, hi120/rsi2 시그널 미발생`);
     }
   }
   await saveStateKey('live_queue', queue);
   await saveStateKey('live_meta', meta);
 }
 let hi120SignalG = null; // closePhase에서 주입 (단독/콤보 공용 시그널 함수 재사용)
+let rsi2SignalG = null;  // closePhase에서 주입 (rsi2 과매도 시그널 — 라이브 진입용)
 
 // 시장 레짐 (005930, 당일 종가): UP / NEUTRAL / DOWN
 async function marketRegime() {
@@ -794,7 +816,8 @@ async function closePhase(books) {
 
   // LIVE: 실보유 종가 판정 → 익일 시가 주문 큐 적재
   hi120SignalG = hi120Signal;
-  try { await evaluateLiveHoldings(regime, uApplied, badCodes); } catch (e) { log(`LIVE 판정 오류 (비치명): ${e.message}`); }
+  rsi2SignalG = rsi2Signal;
+  try { await evaluateLiveHoldings(regime, uApplied, badCodes, largeCaps); } catch (e) { log(`LIVE 판정 오류 (비치명): ${e.message}`); }
 
   // 장 마감 텔레그램 보고 (자산 현황 + 예약 주문)
   try {
