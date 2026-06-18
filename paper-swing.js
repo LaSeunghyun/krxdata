@@ -660,9 +660,21 @@ async function evaluateLiveHoldings(regime, uApplied, badCodes, largeCaps = []) 
         if (ranked.length >= slotsToFill + HEADROOM) break;
       }
     }
-    // rsi2: 전 레짐 (과매도 반등 — 시총 상위 2일 연속 과매도). 비-UP장 매수의 핵심 경로
+    // rsi2: 전 레짐 (과매도 반등). 비-UP장 매수의 핵심 경로.
+    //   소액 계좌(2026-06-18): largeCaps(시총 top30)는 1주 가격이 슬롯 예산 초과라 체결 불가.
+    //   → 우량 중저가 유니버스로 교체: 시총 ≥3,000억(잡주 배제) + 가격 ≤ 슬롯예산(1주 가능).
+    //   계좌가 커지면 가격 상한이 올라가며 더 큰 종목이 자동 편입.
     if (caps.rsi2 > 0 && rsi2SignalG) {
-      for (const r of largeCaps) {
+      const slotBudget = Math.floor(totalNow / LIVE_SLOTS);
+      const priceCeiling = Math.max(slotBudget, MIN_PRICE * 3); // 최소 6,000원까진 후보 확보
+      const rsiUniverse = await dbQuery(`
+        SELECT stock_code, corp_name FROM stock_analysis
+        WHERE current_price >= ${MIN_PRICE} AND current_price <= ${priceCeiling}
+          AND market_cap_tril >= 0.3
+        ORDER BY market_cap_tril DESC LIMIT 40
+      `).catch(() => []);
+      log(`LIVE rsi2 유니버스: 시총≥3000억 & 가격≤${priceCeiling.toLocaleString()}원 ${rsiUniverse.length}종목`);
+      for (const r of rsiUniverse) {
         if (seen.has(r.stock_code) || badCodes.has(r.stock_code)) continue;
         const sig = await rsi2SignalG(r.stock_code, cfg.rsiDays ?? 1);
         if (sig) {
