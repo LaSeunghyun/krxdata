@@ -70,6 +70,10 @@ function onCooldown(state, type, now) {
   const last = state[type];
   return last && (now - last) < COOLDOWN_MIN * 60 * 1000;
 }
+function onCooldownMin(state, type, now, mins) {
+  const last = state[type];
+  return last && (now - last) < mins * 60 * 1000;
+}
 
 async function main() {
   if (!isTossConfigured()) { log('TOSS 미설정 — 종료'); return; }
@@ -81,6 +85,21 @@ async function main() {
   const state = await loadState();
   const now = Date.now();
   const today = kstDate();
+
+  // ── 토스 접속 헬스체크 (Actions IP 간헐 차단 대비) ──
+  // 토스가 막히면 수급을 못 보므로, 조용히 죽지 말고 텔레그램으로 '감시 불가' 경고(2시간 쿨다운)
+  try {
+    await getPricesMap([SYMBOL]);
+  } catch (e) {
+    const ipBlocked = /IP address not allowed|access_denied|403/.test(e.message);
+    log(`토스 접속 실패: ${e.message}`);
+    if (!onCooldownMin(state, 'tossdown', now, 120)) {
+      await notify(`⚠️ [${NAME} 모니터] 토스 API 접속 불가${ipBlocked ? ' (서버 IP 차단)' : ''} — 일시적으로 수급 감시가 중단됩니다. 가격 직접 확인 필요.`);
+      state.tossdown = now;
+      await saveState(state);
+    }
+    return;
+  }
 
   // ── 데이터 수집 ──
   const daily = (await getDailyCandles(SYMBOL, 15).catch(() => [])).reverse(); // 오름차순
