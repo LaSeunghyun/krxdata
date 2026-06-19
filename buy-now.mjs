@@ -54,7 +54,7 @@ async function main(){
   log(`계좌 ${acc[0].accountNo} | 현금 ${cash.toLocaleString()} | 평가 ${totalNow.toLocaleString()} | 슬롯예산 ${slotBudget.toLocaleString()} | 보유 ${items.length} | 빈슬롯 ${slotsToFill} | 레짐 ${regime}`);
   if (slotsToFill <= 0) { log('빈 슬롯 없음 — 매수 안 함'); return; }
 
-  const affordable = (close, am) => close*1.01 <= slotBudget*am;
+  const affordable = (close) => close*1.01 <= slotBudget; // 풀 슬롯예산 기준 1주 가능?(ATR는 수량만, allocateSlots 1주 floor)
   const seen = new Set(items.map(i=>i.symbol));
   const ranked = [];
 
@@ -77,7 +77,7 @@ async function main(){
       const l = await bars(u.stock_code); if (l.length<122) continue;
       const i=l.length-1; let ph=0; for(let j=i-120;j<i;j++)ph=Math.max(ph,l[j].high);
       const bpct=(l[i].close/ph-1)*100;
-      if (l[i].close>ph && bpct>=MIN_BREAKOUT) { const am=atrMult(l); if(!affordable(l[i].close,am)){log(`hi120 제외(예산): ${u.corp_name} ${l[i].close.toLocaleString()}`);continue;} ranked.push({code:u.stock_code,name:u.corp_name,close:l[i].close,atrMult:am,sub:'hi120',breakoutPct:bpct}); seen.add(u.stock_code); }
+      if (l[i].close>ph && bpct>=MIN_BREAKOUT) { const am=atrMult(l); if(!affordable(l[i].close)){log(`hi120 제외(예산): ${u.corp_name} ${l[i].close.toLocaleString()}`);continue;} ranked.push({code:u.stock_code,name:u.corp_name,close:l[i].close,atrMult:am,sub:'hi120',breakoutPct:bpct}); seen.add(u.stock_code); }
       if (ranked.length>=slotsToFill+3) break;
     }
   }
@@ -89,7 +89,7 @@ async function main(){
       if (seen.has(r.stock_code)) continue;
       const l = await bars(r.stock_code,10); if(l.length<5)continue;
       const c=l.map(b=>b.close); const cur=rsi2val(c,c.length-1), prev=rsi2val(c,c.length-2);
-      if (cur<10 && (RSI_DAYS<2 || prev<10)) { const am=atrMult(l); if(!affordable(c.at(-1),am)){continue;} ranked.push({code:r.stock_code,name:r.corp_name,close:c.at(-1),atrMult:am,sub:'rsi2',rsi:cur}); seen.add(r.stock_code); }
+      if (cur<10 && (RSI_DAYS<2 || prev<10)) { const am=atrMult(l); if(!affordable(c.at(-1))){continue;} ranked.push({code:r.stock_code,name:r.corp_name,close:c.at(-1),atrMult:am,sub:'rsi2',rsi:cur}); seen.add(r.stock_code); }
       if (ranked.length>=slotsToFill+5) break;
     }
   }

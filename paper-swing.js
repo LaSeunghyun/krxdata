@@ -552,8 +552,8 @@ async function executeLiveQueue() {
       for (const o of buyOrders) {
         if (allocatedCodes.has(o.code) || remaining.includes(o)) continue;
         const px = priced.find(p => p.code === o.code)?.price ?? o.close ?? 0;
-        const ceil = slotBudgetNow * (o.atrMult ?? 1);
-        if (px * 1.01 > ceil) { log(`LIVE 매수 제거(예산초과 영구) — ${o.name} ${px.toLocaleString()}원 > 슬롯 ${Math.floor(ceil).toLocaleString()}`); continue; } // 큐에서 드롭
+        // 영구 불가 판정도 풀 슬롯예산 기준 (ATR는 수량 스케일일 뿐 — 1주가 풀예산에 들어오면 살림)
+        if (px * 1.01 > slotBudgetNow) { log(`LIVE 매수 제거(예산초과 영구) — ${o.name} ${px.toLocaleString()}원 > 슬롯 ${slotBudgetNow.toLocaleString()}`); continue; } // 큐에서 드롭
         if (saved >= needed) continue;
         remaining.push(o); saved++; log(`LIVE 매수 보류(현금부족, 가격 OK) — ${o.name} 다음 회차 재시도`);
       }
@@ -659,16 +659,19 @@ async function evaluateLiveHoldings(regime, uApplied, badCodes, largeCaps = []) 
     //   큐를 영구 점거(qty 0 재큐잉) → 슬롯 막혀 저렴한 rsi2 진입 불가 → "매수 또 안 됨".
     //   allocateSlots 집행 상한 = slotBudget×atrMult 이므로, 그 안에 1주가 안 들어오는 후보는 큐잉 금지.
     const slotBudget = Math.floor(totalNow / LIVE_SLOTS);
-    const affordable = (close, atrMult) => close * 1.01 <= slotBudget * atrMult; // 1주 매수 가능?
+    // 진입 가능 판정 = 풀 슬롯예산으로 1주 매수 가능?  (ATR 사이징은 집행부에서 수량에만 적용, 1주 미만 불가)
+    // 버그 수정(2026-06-19 #2 — 고변동성장 rsi2 공백): atrMult(0.5)로 게이트하면 슬롯예산 23.7k라도
+    //   상한 11.8k → 20k 우량 과매도주가 전부 배제돼 폭락장 매수 0. 백테스트는 항상 진입(ATR는 수량만)
+    //   하므로 라이브도 1주 진입은 보장하고 ATR는 수량 스케일에만 쓴다. allocateSlots에 1주 floor 추가.
+    const affordable = (close) => close * 1.01 <= slotBudget; // 풀 예산으로 1주 가능?
     // hi120: UP 레짐 + 캡 허용 시 (돌파는 상승장에서만 엣지 — MC3 I4)
     if (regime === 'UP' && caps.hi120 > 0) {
       for (const u of uApplied) {
         if (seen.has(u.stock_code)) continue;
         const sig = await hi120SignalG(u.stock_code);
         if (sig && sig.breakoutPct >= cfg.minBreakout) {
-          const am = liveAtrMult(await bars(u.stock_code));
-          if (!affordable(sig.close, am)) { log(`LIVE hi120 제외(예산초과): ${u.corp_name} ${sig.close.toLocaleString()}원 > 슬롯 ${Math.floor(slotBudget * am).toLocaleString()}`); continue; }
-          ranked.push({ code: u.stock_code, name: u.corp_name, close: sig.close, atrMult: am, sub: 'hi120', breakoutPct: sig.breakoutPct });
+          if (!affordable(sig.close)) { log(`LIVE hi120 제외(예산초과): ${u.corp_name} ${sig.close.toLocaleString()}원 > 슬롯 ${slotBudget.toLocaleString()}`); continue; }
+          ranked.push({ code: u.stock_code, name: u.corp_name, close: sig.close, atrMult: liveAtrMult(await bars(u.stock_code)), sub: 'hi120', breakoutPct: sig.breakoutPct });
           seen.add(u.stock_code);
         }
         if (ranked.length >= slotsToFill + HEADROOM) break;
@@ -689,9 +692,8 @@ async function evaluateLiveHoldings(regime, uApplied, badCodes, largeCaps = []) 
         if (seen.has(r.stock_code) || badCodes.has(r.stock_code)) continue;
         const sig = await rsi2SignalG(r.stock_code, cfg.rsiDays ?? 1);
         if (sig) {
-          const am = liveAtrMult(await bars(r.stock_code));
-          if (!affordable(sig.close, am)) { log(`LIVE rsi2 제외(예산초과): ${r.corp_name} ${sig.close.toLocaleString()}원`); continue; }
-          ranked.push({ code: r.stock_code, name: r.corp_name, close: sig.close, atrMult: am, sub: 'rsi2', rsi: sig.rsi });
+          if (!affordable(sig.close)) { log(`LIVE rsi2 제외(예산초과): ${r.corp_name} ${sig.close.toLocaleString()}원 > 슬롯 ${slotBudget.toLocaleString()}`); continue; }
+          ranked.push({ code: r.stock_code, name: r.corp_name, close: sig.close, atrMult: liveAtrMult(await bars(r.stock_code)), sub: 'rsi2', rsi: sig.rsi });
           seen.add(r.stock_code);
         }
         if (ranked.length >= slotsToFill + HEADROOM + 3) break;

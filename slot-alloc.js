@@ -30,8 +30,14 @@ export function allocateSlots(candidates, heldSlots, slots, equity, cashAvailabl
   let held = heldSlots;
   for (const c of candidates ?? []) {
     if (held >= slots) break;
-    const budget = Math.min(slotBudget * (c.atrMult ?? 1), cash);
-    const qty = Math.floor(budget / (c.price * 1.01));
+    const atrBudget = Math.min(slotBudget * (c.atrMult ?? 1), cash);
+    let qty = Math.floor(atrBudget / (c.price * 1.01));
+    // 소액 계좌 고변동성 공백 방지(2026-06-19): ATR 축소로 0주가 되더라도, 풀 슬롯예산+현금이
+    //   1주를 감당하면 1주는 진입 (백테스트는 항상 진입·ATR는 수량만 — 1~2주 계좌에선 1주가 최소단위).
+    if (qty < 1) {
+      const fullBudget = Math.min(slotBudget, cash);
+      if (Math.floor(fullBudget / (c.price * 1.01)) >= 1) qty = 1;
+    }
     if (qty < 1) continue;
     out.push({ code: c.code, name: c.name, qty, price: c.price });
     cash -= qty * c.price * 1.01;
