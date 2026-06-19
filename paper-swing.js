@@ -541,14 +541,21 @@ async function executeLiveQueue() {
         break;
       }
     }
-    // ② 빈 슬롯 남았는데 예산 부족으로 배분 안 된 BUY 후보 보존 → 다음 회차(매도대금 반영 후) 재시도 (큐 유실 방지)
+    // ② 빈 슬롯 남았는데 배분 안 된 BUY 후보 처리:
+    //   - 일시적 현금 부족(가격 ≤ 슬롯예산): 보존 → 다음 회차(매도대금 반영 후) 재시도
+    //   - 영구 불가(가격 > 슬롯예산×atrMult, 1주도 못 삼): 제거 (재큐잉 무한루프·슬롯 점거 방지) ★버그 수정 2026-06-19
+    const slotBudgetNow = Math.floor(eqNow / LIVE_SLOTS);
     const needed = (LIVE_SLOTS - heldNow) - allocations.length;
     if (needed > 0) {
       const allocatedCodes = new Set(allocations.map(a => a.code));
       let saved = 0;
       for (const o of buyOrders) {
-        if (saved >= needed) break;
-        if (!allocatedCodes.has(o.code) && !remaining.includes(o)) { remaining.push(o); saved++; log(`LIVE 매수 보류(예산부족) — ${o.name} 다음 회차 재시도`); }
+        if (allocatedCodes.has(o.code) || remaining.includes(o)) continue;
+        const px = priced.find(p => p.code === o.code)?.price ?? o.close ?? 0;
+        const ceil = slotBudgetNow * (o.atrMult ?? 1);
+        if (px * 1.01 > ceil) { log(`LIVE 매수 제거(예산초과 영구) — ${o.name} ${px.toLocaleString()}원 > 슬롯 ${Math.floor(ceil).toLocaleString()}`); continue; } // 큐에서 드롭
+        if (saved >= needed) continue;
+        remaining.push(o); saved++; log(`LIVE 매수 보류(현금부족, 가격 OK) — ${o.name} 다음 회차 재시도`);
       }
     }
   }
@@ -648,24 +655,28 @@ async function evaluateLiveHoldings(regime, uApplied, badCodes, largeCaps = []) 
     const HEADROOM = 3;
     const ranked = [];
     const seen = new Set([...heldCodes, ...queuedCodes]);
+    // 버그 수정(2026-06-19): hi120 후보에 affordability 게이트 누락 → 비싼 모멘텀주(48k·187k)가
+    //   큐를 영구 점거(qty 0 재큐잉) → 슬롯 막혀 저렴한 rsi2 진입 불가 → "매수 또 안 됨".
+    //   allocateSlots 집행 상한 = slotBudget×atrMult 이므로, 그 안에 1주가 안 들어오는 후보는 큐잉 금지.
+    const slotBudget = Math.floor(totalNow / LIVE_SLOTS);
+    const affordable = (close, atrMult) => close * 1.01 <= slotBudget * atrMult; // 1주 매수 가능?
     // hi120: UP 레짐 + 캡 허용 시 (돌파는 상승장에서만 엣지 — MC3 I4)
     if (regime === 'UP' && caps.hi120 > 0) {
       for (const u of uApplied) {
         if (seen.has(u.stock_code)) continue;
         const sig = await hi120SignalG(u.stock_code);
         if (sig && sig.breakoutPct >= cfg.minBreakout) {
-          ranked.push({ code: u.stock_code, name: u.corp_name, close: sig.close, atrMult: liveAtrMult(await bars(u.stock_code)), sub: 'hi120', breakoutPct: sig.breakoutPct });
+          const am = liveAtrMult(await bars(u.stock_code));
+          if (!affordable(sig.close, am)) { log(`LIVE hi120 제외(예산초과): ${u.corp_name} ${sig.close.toLocaleString()}원 > 슬롯 ${Math.floor(slotBudget * am).toLocaleString()}`); continue; }
+          ranked.push({ code: u.stock_code, name: u.corp_name, close: sig.close, atrMult: am, sub: 'hi120', breakoutPct: sig.breakoutPct });
           seen.add(u.stock_code);
         }
         if (ranked.length >= slotsToFill + HEADROOM) break;
       }
     }
     // rsi2: 전 레짐 (과매도 반등). 비-UP장 매수의 핵심 경로.
-    //   소액 계좌(2026-06-18): largeCaps(시총 top30)는 1주 가격이 슬롯 예산 초과라 체결 불가.
-    //   → 우량 중저가 유니버스로 교체: 시총 ≥3,000억(잡주 배제) + 가격 ≤ 슬롯예산(1주 가능).
-    //   계좌가 커지면 가격 상한이 올라가며 더 큰 종목이 자동 편입.
+    //   소액 계좌: 우량 중저가 유니버스(시총≥3000억 + 가격≤슬롯예산) — 계좌 커지면 상한 자동 상승.
     if (caps.rsi2 > 0 && rsi2SignalG) {
-      const slotBudget = Math.floor(totalNow / LIVE_SLOTS);
       const priceCeiling = Math.max(slotBudget, MIN_PRICE * 3); // 최소 6,000원까진 후보 확보
       const rsiUniverse = await dbQuery(`
         SELECT stock_code, corp_name FROM stock_analysis
@@ -678,7 +689,9 @@ async function evaluateLiveHoldings(regime, uApplied, badCodes, largeCaps = []) 
         if (seen.has(r.stock_code) || badCodes.has(r.stock_code)) continue;
         const sig = await rsi2SignalG(r.stock_code, cfg.rsiDays ?? 1);
         if (sig) {
-          ranked.push({ code: r.stock_code, name: r.corp_name, close: sig.close, atrMult: liveAtrMult(await bars(r.stock_code)), sub: 'rsi2', rsi: sig.rsi });
+          const am = liveAtrMult(await bars(r.stock_code));
+          if (!affordable(sig.close, am)) { log(`LIVE rsi2 제외(예산초과): ${r.corp_name} ${sig.close.toLocaleString()}원`); continue; }
+          ranked.push({ code: r.stock_code, name: r.corp_name, close: sig.close, atrMult: am, sub: 'rsi2', rsi: sig.rsi });
           seen.add(r.stock_code);
         }
         if (ranked.length >= slotsToFill + HEADROOM + 3) break;
