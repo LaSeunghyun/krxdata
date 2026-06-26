@@ -64,14 +64,15 @@ async function tossGet(apiPath, params = {}, extraHeaders = {}) {
   for (const [k, v] of Object.entries(params)) {
     if (v != null) url.searchParams.set(k, String(v));
   }
-  let refreshed = false; // 401 재발급은 429/5xx 재시도 예산과 별도 카운트
+  let auth401 = 0; // 401 재발급 재시도 (토큰 만료·동시성 레이스 대응 — 429/5xx 예산과 별도)
   for (let attempt = 0; ; attempt++) {
     await rateSlot();
     const res = await fetchT(url.toString(), {
       headers: { Authorization: `Bearer ${await getToken()}`, ...extraHeaders },
     });
     if (res.ok) return (await res.json())?.result;
-    if (res.status === 401 && !refreshed) { token = null; refreshed = true; attempt--; continue; }
+    // 401: 토큰 폐기 후 재발급해 최대 3회 재시도 (단발 실패가 close 페이즈 종목을 통째로 누락시키던 문제 완화)
+    if (res.status === 401 && auth401 < 3) { token = null; auth401++; await sleep(300 * auth401); attempt--; continue; }
     if ((res.status === 429 || res.status >= 500) && attempt < 3) {
       const retryAfter = Number(res.headers.get("retry-after")) || 2 ** attempt;
       await sleep(retryAfter * 1000 + Math.random() * 300); // 문서 권장: 지수 백오프 + jitter

@@ -126,10 +126,16 @@ async function flushTrades() {
 
 // 일봉 캐시 (이번 실행 한정)
 const barsCache = new Map();
+let barsFailCount = 0;
 async function bars(code, n = 130) {
   if (!barsCache.has(code)) {
-    try { barsCache.set(code, (await getDailyCandles(code, n)).reverse()); } // 오름차순
-    catch { barsCache.set(code, []); }
+    let lastErr = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try { barsCache.set(code, (await getDailyCandles(code, n)).reverse()); lastErr = null; break; } // 오름차순
+      catch (e) { lastErr = e; if (attempt === 0) await new Promise(r => setTimeout(r, 800)); } // 전이성 401/네트워크 1회 재시도
+    }
+    // 실패 시 조용히 []로 스킵하던 동작 → 로그로 가시화 (close 페이즈 종목 누락 추적용)
+    if (lastErr) { barsFailCount++; barsCache.set(code, []); log(`⚠️ 일봉 조회 실패 ${code}: ${lastErr.message} — 스킵(시그널 누락 가능, 누적 ${barsFailCount}건)`); }
   }
   return barsCache.get(code);
 }
