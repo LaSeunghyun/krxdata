@@ -11,7 +11,7 @@ import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
 import { ANALYSIS_YEAR, ANALYSIS_YEAR_FALLBACK, SCORE_BATCH_SIZE, SCORE_DELAY_MS, FETCH_TIMEOUT_MS } from "./config.js";
-import { calcTargetPrice, buildRecommendation } from "./stock-utils.js";
+import { calcTargetPrice, buildRecommendation, sectorFairPer } from "./stock-utils.js";
 import { parseFinancials, scoreFinancialTrend, disclosureSentiment, GOOD_KEYWORDS, BAD_KEYWORDS } from "./scoring-core.js";
 
 const require   = createRequire(import.meta.url);
@@ -410,8 +410,9 @@ async function main() {
     const currentPrice = quote?.price ?? 0;
     const genAt = new Date().toISOString();
 
-    const tp = calcTargetPrice(currentPrice, quote?.eps ?? 0, quote?.bps ?? 0, fin, marketCap);
-    const recommendation = buildRecommendation(longScore, v.note, tp.midTargetPct);
+    const fairPer = sectorFairPer(sectorMap[s.stockCode]?.sector);
+    const tp = calcTargetPrice(currentPrice, quote?.eps ?? 0, quote?.bps ?? 0, fin, marketCap, fairPer);
+    const recommendation = buildRecommendation(longScore, v.note, tp.midTargetPct, { growthPremium: tp.growthPremium });
 
     const _ni  = fin.netIncome?.current  ?? 0;
     const _eq  = fin.totalEquity?.current ?? 0;

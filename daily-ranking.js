@@ -148,11 +148,11 @@ async function getPublicDataQuote(stockCode, fetch52w = false) {
       market_cap: marketCap,
       base_date: item.basDt
     };
-    if (fetch52w && filtered.length > 1) {
-      const prices = filtered.map(i => parseInt(i.clpr, 10)).filter(p => p > 0);
-      result.high_52w = Math.max(...prices);
-      result.low_52w  = Math.min(...prices);
-    }
+    // ⚠️ 공공데이터 clpr은 비수정주가(액면분할·증자 미보정)다. 분할 종목은 분할 전 가격이
+    // 섞여 가짜 52주 고점이 산출된다(실측: 010120 LS일렉트릭 886,000원 — 토스 수정주가 실제 고가
+    // 347,500원). 따라서 52주 고저가는 여기서 산출하지 않고, 수정주가 기반 토스 일봉
+    // (updatePrices의 refresh52w → getDailyCandles 경로)에서만 채운다. 토스 미설정 시 52주는
+    // 갱신하지 않고 기존 값을 보존한다(SQL COALESCE). fetch52w는 조회 window에만 영향.
     return result;
   } catch { return null; }
 }

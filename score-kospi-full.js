@@ -14,7 +14,7 @@ import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
 import { ANALYSIS_YEAR, ANALYSIS_YEAR_FALLBACK, SCORE_BATCH_SIZE, SCORE_DELAY_MS, FETCH_TIMEOUT_MS } from "./config.js";
-import { calcTargetPrice, buildRecommendation } from "./stock-utils.js";
+import { calcTargetPrice, buildRecommendation, sectorFairPer } from "./stock-utils.js";
 import { parseFinancials, scoreFinancialTrend, disclosureSentiment, GOOD_KEYWORDS, BAD_KEYWORDS } from "./scoring-core.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -422,9 +422,10 @@ async function main() {
     const longTotal= health.score+profit.score+valuation.score+govScore.score+(trend.score ?? 0);
     const totalScore = shortTotal+longTotal;
 
-    // 목표가 + 추천
-    const tp  = calcTargetPrice(currentPrice, quote?.eps ?? 0, quote?.bps ?? 0, fin, marketCap);
-    const rec = buildRecommendation(longTotal, valuation.note, tp.midTargetPct);
+    // 목표가 + 추천 (업종별 적정 PER 적용 + 성장 프리미엄 가드)
+    const fairPer = sectorFairPer(sectorMap[s.stockCode]?.sector);
+    const tp  = calcTargetPrice(currentPrice, quote?.eps ?? 0, quote?.bps ?? 0, fin, marketCap, fairPer);
+    const rec = buildRecommendation(longTotal, valuation.note, tp.midTargetPct, { growthPremium: tp.growthPremium });
 
     const row = {
       rank: 0, stockCode: s.stockCode, corp_name: s.corp_name,
