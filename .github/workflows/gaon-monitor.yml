@@ -1,10 +1,12 @@
 name: 가온전선 수급 모니터
 
 on:
-  schedule:
-    # 5분 간격. KST 08:00~20:00 = UTC 23:00~11:00 (스크립트가 KST 시간/중단 플래그 재확인)
-    - cron: '*/5 23 * * 0-4'      # KST 08:00~08:55 (일~목 UTC23)
-    - cron: '*/5 0-10 * * 1-5'    # KST 09:00~19:55 (월~금 UTC0~10)
+  # 자동 크론 비활성화 (2026-06-28) — GitHub Actions 미국 IP가 토스 Open API에서 차단되어
+  # 수급 감시 불가, 5분마다 "토스 접속 불가" 경고만 반복 발송됨. 수동 실행(workflow_dispatch)만 유지.
+  # 재가동하려면 아래 schedule 주석 해제 + 한국 IP 환경(셀프호스티드 러너 등) 필요.
+  # schedule:
+  #   - cron: '*/5 23 * * 0-4'      # KST 08:00~08:55 (일~목 UTC23)
+  #   - cron: '*/5 0-10 * * 1-5'    # KST 09:00~19:55 (월~금 UTC0~10)
   workflow_dispatch:
 
 concurrency:
