@@ -15,7 +15,7 @@ import fs from "fs";
 import path from "path";
 import { ANALYSIS_YEAR, ANALYSIS_YEAR_FALLBACK, SCORE_BATCH_SIZE, SCORE_DELAY_MS, FETCH_TIMEOUT_MS } from "./config.js";
 import { calcTargetPrice, buildRecommendation, sectorFairPer } from "./stock-utils.js";
-import { parseFinancials, scoreFinancialTrend, disclosureSentiment, GOOD_KEYWORDS, BAD_KEYWORDS } from "./scoring-core.js";
+import { parseFinancials, scoreFinancialTrend, disclosureSentiment, estimateBonusCapacity, GOOD_KEYWORDS, BAD_KEYWORDS } from "./scoring-core.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, ".env") });
@@ -446,8 +446,10 @@ async function main() {
     results.push(row);
 
     // DB 배치 적재 — stock_analysis
+    const bonus = estimateBonusCapacity(fin);
     const analysisRow = {
       stock_code: s.stockCode, corp_name: s.corp_name,
+      bonus_reserve_ratio: bonus.reserveRatio, bonus_flag: bonus.flag,
       current_price: currentPrice, short_target_price: tp.shortTargetPrice,
       mid_target_price: tp.midTargetPrice, short_target_pct: tp.shortTargetPct,
       mid_target_pct: tp.midTargetPct, recommendation: rec,

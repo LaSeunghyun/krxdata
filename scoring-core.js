@@ -56,8 +56,27 @@ export function parseFinancials(rows) {
     curAsset:    get("유동자산"),
     curLiab:     get("유동부채"),
     retained:    get("이익잉여금"),
+    capital:     get("자본금"),
     cfOps:       getCF("영업활동현금흐름"),
   };
+}
+
+/**
+ * 무상증자 여력(방식 A: 표시 플래그) — 재원 근사, total_score 불변.
+ * 무증 재원 = 자본잉여금(주식발행초과금 등). fnlttMultiAcnt엔 세부가 없어
+ * 자본잉여금 ≈ 자본총계 - 자본금 - 이익잉여금 으로 근사(비지배지분 포함 → 과대 가능, 大中小 판단용).
+ * @returns {{reserveRatio:number|null, flag:boolean}} reserveRatio=근사잉여금/자본금, flag=무증 후보(≥3배 & 흑자)
+ */
+export function estimateBonusCapacity(fin) {
+  const eq  = fin?.totalEquity?.current ?? 0;
+  const cap = fin?.capital?.current ?? 0;
+  const ret = fin?.retained?.current ?? 0;
+  const ni  = fin?.netIncome?.current ?? 0;
+  if (!(cap > 0) || !(eq > 0)) return { reserveRatio: null, flag: false };
+  const surplus = Math.max(eq - cap - ret, 0); // 자본잉여금 근사
+  const reserveRatio = +(surplus / cap).toFixed(1);
+  const flag = reserveRatio >= 3 && ni > 0; // 재원 풍부(잉여금 자본금 3배+) + 흑자 → 무증 후보
+  return { reserveRatio, flag };
 }
 
 // ── 다년도 성장·안정성 추세 (DB 이력 기반, max 18점) ─────
