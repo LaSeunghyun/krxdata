@@ -40,12 +40,22 @@ const today  = () => ymd(new Date());
 
 async function fetchJson(url, headers = {}) {
   // node-fetch v3는 `timeout` 옵션을 무시 → AbortSignal.timeout 사용
-  const res = await fetch(url, {
-    headers: { "User-Agent": "Mozilla/5.0", "Referer": "https://finance.naver.com", ...headers },
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+  // 타임아웃·429·5xx 일시 오류 1방에 배치 전체가 죽지 않도록 3회 재시도
+  let lastErr;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await fetch(url, {
+        headers: { "User-Agent": "Mozilla/5.0", "Referer": "https://finance.naver.com", ...headers },
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    } catch (e) {
+      lastErr = e;
+      if (attempt < 3) await sleep(attempt * 2000);
+    }
+  }
+  throw lastErr;
 }
 
 // ── DART 재무 (100개 배치) ────────────────────────────────
@@ -285,6 +295,7 @@ async function main() {
   // 2. 종목별 가격 + DART 공시
   console.log("[2] 종목별 가격·공시 수집 중...\n");
   const RUN_ID = `kosdaq-${ymd(new Date())}-${Date.now()}`;
+  const t0 = Date.now();
   const results = [];
   const failCounts = { quote: 0, disclosure: 0, shareholder: 0 };
   const CHECKPOINT = 50;
@@ -295,30 +306,34 @@ async function main() {
 
   async function upsertTable(table, rows) {
     if (!SUPABASE_URL || !SUPABASE_KEY || !rows.length) return;
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`,
-        Prefer: "resolution=merge-duplicates,return=minimal",
-      },
-      body: JSON.stringify(rows),
-    });
-    if (!res.ok) console.warn(`  ${table} upsert 실패: ${res.status}`);
+    try {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`,
+          Prefer: "resolution=merge-duplicates,return=minimal",
+        },
+        body: JSON.stringify(rows),
+      });
+      if (!res.ok) console.warn(`  ${table} upsert 실패: ${res.status}`);
+    } catch (e) { console.warn(`  ${table} upsert 예외: ${e.message}`); }
   }
 
   async function appendTable(table, rows) {
     if (!SUPABASE_URL || !SUPABASE_KEY || !rows.length) return;
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`,
-        Prefer: "return=minimal",
-      },
-      body: JSON.stringify(rows),
-    });
-    if (!res.ok) console.warn(`  ${table} insert 실패: ${res.status}`);
+    try {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`,
+          Prefer: "return=minimal",
+        },
+        body: JSON.stringify(rows),
+      });
+      if (!res.ok) console.warn(`  ${table} insert 실패: ${res.status}`);
+    } catch (e) { console.warn(`  ${table} insert 예외: ${e.message}`); }
   }
 
   async function fetchHistoricalFinancials(stockCodes) {
@@ -333,11 +348,14 @@ async function main() {
         + `&report_code=eq.11011`
         + `&order=analysis_year.desc`
         + `&select=stock_code,analysis_year,revenue,op_income,net_income,debt_ratio,cur_ratio,cf_ops`;
-      const res = await fetch(url, {
-        headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` },
-      });
-      if (!res.ok) continue;
-      const rows = await res.json();
+      let rows;
+      try {
+        const res = await fetch(url, {
+          headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` },
+        });
+        if (!res.ok) continue;
+        rows = await res.json();
+      } catch { continue; }
       for (const row of rows) {
         if (!result[row.stock_code]) result[row.stock_code] = [];
         result[row.stock_code].push(row);
@@ -352,6 +370,7 @@ async function main() {
     if (!valid.length) return;
 
     const masterRows = valid.map(({ _sentiment_score, ...rest }) => rest);
+    try {
     const r1 = await fetch(`${SUPABASE_URL}/rest/v1/stock_disclosures?on_conflict=rcept_no`, {
       method: "POST",
       headers: {
@@ -380,6 +399,7 @@ async function main() {
       body: JSON.stringify(sentRows),
     });
     if (!r2.ok) console.warn(`  stock_disclosure_sentiments insert 실패: ${r2.status}`);
+    } catch (e) { console.warn(`  공시 적재 예외: ${e.message}`); }
   }
 
   for (let i = 0; i < companies.length; i++) {
@@ -517,7 +537,9 @@ async function main() {
 
     if ((i + 1) % CHECKPOINT === 0 || i === companies.length - 1) {
       const pct = (((i+1)/total)*100).toFixed(1);
-      console.log(`  [${i+1}/${total}] ${pct}% 완료 — 현재 최고점: ${Math.max(...results.map(r=>r.totalScore))}점`);
+      const elapsedMin = (Date.now()-t0)/60000;
+      const etaMin = Math.round(elapsedMin/(i+1)*(total-i-1));
+      console.log(`  [${i+1}/${total}] ${pct}% 완료 — 경과 ${Math.round(elapsedMin)}분·남은 ~${etaMin}분 — 현재 최고점: ${Math.max(...results.map(r=>r.totalScore))}점`);
     }
   }
 
