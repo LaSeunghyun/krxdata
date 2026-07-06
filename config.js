@@ -40,6 +40,12 @@ export const WINSOR_BOUNDS = [0.01, 0.99]; // 섹터 z-score winsorize 분위
 export const BACKTEST_ROUND_TRIP_COST = 0.005; // 왕복 거래비용 0.5% (수수료+거래세+슬리피지 보수 추정)
 export const BACKTEST_MIN_PRICE = 1000; // 동전주 제외 (유동성·슬리피지 방어)
 
+// ── 유동성 하드 필터 (랭킹·라이브 유니버스 공통) ──
+// 20일 평균 거래대금(원)이 이 값 미만인 종목은 랭킹·매매 후보에서 제외.
+// 저유동성 가치주(예: 미원에스씨·하이록코리아·태광산업)가 밸류 점수로 상위에 올라오지만
+// 실제 체결·청산이 어려운 문제를 방지. 기본 30억 = 3,000,000,000원. env로 override 가능.
+export const MIN_AVG_TURNOVER = toNumber("MIN_AVG_TURNOVER", 30 * 1e8);
+
 // ── 포트폴리오 운용 규칙 ──
 export const STOP_LOSS_PCT = -25;   // 즉시청산
 export const HALF_PROFIT_PCT = 100; // 절반익절

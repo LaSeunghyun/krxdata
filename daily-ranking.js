@@ -13,6 +13,7 @@ import {
   ANALYSIS_YEAR_PREV as YEAR_PREV,
   ANALYSIS_YEAR_PREV2 as YEAR_PREV2,
   FETCH_TIMEOUT_MS,
+  MIN_AVG_TURNOVER,
 } from './config.js';
 import { isTossConfigured, getPricesMap, getStocksMap, getDailyCandles } from './toss-api.js';
 
@@ -174,6 +175,8 @@ async function withConcurrency(tasks, limit) {
 // 수정: 순차 for-of → withConcurrency(10) 병렬화로 30분→3분 목표
 // 52주 갱신: full 모드는 항상 실행, ranking 모드는 --refresh-52w일 때만 강제 실행
 async function updatePrices() {
+  // 유동성 필터용 컬럼 보장 (idempotent)
+  await dbQuery(`ALTER TABLE stock_analysis ADD COLUMN IF NOT EXISTS avg_turnover_20d NUMERIC`);
   const stocks = await dbQuery(`SELECT stock_code FROM stock_analysis WHERE market_cap_tril >= 0`);
   const codes = stocks.map(s => s.stock_code);
 
@@ -188,7 +191,7 @@ async function updatePrices() {
   const BATCH     = 50;   // 진행 로그 주기
   const SQL_BATCH = 200;  // SQL upsert 묶음 크기
 
-  const buffer = []; // { code, price, cap, high, low }
+  const buffer = []; // { code, price, cap, high, low, turn }
   // flush를 promise 체인으로 직렬화 — withConcurrency 병렬 태스크가 동시에 flush를
   // 트리거해도 한 번에 하나씩만 실행되며, 드롭 없이 순차 처리된다.
   let flushChain = Promise.resolve();
@@ -202,7 +205,7 @@ async function updatePrices() {
         // stock_code 화이트리스트 검증 (raw SQL 보간이므로 방어)
         .filter(r => /^[A-Za-z0-9]{5,6}$/.test(r.code) && Number.isFinite(r.price))
         .map(r =>
-          `('${r.code}', ${num(r.price)}, ${num(r.cap)}` +
+          `('${r.code}', ${num(r.price)}, ${num(r.cap)}, ${num(r.turn)}` +
           (r.high != null ? `, ${num(r.high)}, ${num(r.low)}, TRUE` : `, NULL, NULL, FALSE`) +
           `)`
         ).join(',\n');
@@ -211,13 +214,14 @@ async function updatePrices() {
         UPDATE stock_analysis AS sa
         SET current_price     = v.current_price,
             market_cap_tril   = COALESCE(v.market_cap_tril::numeric, sa.market_cap_tril),
+            avg_turnover_20d  = COALESCE(v.avg_turnover_20d::numeric, sa.avg_turnover_20d),
             high_52w          = COALESCE(v.high_52w, sa.high_52w),
             low_52w           = COALESCE(v.low_52w, sa.low_52w),
             week52_updated_at = CASE WHEN v.refreshed THEN NOW() ELSE sa.week52_updated_at END,
             updated_at        = NOW()
         FROM (
           VALUES ${vals}
-        ) AS v(stock_code, current_price, market_cap_tril, high_52w, low_52w, refreshed)
+        ) AS v(stock_code, current_price, market_cap_tril, avg_turnover_20d, high_52w, low_52w, refreshed)
         WHERE sa.stock_code = v.stock_code
       `);
     });
@@ -256,20 +260,27 @@ async function updatePrices() {
       const p = prices.get(code);
       const stale = p?.timestamp && Date.now() - Date.parse(p.timestamp) > STALE_MS;
       if (!p || !(p.price > 0) || stale) { skipped++; return onProgress(); }
-      let high = null, low = null;
+      let high = null, low = null, turn = null;
       if (refresh52w) {
         // 일봉 252개(수정주가) 고저가 기준 — 분할·증자 후 가짜 52주 고점 방지
         const candles = await getDailyCandles(code, 252).catch(() => []);
         const highs = candles.map(c => c.high).filter(v => Number.isFinite(v) && v > 0);
         const lows  = candles.map(c => c.low).filter(v => Number.isFinite(v) && v > 0);
         if (highs.length && lows.length) { high = Math.max(...highs); low = Math.min(...lows); }
+        // 20일 평균 거래대금(close×volume) — 유동성 하드 필터용 (candles는 최신순)
+        // ⚠ turnover는 이 refresh52w 블록에서만 갱신된다. --skip-price(ranking) 모드로만
+        //   계속 돌리면 turnover가 stale → 필터가 조용히 무력화. 일 1회 full 갱신 필요.
+        const d20 = candles.slice(0, 20)
+          .filter(c => Number.isFinite(c.close) && Number.isFinite(c.volume) && c.close > 0 && c.volume >= 0);
+        // 표본 10봉 미만(신규상장·장기정지)은 신뢰도 낮아 NULL 유지 → 필터 통과(오배제 방지)
+        if (d20.length >= 10) turn = Math.round(d20.reduce((s, c) => s + c.close * c.volume, 0) / d20.length);
       }
       const shares = infos.get(code)?.sharesOutstanding;
       // 발행주식수 결측 시 NULL → SQL COALESCE로 기존 시총 보존 (0 덮어쓰기 방지)
       const cap = Number.isFinite(shares) && shares > 0
         ? parseFloat(((shares * p.price) / 1e12).toFixed(4))
         : null;
-      buffer.push({ code, price: p.price, cap, high, low });
+      buffer.push({ code, price: p.price, cap, high, low, turn });
       updated++;
       return onProgress();
     });
@@ -283,6 +294,9 @@ async function updatePrices() {
           price: q.price,
           // 시총 미확인(0)이면 NULL → COALESCE로 기존 값 보존
           cap: Number.isFinite(cap) && cap > 0 ? cap : null,
+          // 공공데이터 폴백엔 일봉이 없어 turnover 미갱신(COALESCE로 기존값 보존).
+          // 이 경로로만 계속 돌면(예: GHA 토스 403 폴백) 유동성 필터가 stale해짐.
+          turn: null,
           high: q.high_52w ?? null,
           low:  q.low_52w  ?? null,
         });
@@ -468,6 +482,9 @@ export function buildRankingsRefreshSql() {
         AND sf.op_margin > 2
         -- 하드 필터: 시총 1,000억 미만 제거 (500억→1,000억 보수적 강화)
         AND sa.market_cap_tril >= 0.1
+        -- 하드 필터: 20일 평균 거래대금 30억 미만 제거 (저유동성 가치주 배제)
+        --   NULL(미집계)은 통과 — full 가격 업데이트 1회 후 실효. MIN_AVG_TURNOVER=${MIN_AVG_TURNOVER}
+        AND (sa.avg_turnover_20d IS NULL OR sa.avg_turnover_20d >= ${MIN_AVG_TURNOVER})
         -- (v6) 52주 위치 70% 초과 제외 필터 삭제 — 안티모멘텀으로 백테스트 증거(모멘텀 IC 양수)와 모순
         -- 가치함정 Hard Filter: 영업현금흐름 음수 + PBR 극저 조합 제외
         AND NOT (sf.cf_ops < 0 AND sf.pbr < 0.5)
@@ -514,6 +531,11 @@ export function buildRankingsRefreshSql() {
 async function computeAndSaveRankings() {
   console.log(`[랭킹 계산] 시작`);
   patchStatus({ progress: 60, current: '랭킹 계산 중...' });
+  // 유동성 필터 커버리지 — turnover 미집계(NULL)면 그만큼 필터가 무음. 초기/폴백 상태 감지용.
+  try {
+    const cov = await dbQuery(`SELECT COUNT(*) FILTER (WHERE avg_turnover_20d IS NOT NULL) AS nn, COUNT(*) AS tot FROM stock_analysis`);
+    console.log(`[유동성 필터 커버리지] turnover 집계 ${cov[0]?.nn}/${cov[0]?.tot} 종목 (NULL은 필터 통과, MIN=${MIN_AVG_TURNOVER})`);
+  } catch {}
   const r = await dbQuery(buildRankingsRefreshSql());
 
   if (!Array.isArray(r)) { console.error("랭킹 오류:", r); return []; }

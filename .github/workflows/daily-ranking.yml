@@ -93,8 +93,7 @@ jobs:
         run: |
           echo "=== 랭킹 재계산 시작 ($(TZ='Asia/Seoul' date)) ==="
           node daily-ranking.js --skip-price${{ github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_52w == 'true' && ' --refresh-52w' || '' }}
-          echo "=== 페이퍼 트레이딩 morning 페이즈 ==="
-          node paper-swing.js || echo "(paper morning 실패 — 비치명)"
+          echo "=== paper-swing morning: 로컬 PC 작업 스케줄러로 이관 — GHA 스킵(토스 IP 403) ==="
 
       - name: Run backfill (backfill mode)
         if: steps.mode.outputs.mode == 'backfill'
@@ -124,8 +123,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          echo "=== 페이퍼 트레이딩 close 페이즈 ($(TZ='Asia/Seoul' date)) ==="
-          node paper-swing.js
+          echo "=== paper-swing close: 로컬 PC 작업 스케줄러로 이관 — GHA 스킵(토스 IP 403) ==="
 
       - name: Save daily prices to stock_prices
         if: steps.mode.outputs.mode == 'full' || steps.mode.outputs.mode == 'ranking'

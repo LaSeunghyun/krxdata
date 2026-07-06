@@ -16,6 +16,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import dotenv from 'dotenv';
 import { pickBuyCandidates, allocateSlots } from './slot-alloc.js';
+import { MIN_AVG_TURNOVER } from './config.js';
 import {
   isTossConfigured, getDailyCandles, getKrMarketCalendar,
   getAccounts, getHoldings, getBuyingPower, getPricesMap, createOrder, getOrder, cancelOrder,
@@ -188,6 +189,7 @@ async function momUniverse() {
     ) t
     JOIN stock_analysis sa ON sa.stock_code = t.stock_code
     WHERE rn IN (1, 61) AND sa.market_cap_tril >= 0.1 AND sa.current_price >= ${MIN_PRICE}
+      AND (sa.avg_turnover_20d IS NULL OR sa.avg_turnover_20d >= ${MIN_AVG_TURNOVER})
     GROUP BY t.stock_code, sa.corp_name, sa.sector
     HAVING (MAX(CASE WHEN rn = 1 THEN close END)::NUMERIC
             / NULLIF(MAX(CASE WHEN rn = 61 THEN close END), 0) - 1) * 100 > 0
@@ -363,7 +365,7 @@ async function morningPhase(books) {
   // 마켓 브리핑 (당일 진입 판단용 — close 페이즈가 읽음)
   try {
     const universe = await momUniverse();
-    const largeCaps = await dbQuery(`SELECT stock_code, corp_name FROM stock_analysis WHERE current_price >= ${MIN_PRICE} ORDER BY market_cap_tril DESC LIMIT 30`);
+    const largeCaps = await dbQuery(`SELECT stock_code, corp_name FROM stock_analysis WHERE current_price >= ${MIN_PRICE} AND (avg_turnover_20d IS NULL OR avg_turnover_20d >= ${MIN_AVG_TURNOVER}) ORDER BY market_cap_tril DESC LIMIT 30`);
     await buildMarketBrief(books, universe, largeCaps);
   } catch (e) { log(`브리핑 생성 실패 (비치명): ${e.message}`); }
 
@@ -691,6 +693,7 @@ async function evaluateLiveHoldings(regime, uApplied, badCodes, largeCaps = []) 
         SELECT stock_code, corp_name FROM stock_analysis
         WHERE current_price >= ${MIN_PRICE} AND current_price <= ${priceCeiling}
           AND market_cap_tril >= 0.3
+          AND (avg_turnover_20d IS NULL OR avg_turnover_20d >= ${MIN_AVG_TURNOVER})
         ORDER BY market_cap_tril DESC LIMIT 40
       `).catch(() => []);
       log(`LIVE rsi2 유니버스: 시총≥3000억 & 가격≤${priceCeiling.toLocaleString()}원 ${rsiUniverse.length}종목`);
@@ -741,7 +744,7 @@ async function marketRegime() {
 
 async function closePhase(books) {
   const universe = await momUniverse();
-  const largeCaps = await dbQuery(`SELECT stock_code, corp_name FROM stock_analysis WHERE current_price >= ${MIN_PRICE} ORDER BY market_cap_tril DESC LIMIT 30`);
+  const largeCaps = await dbQuery(`SELECT stock_code, corp_name FROM stock_analysis WHERE current_price >= ${MIN_PRICE} AND (avg_turnover_20d IS NULL OR avg_turnover_20d >= ${MIN_AVG_TURNOVER}) ORDER BY market_cap_tril DESC LIMIT 30`);
   const today = kstDate();
   const regime = await marketRegime();
   log(`시장 레짐: ${regime} (combo 슬롯 — hi120 ${COMBO_CAPS[regime].hi120} / rsi2 ${COMBO_CAPS[regime].rsi2})`);
