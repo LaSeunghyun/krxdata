@@ -82,20 +82,26 @@ async function tossGet(apiPath, params = {}, extraHeaders = {}) {
   }
 }
 
-// 주문/취소는 멱등하지 않아 자동 재시도 금지 — 실패는 즉시 throw하고 호출부가 판단
+// 주문/취소는 멱등하지 않아 429/5xx 자동 재시도 금지 — 실패는 즉시 throw하고 호출부가 판단.
+// 예외: 401은 주문이 생성되기 전의 인증 거절이라 재시도해도 중복 주문이 없다. 동시 실행된
+// 다른 인스턴스가 새 토큰을 발급하면 기존 토큰이 무효화되는 경합(2026-07-07 halt 사고)에서
+// 주문 경로만 즉사하던 문제를 토큰 재발급 1회 재시도로 방어한다.
 async function tossPost(apiPath, body = {}, extraHeaders = {}) {
-  await rateSlot();
-  const res = await fetchT(`${TOSS_BASE}${apiPath}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${await getToken()}`,
-      "Content-Type": "application/json",
-      ...extraHeaders,
-    },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`토스 API ${apiPath}: ${res.status} ${await res.text()}`);
-  return (await res.json())?.result;
+  for (let auth401 = 0; ; auth401++) {
+    await rateSlot();
+    const res = await fetchT(`${TOSS_BASE}${apiPath}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${await getToken()}`,
+        "Content-Type": "application/json",
+        ...extraHeaders,
+      },
+      body: JSON.stringify(body),
+    });
+    if (res.ok) return (await res.json())?.result;
+    if (res.status === 401 && auth401 < 1) { token = null; await sleep(300); continue; }
+    throw new Error(`토스 API ${apiPath}: ${res.status} ${await res.text()}`);
+  }
 }
 
 function accountHeader(accountSeq) {

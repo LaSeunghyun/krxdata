@@ -435,6 +435,25 @@ async function saveStateKey(k, data) {
                  ON CONFLICT (k) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`);
 }
 
+// 이중 실행 방지 락 — 같은 phase는 하루 1회만 (원자적 INSERT..ON CONFLICT..RETURNING).
+// 스케줄 중복(다른 머신·태스크 중복 등록)으로 paper-swing 2개가 동시에 돌면 토스 토큰이
+// 상호 무효화되어 주문 경로만 401 invalid-token으로 죽는다(2026-07-07 halt 사고).
+// 30분 넘게 잡혀있는 락은 크래시 잔재로 보고 인수한다(당일 catch-up 재실행 허용).
+async function acquireRunLock(phase) {
+  const key = `run_lock:${phase}:${kstDate()}`;
+  const me = JSON.stringify({
+    host: process.env.COMPUTERNAME || process.env.HOSTNAME || 'unknown',
+    pid: process.pid,
+    at: kst().toISOString(),
+  });
+  const rows = await dbQuery(
+    `INSERT INTO paper_state (k, data, updated_at) VALUES ('${key}', '${me}'::jsonb, NOW())
+     ON CONFLICT (k) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()
+     WHERE paper_state.updated_at < NOW() - INTERVAL '30 minutes'
+     RETURNING k`);
+  return Array.isArray(rows) && rows.length > 0;
+}
+
 async function waitLiveFill(seq, orderId, timeoutMs = 90_000) {
   const t0 = Date.now();
   while (Date.now() - t0 < timeoutMs) {
@@ -878,7 +897,8 @@ async function closePhase(books) {
     await notifyTelegram(
       `📊 [장 마감 보고 ${kstDate()}] 레짐 ${regime}\n` +
       `페이퍼: ${eqLines.join(' | ')}\n` + liveLine +
-      (queueNow.length ? `내일 시가 실주문 예약: ${queueNow.map(q => `${q.side === 'BUY' ? '매수' : '매도'} ${q.name ?? q.code} ${q.qty}주 (${q.reason})`).join(' / ')}` : '내일 실주문 예약 없음'));
+      // BUY 예약은 qty 미정(아침 allocateSlots가 잔고 기준 배분) — qty 있는 항목만 'N주' 표기
+      (queueNow.length ? `내일 시가 실주문 예약: ${queueNow.map(q => `${q.side === 'BUY' ? '매수' : '매도'} ${q.name ?? q.code}${q.qty != null ? ` ${q.qty}주` : ''} (${q.reason})`).join(' / ')}\n(매수 수량은 내일 아침 잔고 기준 슬롯 배분으로 결정)` : '내일 실주문 예약 없음'));
   } catch (e) { log(`마감 보고 실패 (비치명): ${e.message}`); }
 
   // 자산 곡선 기록
@@ -914,20 +934,25 @@ async function main() {
   } catch { /* 캘린더 실패는 비치명 */ }
 
   await ensureTables();
-  const books = await loadBooks();
   const hm = kstHM();
   let phase = null;
-  if (hm >= '09:00' && hm < '11:30') {
-    phase = 'morning';
-    log('=== morning 페이즈 (일지·브리핑·시가 집행) ===');
-    await morningPhase(books);
-  } else if (hm >= '15:30') {
-    phase = 'close';
-    log('=== close 페이즈 (종가 시그널) ===');
-    await closePhase(books);
-  } else {
+  if (hm >= '09:00' && hm < '11:30') phase = 'morning';
+  else if (hm >= '15:30') phase = 'close';
+  else {
     log(`장중(${hm}) — 페이즈 아님, 종료`);
     return;
+  }
+  if (!(await acquireRunLock(phase))) {
+    log(`${phase} 페이즈 run_lock 선점됨 — 다른 인스턴스가 오늘 이미 실행 중/완료. 중복 실행 종료`);
+    return;
+  }
+  const books = await loadBooks();
+  if (phase === 'morning') {
+    log('=== morning 페이즈 (일지·브리핑·시가 집행) ===');
+    await morningPhase(books);
+  } else {
+    log('=== close 페이즈 (종가 시그널) ===');
+    await closePhase(books);
   }
   await flushTrades();
   await saveBooks(books);
