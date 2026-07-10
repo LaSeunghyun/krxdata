@@ -414,7 +414,9 @@ export function buildRankingsRefreshSql() {
             WHEN sf.op_margin >= 3  THEN 2
             ELSE 0
           END
-          -- [이익 추세 15pt] 52주 모멘텀 대체 — 이익YoY 방향성
+          -- [이익성장 15pt] op_income_yoy 방향성.
+          -- 2026-07-10: 구 "이익추세 15"+"이익YoY 15"가 동일 변수를 30점 이중가중하던 결함을
+          --             단일 15점으로 통합(이익 급증주 과편향 제거). NULL→5(중립).
           + CASE
             WHEN sf.op_income_yoy IS NULL THEN 5
             WHEN sf.op_income_yoy >= 100 THEN 15
@@ -422,16 +424,6 @@ export function buildRankingsRefreshSql() {
             WHEN sf.op_income_yoy >= 20  THEN 10
             WHEN sf.op_income_yoy >= 0   THEN 7
             WHEN sf.op_income_yoy >= -10 THEN 3
-            ELSE 0
-          END
-          -- [이익YoY 15pt]
-          + CASE
-            WHEN sf.op_income_yoy IS NULL THEN 0
-            WHEN sf.op_income_yoy >= 200 THEN 15
-            WHEN sf.op_income_yoy >= 100 THEN 12
-            WHEN sf.op_income_yoy >= 50  THEN 9
-            WHEN sf.op_income_yoy >= 20  THEN 6
-            WHEN sf.op_income_yoy >= 0   THEN 3
             ELSE 0
           END
           -- [이익 안정성 5pt] 신규 — cf_ops > 0 + 순이익 > 0
