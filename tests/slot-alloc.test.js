@@ -52,12 +52,9 @@ test('allocateSlots: atrMult가 슬롯예산에 곱해짐 (backtest 정합)', ()
   assert.equal(out[0].qty, 1);
 });
 
-test('allocateSlots: 고변동성장 공백 방지 — ATR축소로 0주여도 풀예산이 1주 감당하면 1주 (2026-06-19)', () => {
-  // slotBudget=23000, atrMult=0.5 → atrBudget 11500 → 20k주 0주.
-  // 풀예산 23000은 1주(20200) 감당 → 1주 진입 보장.
+test('allocateSlots: ATR 축소로 0주가 되면 강제 1주 보정 없이 스킵', () => {
   const out = allocateSlots([cand('A', 20000, 0.5)], 0, 2, 46000, 46000);
-  assert.equal(out.length, 1);
-  assert.equal(out[0].qty, 1);
+  assert.deepEqual(out, []);
 });
 
 test('allocateSlots: 풀예산으로도 1주 불가하면 여전히 스킵 (과보정 방지)', () => {

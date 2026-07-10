@@ -21,6 +21,8 @@ import { createInterface } from 'readline';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { getDailyCandles } from './toss-api.js';
+import { calcBuyCashImpact, calcSellCashImpact, calcRoundTripPnl, getSellTaxBps } from './execution-model.mjs';
+import { LIVE_COMBO_CAPS } from './strategy-contract.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: join(__dirname, '.env') });
@@ -36,10 +38,10 @@ const CACHE_FILE = join(__dirname, 'candles-daily.jsonl');
 
 // C31 (--stress 1): 슬리피지 ±2틱 + 수수료 2배 비관 시나리오
 const STRESS = Number(argOf('--stress', 0));
-const FEE_BPS = STRESS ? 3 : 1.5, TAX_BPS = 15;
+const FEE_BPS = STRESS ? 3 : 1.5;
 const SLIP_TICKS = STRESS ? 2 : 1;
 const MIN_PRICE = 2_000;
-const MIN_TURNOVER = 5e8; // 20일 평균 거래대금 5억 미만 제외 (유동성)
+const MIN_TURNOVER = 30 * 1e8; // 20일 평균 거래대금 30억 미만 제외 (유동성)
 
 const STRATEGIES = {
   'swing-mom':  { slots: 10 },                                        // ret60 top10 주간 리밸 + 스톱-25%/+100% 절반
@@ -83,9 +85,7 @@ const tickUp = (p) => Math.round(p / tickSize(p)) * tickSize(p) + tickSize(p) * 
 const tickDn = (p) => Math.round(p / tickSize(p)) * tickSize(p) - tickSize(p) * SLIP_TICKS;
 const fmtDay = (d) => `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
 function netPnl(entry, exit, qty) {
-  const gross = (exit - entry) * qty;
-  const fees = (entry + exit) * qty * (FEE_BPS / 10_000) + exit * qty * (TAX_BPS / 10_000);
-  return Math.round(gross - fees);
+  return calcRoundTripPnl({ entry, exit, qty, feeBps: FEE_BPS, taxBps: getSellTaxBps('KOSPI') });
 }
 
 async function dbQuery(sql) {
@@ -205,7 +205,10 @@ function mcapUniverse(day, top = MCAP_TOP) {
     const sh = sharesEst.get(code);
     if (!sh) continue;
     const i = lastIndexBefore(cd, day);
-    if (i < 3 || cd.c[i] < MIN_PRICE) continue;
+    if (i < 20 || cd.c[i] < MIN_PRICE) continue;
+    let turnover = 0;
+    for (let j = i - 19; j <= i; j++) turnover += cd.c[j] * cd.v[j];
+    if (turnover / 20 < MIN_TURNOVER) continue;
     scored.push({ code, mcap: sh * cd.c[i] });
   }
   scored.sort((a, b) => b.mcap - a.mcap);
@@ -313,8 +316,8 @@ function marketRegime(day) {
   if (REGIME_HEDGE && base !== 'UP' && hedgeBreadthFrac(day) >= HEDGE_UP) return 'UP';
   return base;
 }
-const COMBO_CAPS = { UP: { hi120: 6, rsi2: 4 }, NEUTRAL: { hi120: 3, rsi2: 5 }, DOWN: { hi120: 0, rsi2: 4 } };
-const COMBO_CAPS_V2 = { UP: { hi120: 6, rsi2: 4 }, NEUTRAL: { hi120: 2, rsi2: 6 }, DOWN: { hi120: 0, rsi2: 4 } };
+const COMBO_CAPS = LIVE_COMBO_CAPS;
+const COMBO_CAPS_V2 = LIVE_COMBO_CAPS;
 // 슬롯 배분 프리셋 (--caps A|B|C): A=현행, B=추세 공격형, C=역추세 수비형
 const CAPS_PRESETS = {
   A: COMBO_CAPS_V2,
@@ -345,9 +348,10 @@ function equity(book, day) {
 }
 function buy(book, day, code, price, budget, meta = {}) {
   const fill = tickUp(price);
-  const qty = Math.floor(Math.min(budget, book.cash) / fill);
+  const unitCost = fill * (1 + FEE_BPS / 10_000);
+  const qty = Math.floor(Math.min(budget, book.cash) / unitCost);
   if (qty < 1) return false;
-  book.cash -= fill * qty;
+  book.cash -= calcBuyCashImpact({ fill, qty, feeBps: FEE_BPS });
   book.positions[code] = { qty, entry: fill, entryDay: day, hi: fill, holdDays: 0, ...meta };
   return true;
 }
@@ -359,7 +363,7 @@ function sell(book, day, code, price, reason, qtyArg) {
   const qty = qtyArg ?? p.qty;
   const fill = tickDn(price);
   const pnl = netPnl(p.entry, fill, qty);
-  book.cash += fill * qty;
+  book.cash += calcSellCashImpact({ fill, qty, feeBps: FEE_BPS, taxBps: getSellTaxBps('KOSPI') });
   book.trades.push({ day: fmtDay(day), code, entry: p.entry, exit: fill, qty, pnl, hold: p.holdDays, reason, ctx: p.ctx });
   if (reason === 'stop_loss' && COOLDOWN > 0) (book.cool ??= {})[code] = CUR_DI + COOLDOWN;
   p.qty -= qty;
@@ -390,13 +394,13 @@ function rsi2(cd, i) {
 // ── 메인 ─────────────────────────────────────────────────────
 console.log(`=== 스윙 전략 비교 v2 ${fmtDay(FROM)} ~ ${fmtDay(TO)} | 자본 ${CAPITAL.toLocaleString()}원 | ${ACTIVE.map(([k]) => k).join(', ')} ===`);
 
-const allRows = await dbQuery(`SELECT stock_code, current_price, market_cap_tril FROM stock_analysis WHERE current_price > 0`);
+const allRows = await dbQuery(`SELECT stock_code, current_price, market_cap_tril, avg_turnover_20d FROM stock_analysis WHERE current_price > 0`);
 const allCodes = allRows.map(r => r.stock_code);
 for (const r of allRows) {
   const sh = (Number(r.market_cap_tril) * 1e12) / Number(r.current_price);
   if (Number.isFinite(sh) && sh > 0) sharesEst.set(r.stock_code, sh);
 }
-const largeCaps = (await dbQuery(`SELECT stock_code FROM stock_analysis WHERE current_price >= ${MIN_PRICE} ORDER BY market_cap_tril DESC LIMIT 30`)).map(r => r.stock_code);
+const largeCaps = (await dbQuery(`SELECT stock_code FROM stock_analysis WHERE current_price >= ${MIN_PRICE} AND avg_turnover_20d >= ${MIN_TURNOVER} ORDER BY market_cap_tril DESC LIMIT 30`)).map(r => r.stock_code);
 await loadPool(allCodes);
 
 // MC (--seed N --subsample 0.8): 시드 기반 유니버스 무작위 표본 — 몬테카를로 강건성 검증용
@@ -615,7 +619,7 @@ for (let di = 0; di < tradingDays.length; di++) {
             const fill = tickUp(cd.c[i]);
             const q = Math.floor(Math.min(Math.floor(budget() * 0.5), book.cash) / fill);
             if (q >= 1) {
-              book.cash -= fill * q;
+              book.cash -= calcBuyCashImpact({ fill, qty: q, feeBps: FEE_BPS });
               p.entry = (p.entry * p.qty + fill * q) / (p.qty + q);
               p.qty += q; p.pyrDone = true;
             }
@@ -661,17 +665,8 @@ for (let di = 0; di < tradingDays.length; di++) {
           else buy(book, day, code, cd.c[i], Math.floor(budget() * am), { sub: 'hi120', ctx: ctxE, breakLv: prevHigh });
         }
       }
-      // rsi2 서브 진입 (PIT 시총 상위 과매도)
-      // I1 (--rsiafford N): 소액 계좌용 — 시총 상위 N 풀에서 슬롯예산으로 1주 이상 매수 가능한
-      // 종목만 남겨 상위 30개 선택. 소액일 때 rsi2 기아(대형주 1주 가격 > 슬롯예산) 해소
-      let rsiPool = mcapUniverse(day, cfg.rsiAfford > 0 ? cfg.rsiAfford : undefined);
-      if (cfg.rsiAfford > 0) {
-        const bud = budget();
-        rsiPool = rsiPool.filter(c => {
-          const cd = candles.get(c); const i = cd ? indexOfDate(cd, day) : null;
-          return i != null && tickUp(cd.c[i]) <= bud;
-        }).slice(0, 30);
-      }
+      // rsi2 서브 진입 (PIT 시총 상위 + 20일 평균 거래대금 30억 이상)
+      const rsiPool = mcapUniverse(day, MCAP_TOP);
       for (const code of rsiPool) {
         if (countSub('rsi2') >= caps.rsi2 || book.positions[code]) continue;
         const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
