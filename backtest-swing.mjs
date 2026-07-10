@@ -23,6 +23,7 @@ import { dirname, join } from 'path';
 import { getDailyCandles } from './toss-api.js';
 import { calcBuyCashImpact, calcSellCashImpact, calcRoundTripPnl, getSellTaxBps } from './execution-model.mjs';
 import { LIVE_COMBO_CAPS } from './strategy-contract.mjs';
+import { volatilityThrottleMultiplier } from './volatility-throttle.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: join(__dirname, '.env') });
@@ -39,9 +40,13 @@ const CACHE_FILE = join(__dirname, 'candles-daily.jsonl');
 // C31 (--stress 1): 슬리피지 ±2틱 + 수수료 2배 비관 시나리오
 const STRESS = Number(argOf('--stress', 0));
 const FEE_BPS = STRESS ? 3 : 1.5;
+const TAX_BPS = getSellTaxBps('KOSPI');
 const SLIP_TICKS = STRESS ? 2 : 1;
 const MIN_PRICE = 2_000;
 const MIN_TURNOVER = 30 * 1e8; // 20일 평균 거래대금 30억 미만 제외 (유동성)
+const VOL_SHADOW = Number(argOf('--volshadow', 0));
+const VOL_WINDOW = Number(argOf('--volwindow', 20));
+const VOL_REF_LOOKBACK = Number(argOf('--volref', 252));
 
 const STRATEGIES = {
   'swing-mom':  { slots: 10 },                                        // ret60 top10 주간 리밸 + 스톱-25%/+100% 절반
@@ -437,7 +442,9 @@ for (const r of rankRows) {
 }
 
 const books = Object.fromEntries(ACTIVE.map(([k]) => [k, makeBook()]));
+const shadowStats = Object.fromEntries(ACTIVE.map(([k]) => [k, { count: 0, sum: 0, min: 1 }]));
 let weekMark = '';
+const marketCloses = candles.get('005930')?.c ?? [];
 
 for (let di = 0; di < tradingDays.length; di++) {
   const day = tradingDays[di];
@@ -448,13 +455,21 @@ for (let di = 0; di < tradingDays.length; di++) {
 
   for (const [k, cfg] of ACTIVE) {
     const book = books[k];
+    const volMult = VOL_SHADOW && (k === 'combo' || k === 'combo-v2')
+      ? volatilityThrottleMultiplier(marketCloses, Math.min(di, marketCloses.length - 1), { volWindow: VOL_WINDOW, refLookback: VOL_REF_LOOKBACK })
+      : 1;
     // MC3 I11 (--dynslot N): 자본 성장 시 슬롯 자동 확대 — 포지션당 예산을 N원 목표로,
     // slots ~ clamp(floor(equity/N), cfg.slots, 6). 소액일 땐 기존과 동일, 계좌 성장 시 집중 위험 축소
     const budget = () => {
       const eq = equity(book, day);
       const sl = DYNSLOT > 0 ? Math.max(cfg.slots, Math.min(6, Math.floor(eq / DYNSLOT))) : cfg.slots;
-      return Math.floor(eq / sl);
+      return Math.floor(eq / sl * volMult);
     };
+    if (VOL_SHADOW && (k === 'combo' || k === 'combo-v2')) {
+      shadowStats[k].count++;
+      shadowStats[k].sum += volMult;
+      shadowStats[k].min = Math.min(shadowStats[k].min, volMult);
+    }
 
     // ① 시가 집행 큐 + 보유일
     for (const [code, p] of Object.entries(book.positions)) {
@@ -764,6 +779,17 @@ for (const [k] of ACTIVE) {
     return `${y}: ${ret >= 0 ? '+' : ''}${ret.toFixed(1)}%`;
   });
   console.log(`  ${k.padEnd(12)} ${byYear.join('  ')}`);
+}
+
+if (VOL_SHADOW) {
+  console.log('\n볼라틸리티 스로틀 shadow:');
+  for (const k of ['combo', 'combo-v2']) {
+    if (!shadowStats[k]?.count) continue;
+    console.log(
+      `  ${k.padEnd(12)} avgMult=${(shadowStats[k].sum / shadowStats[k].count).toFixed(3)} ` +
+      `minMult=${shadowStats[k].min.toFixed(3)} days=${shadowStats[k].count}`
+    );
+  }
 }
 // ── combo 조건별 분석: 해야할 것 / 하지말아야할 것 ─────────────
 for (const comboKey of ['combo', 'combo-v2']) {

@@ -21,6 +21,7 @@ import { calcBuyCashImpact, calcSellCashImpact, calcRoundTripPnl, getSellTaxBps 
 import { LIVE_COMBO_CAPS, LIVE_MAX_ORDER_VALUE, LIVE_MAX_ORDERS_PER_DAY, LIVE_SLOTS, LIVE_RSI2_UNIVERSE_LIMIT } from './strategy-contract.mjs';
 import { toUtcIso, toKstDateKey, toKstTimeLabel, kstDayRange } from './trading-time.mjs';
 import { createOrderKey, createDbOrderStateStore } from './live-order-state.mjs';
+import { volatilityThrottleMultiplier } from './volatility-throttle.mjs';
 import {
   isTossConfigured, getDailyCandles, getKrMarketCalendar,
   getAccounts, getHoldings, getBuyingPower, getPricesMap, createOrder, getOrder, cancelOrder,
@@ -32,6 +33,9 @@ dotenv.config({ path: join(__dirname, '.env') });
 const CAPITAL = 10_000_000;
 const FEE_BPS = 1.5;
 const MIN_PRICE = 2_000;
+const VOL_SHADOW = Number(process.env.VOL_SHADOW ?? 0);
+const VOL_WINDOW = Number(process.env.VOL_WINDOW ?? 20);
+const VOL_REF_LOOKBACK = Number(process.env.VOL_REF_LOOKBACK ?? 252);
 
 // 백테스트(2023~2026) 검증 결과 반영: swing-mom·overnight 탈락, combo(v2) 추가
 const STRATEGIES = {
@@ -781,8 +785,8 @@ async function evaluateLiveHoldings(regime, uApplied, badCodes, largeCaps = []) 
       for (const c of candidates) {
         const reason = c.sub === 'hi120' ? `combo hi120 돌파 +${c.breakoutPct.toFixed(1)}%` : `combo rsi2 과매도 (RSI2 ${Math.round(c.rsi)})`;
         const ctx = c.sub === 'hi120'
-          ? { sub: 'hi120', regime, breakoutPct: c.breakoutPct.toFixed(1), atrMult: c.atrMult.toFixed(2) }
-          : { sub: 'rsi2', regime, rsi: Math.round(c.rsi).toString(), atrMult: c.atrMult.toFixed(2) };
+          ? { sub: 'hi120', regime, breakoutPct: c.breakoutPct.toFixed(1), atrMult: c.atrMult.toFixed(2), shadowVolMult: shadowVolMult.toFixed(3) }
+          : { sub: 'rsi2', regime, rsi: Math.round(c.rsi).toString(), atrMult: c.atrMult.toFixed(2), shadowVolMult: shadowVolMult.toFixed(3) };
         queue.push({ side: 'BUY', code: c.code, name: c.name, close: c.close, atrMult: c.atrMult, reason, ctx, signalDate: kstDate(), attempt: 0 });
         log(`LIVE 매수 후보 적재: ${c.name} (${reason}, ATR×${c.atrMult.toFixed(2)})`);
       }
@@ -816,6 +820,12 @@ async function closePhase(books) {
   const today = kstDate();
   const regime = await marketRegime();
   log(`시장 레짐: ${regime} (combo 슬롯 — hi120 ${COMBO_CAPS[regime].hi120} / rsi2 ${COMBO_CAPS[regime].rsi2})`);
+  const marketBars = await bars('005930', 70);
+  const marketCloses = marketBars.map(b => b.close);
+  const shadowVolMult = VOL_SHADOW && marketCloses.length
+    ? volatilityThrottleMultiplier(marketCloses, marketCloses.length - 1, { volWindow: VOL_WINDOW, refLookback: VOL_REF_LOOKBACK })
+    : 1;
+  if (VOL_SHADOW) log(`볼라틸리티 shadow multiplier=${shadowVolMult.toFixed(3)} (window=${VOL_WINDOW}, ref=${VOL_REF_LOOKBACK})`);
 
   // 마켓 브리핑 적용 (morning에 생성된 것 로드, 없으면 즉석 생성)
   const brief = (await loadTodayBrief()) ?? (await buildMarketBrief(books, universe, largeCaps).catch(() => null));
