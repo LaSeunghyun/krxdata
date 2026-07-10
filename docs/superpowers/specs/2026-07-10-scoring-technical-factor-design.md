@@ -1,82 +1,62 @@
-# 단기 기술 팩터 복원 설계 (scoring v2 기술지표 블렌드)
+# daily_rankings v6 정비 설계 (스코어링 일관성 교정)
 
 - 날짜: 2026-07-10
 - 대상 repo: `C:\claudeT\files` (krxdata)
-- 상태: 설계 확정 대기 (사용자 리뷰 전)
+- 상태: 설계 재작성 (v1 "토스 tech 팩터" 폐기 → v6 정비로 전환)
 
 ## Context (왜 하는가)
 
-KRXDATA 스코어링은 `total_score`가 **밸류에이션(30)+재무건전성(25)+수익성(25)+지배구조(12)+다년도성장(18) = 장기 110점**에 편중돼 있고, 단기는 **공시이벤트(15점) 하나뿐**이다. 현 스코어러 `score-kospi-full.js:168`은 주석 그대로 *"단기 기술지표(모멘텀/거래량/변동성)는 주가 이력을 수집하지 않아 산출하지 않는다"* 로 기술 신호를 아예 뺐다. (과거 배점에 있던 변동성20/거래량수급25/기술모멘텀30 = 75점은 "이력미수집 0점"으로 죽어 있다가 v2에서 항목째 제거됨.)
+종목 추천이 나쁘다는 문제를 파고든 결과, **스코어링 표현이 3종으로 갈라져 서로 불일치**함이 드러났다:
 
-결과: **추세가 죽고 거래량이 실종된 저유동 밸류주(태광산업·하이록코리아·미원에스씨 등)가 밸류 점수만으로 랭킹 상위에 오르는 편향.** 2026-07-06 거래대금 30억 하드필터로 극단 케이스는 걸렀으나, "싸지만 안 움직이는" 트랩이 여전히 상위권에 낀다.
+1. **`stock_analysis.total_score`** (`score-kospi-full.js`) — 밸류·재무 편중, 단기는 공시 15점뿐. 직접 `ORDER BY total_score`로 조회하면 **저유동 밸류트랩(태광·하이록·미원)이 상위**. (추천 실수의 실제 원인 = 이 테이블을 조회함.)
+2. **`daily_rankings.undervalue_score`** (`daily-ranking.js buildRankingsRefreshSql`, = `get_rankings`/앱이 보여주는 것) — 하드코딩 SQL. **품질+이익모멘텀+가격모멘텀 편중**이라 "저평가 점수" 1위가 SK하이닉스(PBR 12.9)·제주반도체(PER 78)·알테오젠(PER 130). 이름과 실제가 불일치.
+3. **백테스트 모델** (`backtest-pit.mjs` → `config.js FACTOR_WEIGHTS` + `normalize.js` 섹터중립 z-score, "scoring v2 pure-core") — PIT 검증되지만 위 둘과 다른 코드경로. **v6 SQL을 검증하지 않음.**
 
-한편 `daily-ranking.js`는 **이미 매일 `getDailyCandles(code, 252)`로 일봉을 받아**(refresh52w 경로, `daily-ranking.js:266`) 52주 고저·거래대금을 계산 중이다. 즉 추세·거래량 데이터는 파이프라인에 이미 있고 스코어링에 안 물렸을 뿐이다. 기술 계산 로직도 `paper-swing.js`(rsi2·hi120·ATR)에 검증된 형태로 존재한다.
+`stock_prices`(오늘까지 최신, 2,610종목, 70만행)로 가격 모멘텀은 이미 계산되고 있어 **토스 일봉으로 이력을 새로 수집할 필요는 없다**(v1 스펙 폐기 사유).
 
-**목표:** 이미 수집되는 토스 일봉으로 단기 기술 팩터(추세·거래량·변동성)를 산출해 `total_score`에 **균형 비중(~25점, 전체의 약 17%)**으로 블렌드한다. 죽은 밸류주는 감점하되 우량 밸류주가 뒤집히지 않는 선. 새 데이터소스·새 지표로직 없이 **기존 자산 연결**.
+**목표:** 추천을 `daily_rankings` 기준으로 통일하고, v6 SQL의 명백한 결함을 최소·안전하게 교정한다. 큰 모델 통합(3종 → 1종)은 별도 프로젝트로 남긴다(YAGNI).
 
 ## 결정 사항 (사용자 확정)
 
 | 항목 | 결정 |
 |------|------|
-| 배점 철학 | **균형 블렌드** — 기술 총 25점(펀더 125 + 기술 25 → 기술 ≈ 17%) |
-| 계산 위치 | **`daily-ranking.js`** (candles 이미 fetch·매일 갱신·역할 분리) |
-| 검증 | point-in-time **백테스트 sanity 포함** + `code-reviewer` 별도 패스 |
+| 방향 | **v6 정비** (토스 tech 신규 팩터 폐기 / 두 모델 통합·백테스트 재작성은 범위 밖) |
+| 추천 소스 | `daily_rankings`로 통일 (raw `total_score` 직접 조회 금지) |
+
+## 확정 변경 (최소·안전)
+
+### 1) `op_income_yoy` 30점 중복 제거 [correctness]
+- 현재 `buildRankingsRefreshSql`에서 **동일 변수 `op_income_yoy`가 두 블록으로 30점** 부여:
+  - `daily-ranking.js:417-426` "이익 추세" (max 15, NULL→5)
+  - `daily-ranking.js:427-436` "이익 YoY" (max 15, NULL→0)
+- → **단일 "이익성장" 블록(max 15)으로 병합.** NULL→5(중립) 유지. 이익 급증주 과편향 제거. 이게 v6를 밸류/품질 쪽으로 되돌리는 핵심 레버.
+
+### 2) 명칭 정합 [honesty] — 컬럼명은 유지, 의미만 정정
+- `undervalue_score` 컬럼명은 소비자(`get_rankings` 툴·앱)가 의존 → **개명하지 않음**(파괴적).
+- 대신 `buildRankingsRefreshSql` 상단 주석에 "이 점수 = 밸류(15) + 품질(ROE·마진) + 이익성장(15) + 가격모멘텀(15) + 현금흐름(PCR) 합성 — 순수 저평가 아님" 명시. `get_rankings` 툴 description도 동일 문구로 수정.
+
+### 3) 추천 조회 표준화
+- 앞으로 종목 추천/랭킹은 `daily_rankings`(최신 rank_date) + 유동성/밸류트랩 렌즈로만. `stock_analysis.total_score` 직접 정렬 금지(문서·습관 규칙, 코드 아님).
 
 ## 비목표 (YAGNI)
 
-- 라이브 자동매매 로직 변경: **하지 않는다.** paper-swing 매수 유니버스는 momentum(hi120/rsi2)+시총순 largeCaps(`ORDER BY market_cap_tril`)이며 `total_score`를 쓰지 않는다 → 스코어 변경은 **실주문에 영향 0.**
-- 백테스트로 가중치 최적화(그리드 서치): 하지 않는다. 사용자가 "균형 블렌드"를 택함. 백테스트는 **역효과 여부 sanity 확인용**이지 튜닝용이 아니다.
-- score-full 배치에서 candle fetch: 하지 않는다(중복·stale).
+- **토스 일봉 tech 팩터 신설**: 폐기(모멘텀 이미 stock_prices로 반영).
+- **3종 모델 통합 / v6를 FACTOR_WEIGHTS z-score로 대체**: 큰 작업 → 별도 프로젝트.
+- **freed 15점 재배분 최적화**: 하지 않음. 백테스트가 v6를 검증 못 하므로(다른 모델) 근거 없는 가중치 조정은 금지. 중복 제거만으로 편향 완화. (재배분이 필요하면 3종 통합 프로젝트에서 백테스트로.)
+- **라이브 매매 로직**: 불변. `momUniverse`(ret60)·largeCaps(시총순)는 `undervalue_score`/`daily_rankings` 미참조 → 실주문 영향 0.
 
-## 아키텍처
+## 아키텍처 / 영향 파일
 
-### 1) 순수 함수 `scoreTechnical(candles)` — `scoring-core.js`에 추가
+- `daily-ranking.js` — `buildRankingsRefreshSql()`의 이익추세+이익YoY 두 블록을 단일 이익성장 블록으로 병합(순 -15점 max). 상단 주석 정정.
+- `mcp-server.js` (또는 툴 정의 위치) — `get_rankings` description 문구 정정.
+- (신규) `scripts/rank-diff.mjs` — 검증용: 변경 전/후 `daily_rankings` 상위 N diff + NULL/커버리지 점검(자동 게이트 아님, 육안+기계 확인).
 
-- 입력: 토스 일봉 배열(최신순) `[{timestamp,open,high,low,close,volume}]` (daily-ranking이 넘김)
-- 출력: `{ score:number(0~25), sub:{trend,volume,volatility}, note:string }`
-- 계산(paper-swing 로직 재사용/공유):
-  - **추세 ~10점**: 종가 vs MA20/60/120 정배열 단계 + 60/120일 수익률 부호·크기. (paper-swing hi120·MA 유틸 참조)
-  - **거래량 ~8점**: 최근 5d 평균거래량 / 20d 평균 비율. 1.0 이상(관심 유입) 가점, 0.6 미만(실종) 감점.
-  - **변동성·위치 ~7점**: 52주 위치(0~100%) + ATR/근접성. 바닥 방치(하위·저거래)와 과열 고점(상위 극단) 양쪽 감점, 중상단 건전 추세 가점.
-- 표본 부족(candles < ~60봉: 신규상장·장기정지) → `score=null`, note "이력부족". NULL은 total_score 합산에서 0 취급하되 **감점 아님**(오배제 방지, turnover NULL 정책과 동일).
-- 순수 함수 = 백테스트/유닛테스트에서 동일 입력 재사용 가능(scoring v2 pure-core 원칙 유지).
+## 검증
 
-### 2) daily-ranking.js `refresh52w` 블록에 연결
-
-- 위치: `daily-ranking.js:264-277` — 이미 `const candles = await getDailyCandles(code, 252)` 존재.
-- 그 candles로 `const tech = scoreTechnical(candles)` 호출(추가 fetch 0). `buffer.push({..., tech: tech.score, techDetail: tech})`.
-- **갱신 경로 한정 주의:** turnover와 동일하게 tech_score는 **refresh52w(full 토스) 경로에서만** 채워진다. `--skip-price`(ranking-only)·공공데이터 폴백 경로엔 candles가 없어 미갱신 → SQL COALESCE로 기존값 보존. 일 1회 full 갱신(`KRXDATA-DailyFull` 04:00)이 담당. 커버리지 로그로 stale 감지.
-
-### 3) 저장 스키마 + total_score 재계산
-
-- `stock_analysis`에 컬럼 추가(`ALTER ... ADD COLUMN IF NOT EXISTS`, turnover 컬럼과 동일 패턴):
-  - `tech_score numeric` (0~25, NULL 허용)
-  - `tech_detail jsonb` (sub 점수·note)
-- flush UPDATE SQL(`daily-ranking.js:213-226`) 확장:
-  - VALUES/컬럼에 `tech_score`, `tech_detail` 추가
-  - `SET tech_score = COALESCE(v.tech_score, sa.tech_score)`, `tech_detail = COALESCE(v.tech_detail, sa.tech_detail)`
-  - `total_score = COALESCE(sa.short_score,0) + COALESCE(sa.long_score,0) + COALESCE(v.tech_score, sa.tech_score, 0)` 로 재계산
-  - (short_score=공시, long_score=펀더는 score-full이 이미 적재한 값을 읽음)
-
-### 4) 랭킹 반영
-
-- `buildRankingsRefreshSql()`(`daily-ranking.js:318`)의 scored CTE 정렬 기준이 `total_score`를 읽으면 자동 반영. **구현 시 확인 필요** — CTE가 점수를 자체 재계산하면 거기에도 `tech_score`를 더한다(단일 소스 유지). detail 표시는 read 시 `tech_detail`을 `detail.단기_기술`로 병합.
-
-### 5) 검증
-
-- **백테스트 sanity** (`backtest-pit.js` 재사용): 과거 시점 기준 블렌드 total_score 상위 N vs 기존 total_score 상위 N의 forward 수익률(예: 20d/60d) 비교. 블렌드가 **유의하게 나쁘지 않을 것**(≥ 기존 또는 근접)이 통과 기준. 나쁘면 배점(25점) 하향 후 재검.
-- **유닛 테스트**: `scoreTechnical`에 대해 (a) 상승정배열+거래량증가=고점, (b) 하락+거래량실종=저점, (c) 표본부족=null 케이스 픽스처.
-- **라이브 회귀**: paper-swing 매수 경로가 total_score 미참조임을 grep로 재확인(설계 가정 고정).
+- **회귀 안전(라이브)**: `grep`로 `undervalue_score`/`daily_rankings` 참조가 paper-swing 매수 경로에 없음을 재확인(설계 가정 고정).
+- **변경 전/후 diff**: `buildRankingsRefreshSql`을 read-only로 실행(별도 임시 컬럼/뷰)해 top50 변화 확인 — 이익급증 고PER주가 내려가고 품질+합리밸류가 올라오는지 육안 검토. SK하이닉스류가 무조건 빠지진 않되(품질·모멘텀 여전히 가점) 순위 하향.
+- NULL 폭증·커버리지 급감 없음(중복 제거는 감점이 아니라 max 축소라 대량 탈락 없어야 함).
 - `code-reviewer` 별도 패스(self-approve 금지).
 
-## 영향 파일
-
-- `scoring-core.js` — `scoreTechnical()` 순수함수 추가 (+ 필요 시 paper-swing의 MA/ATR/hi120 유틸을 core로 승격해 공유)
-- `daily-ranking.js` — refresh52w 블록 연결, flush UPDATE SQL 확장, ALTER 컬럼, buildRankingsRefreshSql 정렬 확인
-- `paper-swing.js` — (선택) 공용 유틸을 core에서 import하도록 리팩터(중복 제거, 동작 불변)
-- `backtest-pit.js` — sanity 비교 스크립트(있으면 재사용, 없으면 최소 추가)
-- 테스트 픽스처 1개
-
 ## 롤백
-
-- `total_score` 재계산은 daily-ranking UPDATE에 한정. tech 컬럼/합산을 제거하면 즉시 원복(펀더 점수는 score-full이 별도 보유). daily_rankings는 다음 갱신 시 복원.
+- 단일 SQL 블록 변경 → 병합 커밋 revert 시 즉시 원복. `daily_rankings`는 다음 04:00 full 갱신에서 재생성.
