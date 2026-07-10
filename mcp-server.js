@@ -88,7 +88,7 @@ const TOOLS = [
   },
   {
     name: "get_rankings",
-    description: "저평가 스코어 기준 랭킹 TOP N을 조회합니다. (최신 daily_rankings 기준)",
+    description: "합성점수(밸류+품질+이익성장+모멘텀) 기준 랭킹 TOP N. (최신 daily_rankings 기준, 순수 저평가 아님)",
     inputSchema: {
       type: "object",
       properties: {

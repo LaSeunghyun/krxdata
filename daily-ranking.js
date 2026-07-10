@@ -315,6 +315,9 @@ async function updatePrices() {
 }
 
 // STEP 2: 저평가 전체 랭킹 계산 + DB 저장
+// undervalue_score = 밸류(PBR10+PER5) + 품질(ROE15·영업이익률10·안정성5) + 이익성장(15)
+//   + 가격모멘텀(15) + 현금흐름(PCR10) − 부채/이자보상 페널티, ×지주0.6.
+//   ⚠ "순수 저평가"가 아니라 밸류+품질+모멘텀 합성점수. 고품질·이익성장주가 상위에 오를 수 있음.
 export function buildRankingsRefreshSql() {
   return `
     WITH mom AS (
