@@ -14,6 +14,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import AdmZip from "adm-zip";
+import { fetchCashflowCapex } from "./scoring-core.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, ".env") });
@@ -138,7 +139,7 @@ async function upsertRows(rows) {
     const vals = chunk.map(r =>
       `(${esc(r.stock_code)},${esc(r.corp_name)},${esc(r.mrkt_ctg)},${esc(r.analysis_year)},` +
       `${esc(r.revenue)},${esc(r.op_income)},${esc(r.net_income)},${esc(r.total_equity)},` +
-      `${esc(r.total_debt)},${esc(r.total_asset)},${esc(r.cf_ops)},` +
+      `${esc(r.total_debt)},${esc(r.total_asset)},${esc(r.cf_ops)},${esc(r.cf_inv)},${esc(r.capex)},` +
       `${esc(r.debt_ratio)},${esc(r.cur_ratio)},${esc(r.op_margin)},` +
       `${esc(r.revenue_yoy)},${esc(r.op_income_yoy)},` +
       `${esc(r.per)},${esc(r.pbr)},${esc(r.roe)},${esc(r.market_cap)},'11011',NOW())`
@@ -148,7 +149,7 @@ async function upsertRows(rows) {
       INSERT INTO stock_financials
         (stock_code,corp_name,mrkt_ctg,analysis_year,
          revenue,op_income,net_income,total_equity,
-         total_debt,total_asset,cf_ops,
+         total_debt,total_asset,cf_ops,cf_inv,capex,
          debt_ratio,cur_ratio,op_margin,
          revenue_yoy,op_income_yoy,
          per,pbr,roe,market_cap,report_code,updated_at)
@@ -163,6 +164,8 @@ async function upsertRows(rows) {
         total_debt    = COALESCE(EXCLUDED.total_debt,    stock_financials.total_debt),
         total_asset   = COALESCE(EXCLUDED.total_asset,   stock_financials.total_asset),
         cf_ops        = COALESCE(EXCLUDED.cf_ops,        stock_financials.cf_ops),
+        cf_inv        = COALESCE(EXCLUDED.cf_inv,        stock_financials.cf_inv),
+        capex         = COALESCE(EXCLUDED.capex,         stock_financials.capex),
         debt_ratio    = COALESCE(EXCLUDED.debt_ratio,    stock_financials.debt_ratio),
         cur_ratio     = COALESCE(EXCLUDED.cur_ratio,     stock_financials.cur_ratio),
         op_margin     = COALESCE(EXCLUDED.op_margin,     stock_financials.op_margin),
@@ -301,10 +304,20 @@ async function processYear(year, companies) {
 
   const records = [];
   const now = new Date().toISOString();
-  for (const corp_code of Object.keys(companyRows)) {
+  const corpCodes = Object.keys(companyRows);
+  let cfIdx = 0, cfOk = 0;
+  for (const corp_code of corpCodes) {
     const c = codeMap[corp_code];
     if (!c) continue;
     const fin = parseFinancials(companyRows[corp_code]);
+
+    // 현금흐름표 + capex: fnlttMultiAcnt엔 없어 SingleAcntAll 개별 호출로 보완
+    try {
+      const cf = await fetchCashflowCapex(corp_code, { dartKey: DART_KEY, year, fetchJson });
+      if (cf.source === "ok") { fin.cfOps = cf.cfOps; fin.cfInv = cf.cfInv; fin.capex = cf.capex; cfOk++; }
+    } catch { /* CF 실패 시 기존 null 유지 */ }
+    if (++cfIdx % 100 === 0) process.stdout.write(`\r    CF/capex ${cfIdx}/${corpCodes.length} (ok ${cfOk})`);
+    await sleep(80);
 
     const _rev = fin.revenue?.current     ?? 0;
     const _op  = fin.opIncome?.current    ?? 0;
@@ -327,6 +340,8 @@ async function processYear(year, companies) {
       total_debt:    _td   || null,
       total_asset:   _ta   || null,
       cf_ops:        fin.cfOps ?? null,
+      cf_inv:        fin.cfInv ?? null,
+      capex:         fin.capex ?? null,
       debt_ratio:    _td && _eq > 0 ? +(_td / _eq * 100).toFixed(2) : null,
       cur_ratio:     _ca && _cl > 0 ? +(_ca / _cl * 100).toFixed(2) : null,
       op_margin:     _op && _rev > 0 ? +(_op / _rev * 100).toFixed(2) : null,

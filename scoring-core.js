@@ -132,3 +132,86 @@ export function scoreFinancialTrend(history) {
 
   return { score: Math.min(18, score), note: notes.join(","), maxScore: 18 };
 }
+
+// ── 현금흐름표 + Capex 추출 (fnlttSinglAcntAll rows, sj_div="CF") ─────────
+// fnlttMultiAcnt엔 현금흐름표가 없어 cf_ops/capex를 못 얻음 → 별도 SingleAcntAll 호출분 파싱.
+// 계정명은 회사마다 표기가 달라 공백제거 후 정규식 부분매칭. 취득/처분 혼동 방지.
+const _num = v => { const n = Number(String(v ?? "").replace(/,/g, "")); return Number.isFinite(n) ? n : null; };
+
+export function extractCashflowCapex(rows) {
+  const CF = (rows ?? []).filter(r => r.sj_div === "CF");
+  const nm = r => (r.account_nm ?? "").replace(/\s/g, "");
+  const findTotal = (re, exclude) =>
+    CF.find(r => re.test(nm(r)) && !(exclude && exclude.test(nm(r))));
+  // "영업활동에서창출된현금"(소계) 제외하고 "영업활동으로인한현금흐름"(순액) 선택
+  const opRow  = findTotal(/영업활동.*현금흐름/, /창출/);
+  const invRow = findTotal(/투자활동.*현금흐름/);
+  // capex = 유형자산·무형자산 취득(절대값 합). 처분(유입) 제외. 부호 관행 회사마다 달라 abs.
+  const capexRows = CF.filter(r => /(유형자산|무형자산).*취득/.test(nm(r)) && !/처분/.test(nm(r)));
+  const sumAbs = pick => {
+    let s = null;
+    for (const r of capexRows) { const v = pick(r); if (v != null) s = (s ?? 0) + Math.abs(v); }
+    return s;
+  };
+  return {
+    cfOps:     opRow  ? _num(opRow.thstrm_amount)  : null,
+    cfInv:     invRow ? _num(invRow.thstrm_amount) : null,
+    capex:     sumAbs(r => _num(r.thstrm_amount)),
+    capexPrev: sumAbs(r => _num(r.frmtrm_amount)),
+  };
+}
+
+// fnlttSinglAcntAll(CFS→OFS→fallbackYear) 호출로 현금흐름·capex 수집.
+// fetchJson은 호출측 재시도 로직을 주입(각 스크립트가 자체 보유).
+export async function fetchCashflowCapex(corpCode, {
+  dartKey, base = "https://opendart.fss.or.kr/api",
+  year, fallbackYear = null, reprtCode = "11011", fetchJson,
+}) {
+  const call = async (fsdiv, yr) => {
+    const url = new URL(`${base}/fnlttSinglAcntAll.json`);
+    url.searchParams.set("crtfc_key", dartKey);
+    url.searchParams.set("corp_code", corpCode);
+    url.searchParams.set("bsns_year", String(yr));
+    url.searchParams.set("reprt_code", reprtCode);
+    url.searchParams.set("fs_div", fsdiv);
+    let d; try { d = await fetchJson(url.toString()); } catch { return []; }
+    return ["000", "013"].includes(d?.status) ? (d.list ?? []) : [];
+  };
+  const tryYear = async yr => {
+    let rows = await call("CFS", yr);
+    if (!rows.some(r => r.sj_div === "CF")) rows = await call("OFS", yr);
+    return rows;
+  };
+  let rows = await tryYear(year);
+  let usedYear = year;
+  if (!rows.some(r => r.sj_div === "CF") && fallbackYear) {
+    rows = await tryYear(fallbackYear); usedYear = fallbackYear;
+  }
+  const hasCF = rows.some(r => r.sj_div === "CF");
+  return { ...extractCashflowCapex(rows), source: hasCF ? "ok" : "none", year: hasCF ? usedYear : null };
+}
+
+// FCF = 영업활동현금흐름 − capex. 둘 중 하나라도 없으면 null.
+export function computeFcf(fin) {
+  return (fin?.cfOps != null && fin?.capex != null) ? fin.cfOps - fin.capex : null;
+}
+
+// 현금흐름 품질 (max 5): 영업CF>0(+3) + FCF>0(+2). 재무건전성 25점 내 기존 현금 슬롯(5) 대체.
+// FCF가 capex를 반영하므로 "capex를 점수에 반영"의 섹터중립·건전한 형태.
+export function scoreCashflowQuality(fin) {
+  let score = 0; const notes = [];
+  if (fin?.cfOps != null && fin.cfOps > 0) { score += 3; notes.push("영업CF+"); }
+  if (fin?.fcf   != null && fin.fcf   > 0) { score += 2; notes.push("FCF+"); }
+  return { score, note: notes.join(","), max: 5 };
+}
+
+// Capex 사이클 지표(비점수, 표시용). capexYoY≥30% & capex>0 → 증설 사이클 신호.
+export function capexCycle(fin) {
+  const { capex, capexPrev, cfOps } = fin ?? {};
+  const capexYoY   = (capex != null && capexPrev != null && capexPrev > 0)
+    ? +(((capex - capexPrev) / capexPrev) * 100).toFixed(1) : null;
+  const capexToOcf = (capex != null && cfOps != null && cfOps > 0)
+    ? +(capex / cfOps).toFixed(2) : null;
+  const cycle = capex != null && capex > 0 && capexYoY != null && capexYoY >= 30;
+  return { capex: capex ?? null, fcf: fin?.fcf ?? null, capexYoY, capexToOcf, cycle };
+}

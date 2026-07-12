@@ -12,7 +12,7 @@ import fs from "fs";
 import path from "path";
 import { ANALYSIS_YEAR, ANALYSIS_YEAR_FALLBACK, SCORE_BATCH_SIZE, SCORE_DELAY_MS, FETCH_TIMEOUT_MS } from "./config.js";
 import { calcTargetPrice, buildRecommendation, sectorFairPer } from "./stock-utils.js";
-import { parseFinancials, scoreFinancialTrend, disclosureSentiment, estimateBonusCapacity, GOOD_KEYWORDS, BAD_KEYWORDS } from "./scoring-core.js";
+import { parseFinancials, scoreFinancialTrend, disclosureSentiment, estimateBonusCapacity, GOOD_KEYWORDS, BAD_KEYWORDS, fetchCashflowCapex, computeFcf, scoreCashflowQuality, capexCycle } from "./scoring-core.js";
 
 const require   = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -175,7 +175,7 @@ function scoreFinancialHealth(fin) {
     const r = fin.curAsset.current / fin.curLiab.current * 100;
     score += r >= 200 ? 7 : r >= 100 ? 5 : 1;
   } else { score += 3; }
-  if (fin.cfOps !== null && fin.cfOps !== undefined) { if (fin.cfOps > 0) score += 5; }
+  score += scoreCashflowQuality(fin).score; // 영업CF>0(3)+FCF>0(2), 기존 현금 슬롯(5) 대체
   if (fin.retained?.current > fin.retained?.previous) score += 3;
   return Math.min(25, score);
 }
@@ -406,6 +406,13 @@ async function main() {
     const s = companies[i];
     const fin = finMap[s.corp_code] ?? {};
 
+    // 현금흐름표 + capex (SingleAcntAll 별도 호출; CFS→OFS→직전연도 fallback)
+    try {
+      const cf = await fetchCashflowCapex(s.corp_code, { dartKey: DART_KEY, year: YEAR, fallbackYear: YEAR_FB, fetchJson: fetchJson });
+      if (cf.source === "ok") { fin.cfOps = cf.cfOps; fin.cfInv = cf.cfInv; fin.capex = cf.capex; fin.capexPrev = cf.capexPrev; }
+    } catch { /* CF 실패 시 기존 null 유지 */ }
+    fin.fcf = computeFcf(fin);
+
     let quote = null, disclosures = [], shareholders = [];
 
     try { quote = await getPublicDataQuote(s.stockCode); } catch { failCounts.quote++; }
@@ -446,6 +453,7 @@ async function main() {
       중장기_밸류에이션: { score: v.score,       max: 30, note: v.note },
       중장기_지배구조:   { score: govScore.score, max: 12, note: govScore.note },
       다년도_성장흐름:   { score: trend.score,   max: 18, note: trend.note },
+      capex:            capexCycle(fin),  // 비점수(표시): capex·FCF·capexYoY·증설사이클 플래그
     };
 
     results.push({
@@ -513,6 +521,8 @@ async function main() {
       op_income:     _op  || null,
       market_cap:    marketCap || null,
       cf_ops:        fin.cfOps ?? null,
+      cf_inv:        fin.cfInv ?? null,
+      capex:         fin.capex ?? null,
       analysis_year: YEAR,
       updated_at:    genAt,
     });
