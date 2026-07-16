@@ -48,7 +48,24 @@ const STRATEGIES = {
   'gapgo':      { type: 'gapgo', gapMin: 2, gapMax: 8, entryStart: '09:05', entryEnd: '09:30', stopPct: 1.5, volMult: 1.5, tpR: 2 },
   // type:vwap — 가격>VWAP 추세 중 VWAP 터치 후 반등 양봉
   'vwap':       { type: 'vwap', entryStart: '09:30', entryEnd: '14:00', stopPct: 1.0, volMult: 0, tpR: 2 },
+  // type:bbRevert — 하단밴드 이탈(arm) → armExpiry분 이내 반등 확인(confirm), friction gate(목표폭>=왕복비용×2 근사)
+  'bb-revert':  { type: 'bbRevert', bbWindow: 40, bbK: 2.0, armExpiry: 5, minTargetPct: 0.8, slopeLookback: 10,
+                  entryStart: '10:00', entryEnd: '14:00', stopPct: 1.2, volMult: 0 },
+  // type:bbSqueeze — 밴드폭 스퀴즈(직전봉 기준 최근 sqzLookback분 분포 하위 sqzQuantile) 후 상단 돌파
+  'bb-squeeze': { type: 'bbSqueeze', bbWindow: 20, bbK: 2.0, sqzLookback: 60, sqzQuantile: 0.20, minVolPct: 0.15,
+                  volMult: 2, tpR: 2, stopPct: 1.5, entryStart: '10:00', entryEnd: '14:00' },
 };
+// bb-revert / bb-squeeze 파라미터 오버라이드 (스윕용, sweep-bb-intraday.mjs)
+for (const [flag, key] of [
+  ['--bbwindow', 'bbWindow'], ['--bbk', 'bbK'], ['--armexpiry', 'armExpiry'], ['--mintarget', 'minTargetPct'],
+  ['--slopelookback', 'slopeLookback'], ['--sqzlookback', 'sqzLookback'], ['--sqzquantile', 'sqzQuantile'],
+  ['--minvolpct', 'minVolPct'], ['--tpr', 'tpR'], ['--stoppct', 'stopPct'],
+]) {
+  const v = argOf(flag, null);
+  if (v == null) continue;
+  if (STRATEGIES['bb-revert'] && key in STRATEGIES['bb-revert']) STRATEGIES['bb-revert'][key] = Number(v);
+  if (STRATEGIES['bb-squeeze'] && key in STRATEGIES['bb-squeeze']) STRATEGIES['bb-squeeze'][key] = Number(v);
+}
 const ACTIVE = Object.entries(STRATEGIES).filter(([k]) => !ONLY.length || ONLY.includes(k));
 
 // ── 공통 유틸 ────────────────────────────────────────────────
@@ -68,6 +85,7 @@ function netPnl(entry, exit, qty) {
   const fees = (entry + exit) * qty * (FEE_BPS / 10_000) + exit * qty * (TAX_BPS / 10_000);
   return Math.round(gross - fees);
 }
+function grossPnl(entry, exit, qty) { return Math.round((exit - entry) * qty); }
 
 async function dbQuery(sql) {
   const res = await fetch(`https://api.supabase.com/v1/projects/${process.env.SUPABASE_PROJECT_REF}/database/query`, {
@@ -86,7 +104,7 @@ const dailyCache = new Map(); // code → 일봉 320개 (최신순) — 전 기�
 async function dailyBars(code) {
   if (!dailyCache.has(code)) {
     try { dailyCache.set(code, await getDailyCandles(code, 320)); }
-    catch { dailyCache.set(code, []); }
+    catch (e) { console.error(`[fetch 실패] dailyBars ${code}: ${e.message}`); dailyCache.set(code, []); }
   }
   return dailyCache.get(code);
 }
@@ -94,7 +112,7 @@ const warnCache = new Map();
 async function warnings(code) {
   if (!warnCache.has(code)) {
     try { warnCache.set(code, await getStockWarnings(code)); }
-    catch { warnCache.set(code, []); }
+    catch (e) { console.error(`[fetch 실패] warnings ${code}: ${e.message}`); warnCache.set(code, []); }
   }
   return warnCache.get(code);
 }
@@ -108,7 +126,7 @@ async function minuteBars(code, day) {
       minuteCache.set(key, all
         .filter(b => String(b.timestamp).startsWith(dayIso))
         .sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp))));
-    } catch { minuteCache.set(key, []); }
+    } catch (e) { console.error(`[fetch 실패] minuteBars ${code} ${day}: ${e.message}`); minuteCache.set(key, []); }
   }
   return minuteCache.get(key);
 }
@@ -173,9 +191,10 @@ function simulateStrategyDay(stratKey, cfg, day, universe, barsBySymbol, capital
   const close = (code, fill, reason) => {
     const p = positions[code];
     const pnl = netPnl(p.entry, fill, p.qty);
+    const gross = grossPnl(p.entry, fill, p.qty);
     realized += pnl;
     consecLosses = pnl < 0 ? consecLosses + 1 : 0;
-    trades.push({ day: fmtDay(day), strat: stratKey, code, name: p.name, entry: p.entry, exit: fill, qty: p.qty, pnl, reason, r: p.r ? Number(((fill - p.entry) / p.r).toFixed(2)) : null });
+    trades.push({ day: fmtDay(day), strat: stratKey, code, name: p.name, entry: p.entry, exit: fill, qty: p.qty, pnl, gross, reason, r: p.r ? Number(((fill - p.entry) / p.r).toFixed(2)) : null });
     delete positions[code];
   };
 
@@ -193,13 +212,33 @@ function simulateStrategyDay(stratKey, cfg, day, universe, barsBySymbol, capital
       const bar = bars[i];
       idx.set(u.code, i + 1);
 
-      const c = ctx[u.code] ??= { or: { high: -Infinity, low: Infinity }, first5: { high: -Infinity, low: Infinity, n: 0 }, pv: 0, v: 0, touched: false };
+      const c = ctx[u.code] ??= { or: { high: -Infinity, low: Infinity }, first5: { high: -Infinity, low: Infinity, n: 0 }, pv: 0, v: 0, touched: false,
+        closes: [], bwHist: [], smaHist: [], bbPrev: null, armed: null };
       // 컨텍스트 누적
       const tp = (bar.high + bar.low + bar.close) / 3;
       c.pv += tp * bar.volume; c.v += bar.volume;
       const vwap = c.v > 0 ? c.pv / c.v : bar.close;
       if (cfg.type === 'orb' && hm < cfg.orEnd) { c.or.high = Math.max(c.or.high, bar.high); c.or.low = Math.min(c.or.low, bar.low); }
       if (c.first5.n < 5) { c.first5.high = Math.max(c.first5.high, bar.high); c.first5.low = Math.min(c.first5.low, bar.low); c.first5.n++; if (c.first5.n === 1) c.open = bar.open; }
+      // BB 컨텍스트: 신호 판정은 항상 c.bbPrev(직전 봉까지의 밴드)를 사용 — 당일 봉이 밴드를 넓혀 스퀴즈를 자기부정하는 것 방지.
+      // 순서상 "판정 먼저(c.bbPrev 사용) → 갱신은 이후(오늘 종가 반영)"가 되도록, 여기서는 갱신만 하고 갱신 전 값을 c.bbPrev로 유지한다.
+      if (cfg.type === 'bbRevert' || cfg.type === 'bbSqueeze') {
+        if (c.closes.length === cfg.bbWindow) {
+          const sma = c.closes.reduce((s, v) => s + v, 0) / cfg.bbWindow;
+          const sd = Math.sqrt(c.closes.reduce((s, v) => s + (v - sma) ** 2, 0) / cfg.bbWindow);
+          c.smaHist.push(sma);
+          if (c.smaHist.length > cfg.slopeLookback + 1) c.smaHist.shift();
+          if (cfg.type === 'bbSqueeze' && sma > 0) {
+            c.bwHist.push((2 * cfg.bbK * sd) / sma);
+            if (c.bwHist.length > cfg.sqzLookback) c.bwHist.shift();
+          }
+          c.bbPrev = { sma, sd, upper: sma + cfg.bbK * sd, lower: sma - cfg.bbK * sd };
+        } else {
+          c.bbPrev = null;
+        }
+        c.closes.push(bar.close);
+        if (c.closes.length > cfg.bbWindow) c.closes.shift();
+      }
 
       // 포지션 관리 (보수: 손절 우선)
       const p = positions[u.code];
@@ -211,8 +250,9 @@ function simulateStrategyDay(stratKey, cfg, day, universe, barsBySymbol, capital
           const half = Math.floor(p.qty / 2);
           if (half >= 1) {
             const pnl = netPnl(p.entry, p.target, half);
+            const gross = grossPnl(p.entry, p.target, half);
             realized += pnl;
-            trades.push({ day: fmtDay(day), strat: stratKey, code: u.code, name: p.name, entry: p.entry, exit: p.target, qty: half, pnl, reason: 'half_exit', r: cfg.tpR });
+            trades.push({ day: fmtDay(day), strat: stratKey, code: u.code, name: p.name, entry: p.entry, exit: p.target, qty: half, pnl, gross, reason: 'half_exit', r: cfg.tpR });
             p.qty -= half;
           }
           p.halfDone = true; p.stop = p.entry;
@@ -232,7 +272,7 @@ function simulateStrategyDay(stratKey, cfg, day, universe, barsBySymbol, capital
       const avgVol = prev5.length >= 3 ? prev5.reduce((s, b) => s + b.volume, 0) / prev5.length : Infinity;
       const volOk = !cfg.volMult || bar.volume > avgVol * cfg.volMult;
 
-      let signal = false, stopRef = null;
+      let signal = false, stopRef = null, targetOverride = null;
       if (cfg.type === 'orb') {
         signal = c.or.high > 0 && bar.close > c.or.high && volOk;
         stopRef = c.or.low;
@@ -247,6 +287,39 @@ function simulateStrategyDay(stratKey, cfg, day, universe, barsBySymbol, capital
         signal = c.touched && bar.close > bar.open && bar.close > vwap && bar.close > u.prevClose;
         if (signal) c.touched = false;
         stopRef = vwap * 0.995;
+      } else if (cfg.type === 'bbRevert') {
+        if (c.bbPrev) {
+          if (!c.armed) {
+            if (bar.low <= c.bbPrev.lower && bar.close < c.bbPrev.sma) c.armed = { low: bar.low, expiresAt: i + cfg.armExpiry };
+          } else {
+            if (bar.low < c.armed.low) { c.armed.low = bar.low; c.armed.expiresAt = i + cfg.armExpiry; }
+            if (i > c.armed.expiresAt) c.armed = null;
+          }
+          const prevClose = i > 0 ? bars[i - 1].close : bar.close;
+          if (c.armed && bar.close > c.bbPrev.lower && bar.close > bar.open && bar.close > prevClose) {
+            const slopeOk = c.smaHist.length > cfg.slopeLookback
+              ? c.bbPrev.sma >= c.smaHist[c.smaHist.length - 1 - cfg.slopeLookback] : true;
+            const estFill = roundTick(bar.close) + tickSize(bar.close);
+            const targetGatePct = ((c.bbPrev.sma - estFill) / estFill) * 100;
+            if (slopeOk && targetGatePct >= cfg.minTargetPct) {
+              signal = true;
+              stopRef = Math.min(c.armed.low - tickSize(c.armed.low), c.bbPrev.lower - 0.25 * c.bbPrev.sd);
+              targetOverride = c.bbPrev.sma;
+              c.armed = null;
+            }
+          }
+        }
+      } else if (cfg.type === 'bbSqueeze') {
+        if (c.bbPrev && c.bwHist.length >= cfg.sqzLookback * 0.8 && c.bbPrev.sma > 0) {
+          const sorted = [...c.bwHist].sort((a, b) => a - b);
+          const threshold = sorted[Math.floor(sorted.length * cfg.sqzQuantile)];
+          const bwPrev = (c.bbPrev.upper - c.bbPrev.lower) / c.bbPrev.sma;
+          const minVolOk = (c.bbPrev.sd / c.bbPrev.sma) * 100 >= cfg.minVolPct;
+          if (bwPrev <= threshold && bar.close > c.bbPrev.upper && volOk && minVolOk) {
+            signal = true;
+            stopRef = c.bbPrev.sma;
+          }
+        }
       }
       if (!signal) continue;
 
@@ -256,7 +329,8 @@ function simulateStrategyDay(stratKey, cfg, day, universe, barsBySymbol, capital
       const stop = roundTick(Math.max(stopRef ?? 0, fillPrice * (1 - cfg.stopPct / 100)));
       if (stop >= fillPrice) continue;
       const r = fillPrice - stop;
-      positions[u.code] = { name: u.name, qty, entry: fillPrice, stop, r, target: roundTick(fillPrice + r * cfg.tpR), halfDone: false, highSince: fillPrice };
+      const target = targetOverride != null ? roundTick(targetOverride) : roundTick(fillPrice + r * cfg.tpR);
+      positions[u.code] = { name: u.name, qty, entry: fillPrice, stop, r, target, halfDone: false, highSince: fillPrice };
       entered.add(u.code);
     }
   }
@@ -318,5 +392,17 @@ for (const [k] of ACTIVE) {
   console.log(
     `${k.padEnd(12)} ${String(exits.length).padStart(4)}  ${String(r.trades.length ? Math.round(wins / r.trades.length * 100) : 0).padStart(4)}%  ${String(avgR).padStart(6)}  ${(pnl >= 0 ? '+' : '') + pnl.toLocaleString().padStart(11)}원  ${((r.capital / CAPITAL - 1) * 100).toFixed(2).padStart(7)}%  ${r.capital.toLocaleString()}원`
   );
+}
+// gross/net 손익 분해 — bb-revert/bb-squeeze kill criterion 판정용 (sweep-bb-intraday.mjs가 이 줄을 파싱)
+console.log('\n손익 분해 (gross=비용 전, net=비용 반영, %/건 = 포지션당 예산 대비):');
+const perPosBudget = CAPITAL / MAX_POSITIONS;
+for (const [k] of ACTIVE) {
+  const r = results[k];
+  const n = r.trades.length;
+  const grossSum = r.trades.reduce((s, t) => s + (t.gross ?? 0), 0);
+  const netSum = r.trades.reduce((s, t) => s + t.pnl, 0);
+  const grossPct = n ? (grossSum / n / perPosBudget * 100) : 0;
+  const netPct = n ? (netSum / n / perPosBudget * 100) : 0;
+  console.log(`EXPECTANCY ${k.padEnd(12)} gross=${grossSum.toLocaleString()}원(${grossPct.toFixed(3)}%/건) net=${netSum.toLocaleString()}원(${netPct.toFixed(3)}%/건) n=${n}`);
 }
 console.log(`\n매크로 게이트 스킵: ${results[ACTIVE[0][0]].gated}일 | 비용 모델: 수수료 ${FEE_BPS}bp×2 + 거래세 ${TAX_BPS}bp + 슬리피지 2틱`);

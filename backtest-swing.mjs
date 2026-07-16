@@ -45,7 +45,8 @@ const SLIP_TICKS = STRESS ? 2 : 1;
 const MIN_PRICE = 2_000;
 const MIN_TURNOVER = 30 * 1e8; // 20일 평균 거래대금 30억 미만 제외 (유동성)
 const VOL_SHADOW = Number(argOf('--volshadow', 0));
-const VOL_WINDOW = Number(argOf('--volwindow', 20));
+// 장기 비교에서 window=30 / ref=252가 가장 안정적인 개선을 보여 기본값으로 둔다.
+const VOL_WINDOW = Number(argOf('--volwindow', 30));
 const VOL_REF_LOOKBACK = Number(argOf('--volref', 252));
 
 const STRATEGIES = {
@@ -63,6 +64,10 @@ const STRATEGIES = {
   'combo':      { slots: 10, rsiMax: 10, stopPct: 7, maxHoldR: 10, lookback: 120, trailPct: 10, maxHoldH: 60 },
   // combo-v2: 사유 기록 분석 반영 — hi120 돌파폭 3%+만, rsi2 최대보유 5일, NEUTRAL hi120 슬롯 2
   'combo-v2':   { slots: 10, rsiMax: 10, stopPct: 7, maxHoldR: 5, lookback: 120, trailPct: 8, maxHoldH: 60, minBreakout: 3, rsiDays: 2, tp1R: 1, rsiMa: 3, tp2R: 2, v2: true },
+  // bb-mr: BB 하단밴드 이탈→재진입 확인(단순 터치 아님) 매수, 중심선 도달 전량청산 (rsi2 청산구조 재사용)
+  'bb-mr':      { slots: 10, period: 20, mult: 2.0, stopPct: 7, maxHold: 10 },
+  // bb-brk: 밴드폭 스퀴즈(120일 분포 하위 20%) 후 상단 돌파 매수, 트레일링 청산 (단독 hi120 청산구조 재사용)
+  'bb-brk':     { slots: 10, period: 20, mult: 2.0, sqzLookback: 120, sqzQuantile: 0.20, trailPct: 10, maxHold: 60, stopPct: 7 },
 };
 // combo-v2 파라미터 오버라이드 (스윕용): --trail 8 --minbreak 5 --maxholdr 3 --stoppct 5
 // 가설 플래그: --volx N (hi120 돌파일 거래량 > 20일평균 ×N), --rsidays N (rsi2 N일 연속 과매도),
@@ -71,6 +76,11 @@ for (const [flag, key] of [['--trail', 'trailPct'], ['--minbreak', 'minBreakout'
   ['--volx', 'volX'], ['--rsidays', 'rsiDays'], ['--downsize', 'downSize'], ['--tp1r', 'tp1R'], ['--intraday', 'intradayExit'], ['--maxholdh', 'maxHoldH'], ['--rsiuni', 'rsiUni'], ['--entryopen', 'entryOpen'], ['--downflat', 'downFlat'], ['--rsima', 'rsiMa'], ['--tp2r', 'tp2R'], ['--trailwide', 'trailWide'], ['--maxbreak', 'maxBreak'], ['--atrsize', 'atrSize'], ['--lookback', 'lookback'], ['--rsitp', 'rsiTp'], ['--closeloc', 'closeLoc'], ['--rsivol', 'rsiVol'], ['--breakfail', 'breakFail'], ['--rsicut', 'rsiCut'], ['--pyramid', 'pyramid'], ['--slots', 'slots'], ['--rsiafford', 'rsiAfford'], ['--gapmax', 'gapMax']]) {
   const v = argOf(flag, null);
   if (v != null) STRATEGIES['combo-v2'][key] = Number(v);
+}
+// bb-mr / bb-brk 파라미터 오버라이드 (스윕용, sweep-bb.mjs): --bbperiod 20 --bbmult 2.0
+for (const [flag, key] of [['--bbperiod', 'period'], ['--bbmult', 'mult']]) {
+  const v = argOf(flag, null);
+  if (v != null) { STRATEGIES['bb-mr'][key] = Number(v); STRATEGIES['bb-brk'][key] = Number(v); }
 }
 const DUMP = argOf('--dump', null);
 const COOLDOWN = Number(argOf('--cooldown', 0));
@@ -394,6 +404,18 @@ function rsi2(cd, i) {
     if (ch > 0) up += ch; else dn -= ch;
   }
   return up + dn === 0 ? 50 : (up / (up + dn)) * 100;
+}
+
+// 볼린저밴드: population stddev (분모=period, TA-Lib 기본과 동일)
+function bbBands(cd, i, period, mult) {
+  if (i < period - 1) return null;
+  let sum = 0;
+  for (let j = i - period + 1; j <= i; j++) sum += cd.c[j];
+  const sma = sum / period;
+  let sq = 0;
+  for (let j = i - period + 1; j <= i; j++) sq += (cd.c[j] - sma) ** 2;
+  const sd = Math.sqrt(sq / period);
+  return { sma, sd, upper: sma + mult * sd, lower: sma - mult * sd };
 }
 
 // ── 메인 ─────────────────────────────────────────────────────
@@ -721,6 +743,55 @@ for (let di = 0; di < tradingDays.length; di++) {
         const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
         if (i == null || i < 3) continue;
         if (rsi2(cd, i) < cfg.rsiMax) buy(book, day, code, cd.c[i], budget());
+      }
+    } else if (k === 'bb-mr') {
+      // 하단밴드 이탈 → 재진입 확인 매수 (단순 터치 아님, 낙하나이프 방지) / 중심선 도달 전량청산
+      const uni = mcapUniverse(day, MCAP_TOP);
+      for (const [code, p] of Object.entries(book.positions)) {
+        const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
+        if (i == null) continue;
+        const bb = bbBands(cd, i, cfg.period, cfg.mult);
+        if (cd.c[i] <= p.entry * (1 - cfg.stopPct / 100)) p.exitAtOpen = 'stop_loss';
+        else if (bb && cd.c[i] > bb.sma) p.exitAtOpen = 'bb_mid_exit';
+        else if (p.holdDays >= cfg.maxHold) p.exitAtOpen = 'max_hold';
+      }
+      for (const code of uni) {
+        if (book.positions[code] || Object.keys(book.positions).length >= cfg.slots) continue;
+        const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
+        if (i == null || i < cfg.period) continue;
+        const bbPrev = bbBands(cd, i - 1, cfg.period, cfg.mult);
+        const bb = bbBands(cd, i, cfg.period, cfg.mult);
+        if (!bbPrev || !bb) continue;
+        if (cd.c[i - 1] < bbPrev.lower && cd.c[i] > bb.lower) buy(book, day, code, cd.c[i], budget());
+      }
+    } else if (k === 'bb-brk') {
+      // 밴드폭 스퀴즈(전일까지 sqzLookback일 분포 하위 sqzQuantile) 후 상단 돌파 매수 / 트레일링 청산
+      for (const [code, p] of Object.entries(book.positions)) {
+        const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
+        if (i == null) continue;
+        if (cd.c[i] <= p.hi * (1 - cfg.trailPct / 100)) p.exitAtOpen = 'trailing';
+        else if (cd.c[i] <= p.entry * (1 - cfg.stopPct / 100)) p.exitAtOpen = 'stop_loss';
+        else if (p.holdDays >= cfg.maxHold) p.exitAtOpen = 'max_hold';
+      }
+      for (const code of mom) {
+        if (book.positions[code] || Object.keys(book.positions).length >= cfg.slots) continue;
+        const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
+        if (i == null || i < cfg.period + cfg.sqzLookback) continue;
+        // 전일까지의 밴드로 판정 (hi120의 prevHigh와 동일 사상 — 당일 돌파가 밴드를 넓혀 자기부정하는 것 방지)
+        const bbY = bbBands(cd, i - 1, cfg.period, cfg.mult);
+        if (!bbY || bbY.sma <= 0) continue;
+        const bandwidths = [];
+        for (let j = i - 1 - cfg.sqzLookback; j <= i - 1; j++) {
+          const b = bbBands(cd, j, cfg.period, cfg.mult);
+          if (b && b.sma > 0) bandwidths.push((b.upper - b.lower) / b.sma);
+        }
+        if (bandwidths.length < cfg.sqzLookback * 0.8) continue;
+        bandwidths.sort((a, b2) => a - b2);
+        const threshold = bandwidths[Math.floor(bandwidths.length * cfg.sqzQuantile)];
+        const bwY = (bbY.upper - bbY.lower) / bbY.sma;
+        if (bwY <= threshold && cd.c[i] > bbY.upper) {
+          buy(book, day, code, cd.c[i], budget(), { ctx: { sub: 'bb-brk', bandwidth: bwY.toFixed(4) } });
+        }
       }
     }
 
