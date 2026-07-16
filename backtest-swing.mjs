@@ -68,6 +68,10 @@ const STRATEGIES = {
   'bb-mr':      { slots: 10, period: 20, mult: 2.0, stopPct: 7, maxHold: 10 },
   // bb-brk: 밴드폭 스퀴즈(120일 분포 하위 20%) 후 상단 돌파 매수, 트레일링 청산 (단독 hi120 청산구조 재사용)
   'bb-brk':     { slots: 10, period: 20, mult: 2.0, sqzLookback: 120, sqzQuantile: 0.20, trailPct: 10, maxHold: 60, stopPct: 7 },
+  // hma-turn: HMA 슬로프 상향 반전 + 종가>HMA 매수, 슬로프 하향 청산 (Hull 정석 용법 — 크로스오버는 Hull 본인 비추라 미구현)
+  'hma-turn':   { slots: 10, period: 25, stopPct: 7, maxHold: 60 },
+  // hma-dip: HMA 하향 이탈 매수 → HMA 상향 복귀 청산 (QuantifiedStrategies 평균회귀 발견 falsification용)
+  'hma-dip':    { slots: 10, period: 25, stopPct: 7, maxHold: 10 },
 };
 // combo-v2 파라미터 오버라이드 (스윕용): --trail 8 --minbreak 5 --maxholdr 3 --stoppct 5
 // 가설 플래그: --volx N (hi120 돌파일 거래량 > 20일평균 ×N), --rsidays N (rsi2 N일 연속 과매도),
@@ -81,6 +85,11 @@ for (const [flag, key] of [['--trail', 'trailPct'], ['--minbreak', 'minBreakout'
 for (const [flag, key] of [['--bbperiod', 'period'], ['--bbmult', 'mult']]) {
   const v = argOf(flag, null);
   if (v != null) { STRATEGIES['bb-mr'][key] = Number(v); STRATEGIES['bb-brk'][key] = Number(v); }
+}
+// hma-turn / hma-dip 파라미터 오버라이드 (스윕용, sweep-hma.mjs): --hmaperiod 25
+{
+  const v = argOf('--hmaperiod', null);
+  if (v != null) { STRATEGIES['hma-turn'].period = Number(v); STRATEGIES['hma-dip'].period = Number(v); }
 }
 const DUMP = argOf('--dump', null);
 const COOLDOWN = Number(argOf('--cooldown', 0));
@@ -324,8 +333,28 @@ function hedgeBudgetMult(day) {
   if (proxyRegime(day) === 'UP' && hedgeBreadthFrac(day) <= HEDGE_WEAK) return HEDGE_CUT;
   return 1;
 }
+// HMA 레짐 (--regimemode hma --regimehma N): 005930 HMA 슬로프로 판정 — SMA20/60 지연 제거 검증용
+const REGIME_HMA_N = Number(argOf('--regimehma', '30'));
+const hmaRegimeCache = new Map();
+function hmaRegime(day) {
+  if (hmaRegimeCache.has(day)) return hmaRegimeCache.get(day);
+  const cd = candles.get('005930');
+  const i = cd ? indexOfDate(cd, day) ?? lastIndexBefore(cd, day) : null;
+  let r = 'NEUTRAL';
+  if (i != null && i >= 5) {
+    const h0 = hmaAt(cd.c, i, REGIME_HMA_N), h1 = hmaAt(cd.c, i - 1, REGIME_HMA_N);
+    if (h0 != null && h1 != null) {
+      const ret5 = (cd.c[i] / cd.c[i - 5] - 1) * 100;
+      if (h0 > h1 && cd.c[i] > h0) r = 'UP';
+      else if (h0 < h1 && ret5 < -3) r = 'DOWN';
+    }
+  }
+  hmaRegimeCache.set(day, r);
+  return r;
+}
 function marketRegime(day) {
   if (REGIME_MODE === 'breadth') return breadthRegime(day);
+  if (REGIME_MODE === 'hma') return hmaRegime(day);
   const base = proxyRegime(day);
   // I15 헤지: breadth가 명확히 UP이면 proxy 비-UP을 UP으로 승격 (차단은 절대 안 함)
   if (REGIME_HEDGE && base !== 'UP' && hedgeBreadthFrac(day) >= HEDGE_UP) return 'UP';
@@ -404,6 +433,33 @@ function rsi2(cd, i) {
     if (ch > 0) up += ch; else dn -= ch;
   }
   return up + dn === 0 ? 50 : (up / (up + dn)) * 100;
+}
+
+// 훌 이동평균선: HMA(n) = WMA(2×WMA(n/2) − WMA(n), √n) — Alan Hull 2005
+function wmaAt(closes, i, n) {
+  if (i < n - 1) return null;
+  let num = 0, den = 0;
+  for (let j = 0; j < n; j++) {
+    const w = j + 1; // 최신봉이 최대 가중
+    num += closes[i - n + 1 + j] * w;
+    den += w;
+  }
+  return num / den;
+}
+function hmaAt(closes, i, n) {
+  const half = Math.max(1, Math.round(n / 2));
+  const m = Math.max(1, Math.round(Math.sqrt(n)));
+  if (i < n - 1 + m - 1) return null;
+  let num = 0, den = 0;
+  for (let j = 0; j < m; j++) {
+    const idx = i - m + 1 + j;
+    const wf = wmaAt(closes, idx, n), wh = wmaAt(closes, idx, half);
+    if (wf == null || wh == null) return null;
+    const w = j + 1;
+    num += (2 * wh - wf) * w;
+    den += w;
+  }
+  return num / den;
 }
 
 // 볼린저밴드: population stddev (분모=period, TA-Lib 기본과 동일)
@@ -793,6 +849,49 @@ for (let di = 0; di < tradingDays.length; di++) {
           buy(book, day, code, cd.c[i], budget(), { ctx: { sub: 'bb-brk', bandwidth: bwY.toFixed(4) } });
         }
       }
+    } else if (k === 'hma-turn') {
+      // HMA 슬로프 상향 반전 매수 / 슬로프 하향 청산 (Hull 정석 — 지연 최소 추세 전환)
+      for (const [code, p] of Object.entries(book.positions)) {
+        const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
+        if (i == null) continue;
+        const h0 = hmaAt(cd.c, i, cfg.period), h1 = hmaAt(cd.c, i - 1, cfg.period);
+        if (cd.c[i] <= p.entry * (1 - cfg.stopPct / 100)) p.exitAtOpen = 'stop_loss';
+        else if (h0 != null && h1 != null && h0 < h1) p.exitAtOpen = 'hma_exit';
+        else if (p.holdDays >= cfg.maxHold) p.exitAtOpen = 'max_hold';
+      }
+      for (const code of mom) {
+        if (book.positions[code] || Object.keys(book.positions).length >= cfg.slots) continue;
+        const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
+        if (i == null) continue;
+        const h0 = hmaAt(cd.c, i, cfg.period), h1 = hmaAt(cd.c, i - 1, cfg.period), h2 = hmaAt(cd.c, i - 2, cfg.period);
+        if (h0 == null || h1 == null || h2 == null) continue;
+        // 슬로프 상향 반전 (직전까지 하락/보합 → 당일 상승) + 종가가 HMA 위
+        if (h0 > h1 && h1 <= h2 && cd.c[i] > h0) {
+          buy(book, day, code, cd.c[i], budget(), { ctx: { sub: 'hma-turn' } });
+        }
+      }
+    } else if (k === 'hma-dip') {
+      // HMA 하향 이탈 매수 → HMA 상향 복귀 청산 (평균회귀 falsification — rsi2 중복률 확인 전제)
+      const uni = mcapUniverse(day, MCAP_TOP);
+      for (const [code, p] of Object.entries(book.positions)) {
+        const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
+        if (i == null) continue;
+        const h0 = hmaAt(cd.c, i, cfg.period);
+        if (cd.c[i] <= p.entry * (1 - cfg.stopPct / 100)) p.exitAtOpen = 'stop_loss';
+        else if (h0 != null && cd.c[i] > h0) p.exitAtOpen = 'hma_revert';
+        else if (p.holdDays >= cfg.maxHold) p.exitAtOpen = 'max_hold';
+      }
+      for (const code of uni) {
+        if (book.positions[code] || Object.keys(book.positions).length >= cfg.slots) continue;
+        const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
+        if (i == null || i < 1) continue;
+        const h0 = hmaAt(cd.c, i, cfg.period), h1 = hmaAt(cd.c, i - 1, cfg.period);
+        if (h0 == null || h1 == null) continue;
+        // 전일 HMA 위 → 당일 HMA 아래 (하향 이탈 첫날만)
+        if (cd.c[i - 1] >= h1 && cd.c[i] < h0) {
+          buy(book, day, code, cd.c[i], budget(), { ctx: { sub: 'hma-dip' } });
+        }
+      }
     }
 
     // ③ 자산·MDD·월별 수익 추적
@@ -836,6 +935,19 @@ for (const [k] of ACTIVE) {
   console.log(
     `${k.padEnd(12)} ${String(b.trades.length).padStart(4)}  ${String(b.trades.length ? Math.round(wins.length / b.trades.length * 100) : 0).padStart(4)}%  ${String(pf).padStart(5)}  ${cagr.toFixed(1).padStart(6)}%  ${b.maxDD.toFixed(1).padStart(5)}%  ${String(monWin).padStart(4)}%  ${String(avgHold).padStart(6)}일  ${b.cash.toLocaleString()}원`
   );
+}
+
+// 레짐 전환 통계 — hma 레짐 whipsaw 비교용 (sweep-hma.mjs가 이 줄을 파싱)
+{
+  let prev = null, trans = 0;
+  const dist = { UP: 0, NEUTRAL: 0, DOWN: 0 };
+  for (const day of tradingDays) {
+    const r = marketRegime(day);
+    dist[r]++;
+    if (prev && r !== prev) trans++;
+    prev = r;
+  }
+  console.log(`\n레짐 통계 (mode=${REGIME_MODE}${REGIME_MODE === 'hma' ? ` N=${REGIME_HMA_N}` : ''}): 전환 ${trans}회 | UP ${dist.UP}일 / NEUTRAL ${dist.NEUTRAL}일 / DOWN ${dist.DOWN}일`);
 }
 
 // 연도별 수익률 분해 (레짐별 일관성)
