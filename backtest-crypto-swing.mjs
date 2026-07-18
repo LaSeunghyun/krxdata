@@ -29,14 +29,27 @@ const MIN_TURNOVER = Number(argOf('--minturn', 1e9)); // 20일 평균 거래대�
 const CACHE = join(__dirname, 'candles-crypto-daily.jsonl');
 const DEPTH = 1_700; // ~2021-01 커버
 
-const STRATEGIES = {
+let STRATEGIES = {
   // 주식 hi120 이식: N일 신고가 돌파 + 최소 돌파폭, 트레일링 청산 (코인 변동성 반영해 트레일 15%)
   'hi-break': { lookback: 60, minBreakout: 3, trailPct: 15, maxHold: 60, stopPct: 12 },
   // 주식 rsi2 이식: 장기 상승추세(MA200 위) + RSI2 과매도 → MA5 회귀 익절
   'dip-mr':   { rsiMax: 10, trendMA: 200, exitMA: 5, stopPct: 10, maxHold: 10 },
+  // codex 설계 A: 횡단면 극단값 순위선별 평균회귀 — 당일 시장 내 가장 눌린 top3만 (codex-winrate-response.md)
+  'xsect-mr': { minTurn: 5e9, trendMA: 200, ageMin: 200, rsiMax: 5, ma20Dev: -8, retDecile: 0.10, topN: 3, exitMA: 5, maxHold: 5, stopPct: 8, xsect: true },
+  // codex 설계 C: 과매도 신호 후 1일 한정 지정가(close − 0.5×ATR20) 눌림 진입 — 갭추격 제거, 미체결=무거래
+  'limit-dip': { trendMA: 200, rsiMax: 10, atrMin: 4, atrMax: 12, atrK: 0.5, exitMA: 5, maxHold: 5, stopPct: 7, limitDip: true },
 };
+// 승률 프론티어 스윕 (--tpsweep): dip 진입 + 비대칭 청산(작은 목표/넓은 손절) — 승률↑ 대가로 좌꼬리 집중.
+// 목표는 당일 고가 터치 시 목표가 체결, 손절은 당일 저가 터치 시 체결(동시 터치 = 손절 우선, 보수).
+const TPSWEEP = argv.includes('--tpsweep');
+if (TPSWEEP) {
+  STRATEGIES = {};
+  for (const tp of [1, 2, 3])
+    for (const stop of [5, 10, 15])
+      STRATEGIES[`tp${tp}-s${stop}`] = { rsiMax: 10, trendMA: 200, tpPct: tp, stopPct: stop, maxHold: 10, dipTp: true };
+}
 const ACTIVE = Object.entries(STRATEGIES).filter(([k]) => !ONLY.length || ONLY.includes(k));
-const RUN_ROT = !ONLY.length || ONLY.includes('mom-rot');
+const RUN_ROT = !TPSWEEP && (!ONLY.length || ONLY.includes('mom-rot'));
 
 const dayOf = (ts) => ts.slice(0, 10).replace(/-/g, '');
 const slipBuy = (p) => p * (1 + SLIP_BPS / 10_000);
@@ -104,6 +117,14 @@ function avgTurn20(cd, i) {
   for (let j = i - 19; j <= i; j++) s += cd.q[j] ?? cd.c[j] * cd.v[j];
   return s / 20;
 }
+function atr20(cd, i) {
+  if (i < 21) return null;
+  let tr = 0;
+  for (let j = i - 19; j <= i; j++) {
+    tr += Math.max(cd.h[j] - cd.l[j], Math.abs(cd.h[j] - cd.c[j - 1]), Math.abs(cd.l[j] - cd.c[j - 1]));
+  }
+  return tr / 20;
+}
 const btcRegimeOk = (ts) => {
   if (!REGIME) return true;
   const i = btc.byTs.get(ts);
@@ -112,7 +133,7 @@ const btcRegimeOk = (ts) => {
 };
 
 // ── 슬롯형 시뮬 (hi-break / dip-mr) ─────────────────────────────
-const books = Object.fromEntries(ACTIVE.map(([k]) => [k, { cash: CAPITAL, positions: {}, trades: [], pending: {}, peak: CAPITAL, maxDD: 0, monthly: new Map(), lastEq: CAPITAL }]));
+const books = Object.fromEntries(ACTIVE.map(([k]) => [k, { cash: CAPITAL, positions: {}, trades: [], pending: {}, limits: {}, peak: CAPITAL, maxDD: 0, monthly: new Map(), lastEq: CAPITAL }]));
 function equity(book) {
   let eq = book.cash;
   for (const p of Object.values(book.positions)) eq += (p.lastClose ?? p.entry) * p.qty;
@@ -150,10 +171,33 @@ for (let t = 0; t < timeline.length; t++) {
           }
         }
       }
+      // codex C: 전일 지정가 주문 체결 시도 (1일 한정, 미체결=취소)
+      if (cfg.limitDip && book.limits[market]) {
+        const ord = book.limits[market];
+        delete book.limits[market];
+        if (!book.positions[market] && Object.keys(book.positions).length < SLOTS && cd.l[i] <= ord.limit) {
+          const budget = Math.floor(equity(book) / SLOTS);
+          const fill = ord.limit; // 지정가 = 메이커 체결 가정 (슬리피지 없음, 수수료만 — 스펙에 명시)
+          const qty = budget / fill;
+          if (budget >= 5_000) {
+            book.cash -= fill * qty * (1 + FEE_BPS / 10_000);
+            book.positions[market] = { qty, entry: fill, hi: fill, days: 0, lastClose: c, justEntered: true };
+          }
+        }
+      }
       const p = book.positions[market];
       if (p) {
+        if (p.justEntered) { delete p.justEntered; p.lastClose = c; continue; } // codex C: 체결 당일 청산 판정 금지
         p.days++; p.lastClose = c; p.hi = Math.max(p.hi, cd.h[i]);
         if (p.exitNext) { closePos(book, market, slipSell(o), p.exitNext, ts); continue; }
+        if (cfg.dipTp) {
+          const stopLv = p.entry * (1 - cfg.stopPct / 100);
+          const tpLv = p.entry * (1 + cfg.tpPct / 100);
+          if (cd.l[i] <= stopLv) { closePos(book, market, slipSell(Math.min(o, stopLv)), 'stop_touch', ts); continue; }
+          if (cd.h[i] >= tpLv) { closePos(book, market, slipSell(Math.max(o, tpLv)), 'tp_touch', ts); continue; } // 갭상승 개장 시 시가 체결(유리), 아니면 목표가
+          if (p.days >= cfg.maxHold) p.exitNext = 'max_hold';
+          continue;
+        }
         if (k === 'hi-break') {
           if (c <= p.entry * (1 - cfg.stopPct / 100)) p.exitNext = 'stop_loss';
           else if (c <= p.hi * (1 - cfg.trailPct / 100)) p.exitNext = 'trailing';
@@ -167,6 +211,7 @@ for (let t = 0; t < timeline.length; t++) {
         continue;
       }
       // 진입 스크리닝 (종가 판정 → 익일 시가)
+      if (cfg.xsect) continue; // codex A: 진입은 일말 횡단면 pre-pass에서만
       if (!btcRegimeOk(ts) || Object.keys(book.positions).length >= SLOTS || book.pending[market]) continue;
       if (avgTurn20(cd, i) < MIN_TURNOVER || c < 1) continue;
       if (k === 'hi-break') {
@@ -175,9 +220,51 @@ for (let t = 0; t < timeline.length; t++) {
         for (let j = i - cfg.lookback; j < i; j++) hh = Math.max(hh, cd.h[j]);
         const brk = (c / hh - 1) * 100;
         if (c > hh && brk >= cfg.minBreakout) book.pending[market] = true;
+      } else if (cfg.limitDip) {
+        // codex C: 신호일 종가 − 0.5×ATR20 지정가를 다음날 1일 한정으로 예약
+        const ma200 = sma(cd.c, i, cfg.trendMA);
+        const atr = atr20(cd, i);
+        if (ma200 == null || atr == null || c <= ma200) continue;
+        const atrPct = (atr / c) * 100;
+        if (rsi2(cd.c, i) < cfg.rsiMax && atrPct >= cfg.atrMin && atrPct <= cfg.atrMax) {
+          book.limits[market] = { limit: c - cfg.atrK * atr };
+        }
       } else {
         const ma200 = sma(cd.c, i, cfg.trendMA);
         if (ma200 != null && c > ma200 && rsi2(cd.c, i) < cfg.rsiMax) book.pending[market] = true;
+      }
+    }
+    // codex A: 일말 횡단면 순위선별 — 당일 종가로 후보 랭킹 → 익일 시가 매수 pending (마켓 루프 후 실행 = 당일 체결 lookahead 방지)
+    if (cfg.xsect && btcRegimeOk(ts)) {
+      const uni = [];
+      for (const [market, cd] of pool) {
+        const i = cd.byTs.get(ts);
+        if (i == null || i < Math.max(cfg.ageMin, cfg.trendMA + 1)) continue;
+        const c = cd.c[i];
+        if (avgTurn20(cd, i) < cfg.minTurn) continue;
+        const ma200 = sma(cd.c, i, cfg.trendMA);
+        if (ma200 == null || c <= ma200) continue;
+        uni.push({ market, i, cd, c, ret3: c / cd.c[i - 3] - 1 });
+      }
+      if (uni.length >= 10) {
+        const rets = uni.map(u => u.ret3).sort((a, b) => a - b);
+        const decile = rets[Math.floor(rets.length * cfg.retDecile)];
+        const cands = [];
+        for (const u of uni) {
+          const r2v = rsi2(u.cd.c, u.i);
+          const ma20 = sma(u.cd.c, u.i, 20);
+          const dev = ma20 ? (u.c / ma20 - 1) * 100 : 0;
+          if (r2v < cfg.rsiMax && u.ret3 < decile && dev < cfg.ma20Dev) cands.push({ market: u.market, r2v, ret3: u.ret3, dev });
+        }
+        if (cands.length) {
+          const rankOf = (key) => { const s = [...cands].sort((a, b) => a[key] - b[key]); const m = new Map(); s.forEach((x, idx) => m.set(x.market, idx)); return m; };
+          const ra = rankOf('r2v'), rb = rankOf('ret3'), rc = rankOf('dev');
+          cands.forEach(x => { x.score = ra.get(x.market) + rb.get(x.market) + rc.get(x.market); });
+          cands.sort((a, b) => a.score - b.score);
+          for (const x of cands.slice(0, cfg.topN)) {
+            if (!book.positions[x.market]) book.pending[x.market] = true;
+          }
+        }
       }
     }
     const eq = equity(book);
