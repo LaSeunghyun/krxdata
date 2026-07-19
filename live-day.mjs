@@ -24,6 +24,7 @@ const MIN_TURN_24H = 50e8;
 const PLAN = join(__dirname, 'live-day-plan.json');
 const STATE = join(__dirname, 'live-day-state.json');
 const LOG = join(__dirname, 'live-day-log.txt');
+const JOURNAL = join(__dirname, 'live-trade-journal.json');
 
 const now = () => new Date(Date.now() + 9 * 3_600_000).toISOString().replace('T', ' ').slice(0, 19); // KST
 const log = (msg) => { const line = `[${now()}] ${msg}`; console.log(line); appendFileSync(LOG, line + '\n'); };
@@ -110,7 +111,7 @@ if (existsSync(STATE)) {
       const order = await createUpbitOrder({ market: p.market, side: 'bid', ord_type: 'price', price: String(plan.per) });
       const fill = await waitFill(order.uuid, `매수 ${p.market}`);
       if (fill && fill.vol > 0) {
-        state.positions.push({ market: p.market, name: p.name, book: p.book, ret7: (p.ret7 * 100).toFixed(1), qty: fill.vol, entry: fill.avg, spent: fill.funds + fill.fee, status: 'open' });
+        state.positions.push({ market: p.market, name: p.name, book: p.book, ret7: (p.ret7 * 100).toFixed(1), qty: fill.vol, entry: fill.avg, spent: fill.funds + fill.fee, status: 'open', buyAt: Date.now() });
         log(`매수 체결 ${p.book} ${p.market} ${fill.vol} @평균 ${Math.round(fill.avg).toLocaleString()}원 (${Math.round(fill.funds).toLocaleString()}원+수수료${Math.round(fill.fee)}원)`);
       } else log(`매수 실패/미체결 ${p.market} — 스킵`);
     } catch (e) { log(`매수 오류 ${p.market}: ${e.message.slice(0, 120)}`); }
@@ -120,9 +121,12 @@ if (existsSync(STATE)) {
 
 // 재진입 (2026-07-18 사용자 지시): 청산으로 생긴 현금을 같은 북 기준 재스캔 최상위 후보에 즉시 투입.
 // 방금 청산한 마켓·현재 보유 마켓은 제외. 기간종료 청산에는 미적용.
-async function reEnter(book, excludeSet) {
+async function reEnter(bookReq, excludeSet) {
   try {
     if (!(await btcRegimeOk())) { log(`재진입 보류 — 레짐 OFF(BTC<MA50), 현금 대기`); return; }
+    // 학습 반영: 누적 성적으로 북 선택 조정 (표본 4건+·승률 25%p+ 차 시 나은 북으로)
+    const { book, why } = preferBook(bookReq);
+    if (book !== bookReq) log(`  [학습반영] 재진입 북 전환 ${bookReq}→${book} (${why})`);
     const accounts = await getUpbitAccounts();
     const krw = Math.floor(Number(accounts.find(a => a.currency === 'KRW')?.balance ?? 0));
     const budget = Math.floor(krw * 0.995);
@@ -144,7 +148,7 @@ async function reEnter(book, excludeSet) {
     const order = await createUpbitOrder({ market: pick.market, side: 'bid', ord_type: 'price', price: String(budget) });
     const fill = await waitFill(order.uuid, `재진입 ${pick.market}`);
     if (fill && fill.vol > 0) {
-      state.positions.push({ market: pick.market, name: pick.name, book, ret7: (pick.ret7 * 100).toFixed(1), qty: fill.vol, entry: fill.avg, spent: fill.funds + fill.fee, status: 'open', reentry: true });
+      state.positions.push({ market: pick.market, name: pick.name, book, ret7: (pick.ret7 * 100).toFixed(1), qty: fill.vol, entry: fill.avg, spent: fill.funds + fill.fee, status: 'open', reentry: true, buyAt: Date.now() });
       log(`재진입 매수 ${book} ${pick.market}(${pick.name}, 7일 ${(pick.ret7 * 100).toFixed(1)}%) ${fill.vol} @평균 ${fill.avg < 10 ? fill.avg.toFixed(4) : Math.round(fill.avg).toLocaleString()}원 (${Math.round(fill.funds).toLocaleString()}원)`);
     }
   } catch (e) { log(`재진입 오류: ${e.message.slice(0, 120)}`); }
@@ -161,10 +165,43 @@ const sellAll = async (p, reason) => {
     if (fill) {
       const proceeds = fill.funds - fill.fee;
       p.status = 'closed'; p.exit = fill.avg; p.pnl = Math.round(proceeds - p.spent);
-      log(`매도 체결 ${p.book} ${p.market} @평균 ${Math.round(fill.avg ?? 0).toLocaleString()}원 (${reason}) PnL ${p.pnl >= 0 ? '+' : ''}${p.pnl.toLocaleString()}원`);
+      const retPct = ((fill.avg / p.entry - 1) * 100).toFixed(1);
+      const holdMin = p.buyAt ? Math.round((Date.now() - p.buyAt) / 60000) : null;
+      log(`매도 체결 ${p.book} ${p.market} @평균 ${Math.round(fill.avg ?? 0).toLocaleString()}원 (${reason}) PnL ${p.pnl >= 0 ? '+' : ''}${p.pnl.toLocaleString()}원 (${retPct}%${holdMin != null ? `, ${holdMin}분보유` : ''})`);
+      recordTrade(p, reason, retPct, holdMin);
     }
   } catch (e) { log(`매도 오류 ${p.market}: ${e.message.slice(0, 120)}`); }
 };
+
+// ── 학습 루프 (2026-07-19 사용자 지시): 매도마다 잘된/잘못된 이유 기록 → 다음 매수에 반영 ──
+// journal: 북별 누적 성적. reEnter가 이걸 읽어 성적 나쁜 북을 회피(최소 표본 확보 후).
+function loadJournal() {
+  try { return JSON.parse(readFileSync(JOURNAL, 'utf8')); } catch { return { trades: [], books: {} }; }
+}
+function recordTrade(p, reason, retPct, holdMin) {
+  const j = loadJournal();
+  const win = p.pnl > 0;
+  j.trades.push({ ts: now(), market: p.market, book: p.book, reason, retPct: Number(retPct), holdMin, pnl: p.pnl, win, reentry: !!p.reentry });
+  const b = (j.books[p.book] ??= { n: 0, wins: 0, pnl: 0 });
+  b.n++; if (win) b.wins++; b.pnl += p.pnl;
+  writeFileSync(JOURNAL, JSON.stringify(j, null, 1));
+  // 검토 로그: 잘된 것 / 잘못된 것 판정 + 북 누적 성적
+  const verdict = win
+    ? (reason.includes('익절') ? '✓ 잘됨(익절 규칙대로 이익 실현)' : `✓ 이익 마감(${reason})`)
+    : (reason.includes('손절') ? '✗ 잘못됨(손절선 도달 — 진입 타이밍/종목 오판)' : reason.includes('기간') ? '△ 시간마감 손실(추세 안 나옴)' : `✗ 손실(${reason})`);
+  const wr = Math.round(b.wins / b.n * 100);
+  log(`  [검토] ${p.book} ${verdict} | 누적 ${p.book}: ${b.wins}/${b.n}승(${wr}%) 누적손익 ${b.pnl >= 0 ? '+' : ''}${b.pnl.toLocaleString()}원`);
+}
+// 재진입 북 선택 학습: 두 북 모두 최소 표본(4건+) 있고 한쪽 승률이 확연히 낮으면(≤25%p 차) 나은 북으로 전환
+function preferBook(defaultBook) {
+  const j = loadJournal();
+  const A = j.books['A-모멘텀'], B = j.books['B-반등'];
+  if (!A || !B || A.n < 4 || B.n < 4) return { book: defaultBook, why: '표본부족→기본유지' };
+  const wrA = A.wins / A.n, wrB = B.wins / B.n;
+  if (Math.abs(wrA - wrB) < 0.25) return { book: defaultBook, why: '북간 성적 유사→기본유지' };
+  const better = wrA > wrB ? 'A-모멘텀' : 'B-반등';
+  return { book: better, why: `학습: A${Math.round(wrA*100)}% vs B${Math.round(wrB*100)}% → ${better} 우선` };
+}
 
 const tpPct = state.tp ?? TP_PCT, stopPct = state.stop ?? STOP_PCT;
 while (true) {
