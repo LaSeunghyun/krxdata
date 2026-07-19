@@ -11,6 +11,7 @@ import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { getKrwMarkets, getTickers, getDailyCandles, getUpbitAccounts, createUpbitOrder, getUpbitOrder } from './upbit-api.js';
+import { scoreSignal } from './indicators.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -31,6 +32,32 @@ const log = (msg) => { const line = `[${now()}] ${msg}`; console.log(line); appe
 
 // 레짐 게이트 (2026-07-19 회고 반영): BTC 일봉 종가 > MA50이면 진입 허용, 아니면 현금 대기.
 // 백테스트에서 hi-break train을 +31.6%p 개선한 유일한 실증 장치. 진입·재진입·스윕 모두에 적용.
+// 종목별 지표 기반 익절/손절 + 근거 산출 (2026-07-19 목표 반영). scoreSignal이 null이면 CLI 기본% fallback.
+async function computeExits(market, entryPrice) {
+  try {
+    const cd = (await getDailyCandles(market, 70)).reverse();
+    if (cd.length >= 61) {
+      const s = scoreSignal(cd.map(b => b.close), cd.map(b => b.high), cd.map(b => b.low), cd.map(b => b.volume), cd.length - 1);
+      if (s && s.stop > 0 && s.stop < entryPrice && s.target > entryPrice) {
+        return {
+          stopPrice: entryPrice * (s.stop / s.entry),   // 신호 계산가 대비 비율을 실체결가에 적용
+          targetPrice: entryPrice * (s.target / s.entry),
+          rationale: s.signals.join(' + ') || '지표 근거 약함',
+          score: s.score, rr: Number(s.rr.toFixed(2)),
+          basis: `ATR손절 -${s.stopPct.toFixed(1)}% / 목표 +${s.targetPct.toFixed(1)}% (RR ${s.rr.toFixed(1)}, score ${s.score})`,
+        };
+      }
+    }
+  } catch { /* fallback */ }
+  // fallback: CLI 기본 (--tp/--stop)
+  return {
+    stopPrice: entryPrice * (1 - STOP_PCT / 100),
+    targetPrice: TP_PCT > 0 ? entryPrice * (1 + TP_PCT / 100) : null,
+    rationale: '지표 데이터 부족 → 기본 손익절 적용',
+    score: null, rr: null, basis: `기본 손절 -${STOP_PCT}% / 목표 ${TP_PCT > 0 ? '+' + TP_PCT + '%' : '없음'}`,
+  };
+}
+
 async function btcRegimeOk() {
   try {
     const c = (await getDailyCandles('KRW-BTC', 51)).reverse();
@@ -111,8 +138,10 @@ if (existsSync(STATE)) {
       const order = await createUpbitOrder({ market: p.market, side: 'bid', ord_type: 'price', price: String(plan.per) });
       const fill = await waitFill(order.uuid, `매수 ${p.market}`);
       if (fill && fill.vol > 0) {
-        state.positions.push({ market: p.market, name: p.name, book: p.book, ret7: (p.ret7 * 100).toFixed(1), qty: fill.vol, entry: fill.avg, spent: fill.funds + fill.fee, status: 'open', buyAt: Date.now() });
-        log(`매수 체결 ${p.book} ${p.market} ${fill.vol} @평균 ${Math.round(fill.avg).toLocaleString()}원 (${Math.round(fill.funds).toLocaleString()}원+수수료${Math.round(fill.fee)}원)`);
+        const ex = await computeExits(p.market, fill.avg);
+        state.positions.push({ market: p.market, name: p.name, book: p.book, ret7: (p.ret7 * 100).toFixed(1), qty: fill.vol, entry: fill.avg, spent: fill.funds + fill.fee, status: 'open', buyAt: Date.now(), stopPrice: ex.stopPrice, targetPrice: ex.targetPrice, rationale: ex.rationale });
+        log(`매수 체결 ${p.book} ${p.market} ${fill.vol} @평균 ${Math.round(fill.avg).toLocaleString()}원 (${Math.round(fill.funds).toLocaleString()}원)`);
+        log(`  [근거] ${ex.rationale} | ${ex.basis}`);
       } else log(`매수 실패/미체결 ${p.market} — 스킵`);
     } catch (e) { log(`매수 오류 ${p.market}: ${e.message.slice(0, 120)}`); }
   }
@@ -148,8 +177,13 @@ async function reEnter(bookReq, excludeSet) {
     const order = await createUpbitOrder({ market: pick.market, side: 'bid', ord_type: 'price', price: String(budget) });
     const fill = await waitFill(order.uuid, `재진입 ${pick.market}`);
     if (fill && fill.vol > 0) {
-      state.positions.push({ market: pick.market, name: pick.name, book, ret7: (pick.ret7 * 100).toFixed(1), qty: fill.vol, entry: fill.avg, spent: fill.funds + fill.fee, status: 'open', reentry: true, buyAt: Date.now() });
-      log(`재진입 매수 ${book} ${pick.market}(${pick.name}, 7일 ${(pick.ret7 * 100).toFixed(1)}%) ${fill.vol} @평균 ${fill.avg < 10 ? fill.avg.toFixed(4) : Math.round(fill.avg).toLocaleString()}원 (${Math.round(fill.funds).toLocaleString()}원)`);
+      const ex = await computeExits(pick.market, fill.avg);
+      // 학습 참고: 과거 이 셋업 근거가 반복 손실이면 로그로 경고 (매수 자체는 진행 — 표본 적을 때 과잉반응 방지)
+      const past = pastSetupStats(ex.rationale);
+      if (past && past.n >= 3 && past.wins / past.n < 0.34) log(`  [학습경고] 유사 근거 과거 ${past.wins}/${past.n}승 — 신뢰 낮음`);
+      state.positions.push({ market: pick.market, name: pick.name, book, ret7: (pick.ret7 * 100).toFixed(1), qty: fill.vol, entry: fill.avg, spent: fill.funds + fill.fee, status: 'open', reentry: true, buyAt: Date.now(), stopPrice: ex.stopPrice, targetPrice: ex.targetPrice, rationale: ex.rationale });
+      log(`재진입 매수 ${book} ${pick.market}(${pick.name}, 7일 ${(pick.ret7 * 100).toFixed(1)}%) @평균 ${fill.avg < 10 ? fill.avg.toFixed(4) : Math.round(fill.avg).toLocaleString()}원 (${Math.round(fill.funds).toLocaleString()}원)`);
+      log(`  [근거] ${ex.rationale} | ${ex.basis}`);
     }
   } catch (e) { log(`재진입 오류: ${e.message.slice(0, 120)}`); }
 }
@@ -168,6 +202,7 @@ const sellAll = async (p, reason) => {
       const retPct = ((fill.avg / p.entry - 1) * 100).toFixed(1);
       const holdMin = p.buyAt ? Math.round((Date.now() - p.buyAt) / 60000) : null;
       log(`매도 체결 ${p.book} ${p.market} @평균 ${Math.round(fill.avg ?? 0).toLocaleString()}원 (${reason}) PnL ${p.pnl >= 0 ? '+' : ''}${p.pnl.toLocaleString()}원 (${retPct}%${holdMin != null ? `, ${holdMin}분보유` : ''})`);
+      if (p.rationale) log(`  [진입근거 복기] ${p.rationale}`);
       recordTrade(p, reason, retPct, holdMin);
     }
   } catch (e) { log(`매도 오류 ${p.market}: ${e.message.slice(0, 120)}`); }
@@ -178,10 +213,19 @@ const sellAll = async (p, reason) => {
 function loadJournal() {
   try { return JSON.parse(readFileSync(JOURNAL, 'utf8')); } catch { return { trades: [], books: {} }; }
 }
+// 과거 유사 근거(진입 지표 셋업)의 성적 — 첫 지표 토큰 기준 매칭. 매수 전 참고(리스크 헷지).
+function pastSetupStats(rationale) {
+  if (!rationale) return null;
+  const key = rationale.split(' + ')[0]; // 대표 근거(예: 'MA정배열...')
+  const j = loadJournal();
+  const rel = j.trades.filter(t => t.rationale && t.rationale.startsWith(key.slice(0, 6)));
+  if (!rel.length) return null;
+  return { n: rel.length, wins: rel.filter(t => t.win).length };
+}
 function recordTrade(p, reason, retPct, holdMin) {
   const j = loadJournal();
   const win = p.pnl > 0;
-  j.trades.push({ ts: now(), market: p.market, book: p.book, reason, retPct: Number(retPct), holdMin, pnl: p.pnl, win, reentry: !!p.reentry });
+  j.trades.push({ ts: now(), market: p.market, book: p.book, reason, retPct: Number(retPct), holdMin, pnl: p.pnl, win, reentry: !!p.reentry, rationale: p.rationale ?? null });
   const b = (j.books[p.book] ??= { n: 0, wins: 0, pnl: 0 });
   b.n++; if (win) b.wins++; b.pnl += p.pnl;
   writeFileSync(JOURNAL, JSON.stringify(j, null, 1));
@@ -204,6 +248,13 @@ function preferBook(defaultBook) {
 }
 
 const tpPct = state.tp ?? TP_PCT, stopPct = state.stop ?? STOP_PCT;
+// 상태 복원 시 종목별 익절/손절 미설정 포지션(구버전 매수분) 백필 — 지표로 재계산
+for (const p of state.positions.filter(x => x.status === 'open' && x.stopPrice == null)) {
+  const ex = await computeExits(p.market, p.entry);
+  p.stopPrice = ex.stopPrice; p.targetPrice = ex.targetPrice; p.rationale = p.rationale ?? ex.rationale;
+  log(`[백필] ${p.market} 종목별 손익절 설정 — 손절 ${Math.round(p.stopPrice).toLocaleString()} / 목표 ${p.targetPrice ? Math.round(p.targetPrice).toLocaleString() : '없음'} (${ex.rationale})`);
+}
+if (state.positions.some(x => x.status === 'open')) writeFileSync(STATE, JSON.stringify(state, null, 1));
 while (true) {
   const open = state.positions.filter(p => p.status === 'open');
   const ended = Date.now() >= state.endsAtMs;
@@ -215,9 +266,12 @@ while (true) {
   for (const p of open) {
     const t = tick.get(p.market);
     if (!t) continue;
+    // 종목별 지표 기반 손익절 (per-symbol) — 없으면 전역% fallback
+    const stopHit = p.stopPrice != null ? t.price <= p.stopPrice : t.price <= p.entry * (1 - stopPct / 100);
+    const tgtHit = p.targetPrice != null ? t.price >= p.targetPrice : (tpPct > 0 && t.price >= p.entry * (1 + tpPct / 100));
     if (ended) await sellAll(p, '기간종료');
-    else if (t.price <= p.entry * (1 - stopPct / 100)) await sellAll(p, `손절 -${stopPct}%`);
-    else if (tpPct > 0 && t.price >= p.entry * (1 + tpPct / 100)) await sellAll(p, `익절 +${tpPct}%`);
+    else if (stopHit) await sellAll(p, `손절(종목별 ${p.stopPrice != null ? Math.round((p.stopPrice / p.entry - 1) * 100) + '%' : '-' + stopPct + '%'})`);
+    else if (tgtHit) await sellAll(p, `익절(종목별 ${p.targetPrice != null ? '+' + Math.round((p.targetPrice / p.entry - 1) * 100) + '%' : '+' + tpPct + '%'})`);
     // 청산 직후 재진입 (기간종료 제외)
     if (!ended && p.status === 'closed') {
       const exclude = new Set([p.market, ...state.positions.filter(x => x.status === 'open').map(x => x.market)]);
