@@ -39,12 +39,18 @@ async function computeExits(market, entryPrice) {
     if (cd.length >= 61) {
       const s = scoreSignal(cd.map(b => b.close), cd.map(b => b.high), cd.map(b => b.low), cd.map(b => b.volume), cd.length - 1);
       if (s && s.stop > 0 && s.stop < entryPrice && s.target > entryPrice) {
+        // 손절 -10% 하드캡: ATR 손절이 10% 넘으면 -10%로 제한 (고변동 파라볼릭 손실 폭주 방지)
+        const rawStopPrice = entryPrice * (s.stop / s.entry);
+        const stopPrice = Math.max(rawStopPrice, entryPrice * 0.90);
+        const targetPrice = entryPrice * (s.target / s.entry);
+        const capped = stopPrice > rawStopPrice;
+        const realStopPct = (stopPrice / entryPrice - 1) * 100;
+        const realRr = (targetPrice - entryPrice) / (entryPrice - stopPrice);
         return {
-          stopPrice: entryPrice * (s.stop / s.entry),   // 신호 계산가 대비 비율을 실체결가에 적용
-          targetPrice: entryPrice * (s.target / s.entry),
+          stopPrice, targetPrice,
           rationale: s.signals.join(' + ') || '지표 근거 약함',
-          score: s.score, rr: Number(s.rr.toFixed(2)),
-          basis: `ATR손절 -${s.stopPct.toFixed(1)}% / 목표 +${s.targetPct.toFixed(1)}% (RR ${s.rr.toFixed(1)}, score ${s.score})`,
+          score: s.score, rr: Number(realRr.toFixed(2)),
+          basis: `손절 ${realStopPct.toFixed(1)}%${capped ? '(하드캡)' : ''} / 목표 +${s.targetPct.toFixed(1)}% (RR ${realRr.toFixed(1)}, score ${s.score})`,
         };
       }
     }
@@ -266,11 +272,14 @@ while (true) {
   for (const p of open) {
     const t = tick.get(p.market);
     if (!t) continue;
-    // 종목별 지표 기반 손익절 (per-symbol) — 없으면 전역% fallback
-    const stopHit = p.stopPrice != null ? t.price <= p.stopPrice : t.price <= p.entry * (1 - stopPct / 100);
+    // 종목별 지표 기반 손익절 (per-symbol) — 단 손절은 최대 -10% 하드캡(고변동 파라볼릭 ATR 손절 폭주 방지)
+    const MAX_STOP_PCT = 10;
+    const hardFloor = p.entry * (1 - MAX_STOP_PCT / 100);
+    const effStop = p.stopPrice != null ? Math.max(p.stopPrice, hardFloor) : p.entry * (1 - stopPct / 100);
+    const stopHit = t.price <= effStop;
     const tgtHit = p.targetPrice != null ? t.price >= p.targetPrice : (tpPct > 0 && t.price >= p.entry * (1 + tpPct / 100));
     if (ended) await sellAll(p, '기간종료');
-    else if (stopHit) await sellAll(p, `손절(종목별 ${p.stopPrice != null ? Math.round((p.stopPrice / p.entry - 1) * 100) + '%' : '-' + stopPct + '%'})`);
+    else if (stopHit) await sellAll(p, `손절(${Math.round((effStop / p.entry - 1) * 100)}%${p.stopPrice != null && p.stopPrice < hardFloor ? ' 하드캡' : ''})`);
     else if (tgtHit) await sellAll(p, `익절(종목별 ${p.targetPrice != null ? '+' + Math.round((p.targetPrice / p.entry - 1) * 100) + '%' : '+' + tpPct + '%'})`);
     // 청산 직후 재진입 (기간종료 제외)
     if (!ended && p.status === 'closed') {
