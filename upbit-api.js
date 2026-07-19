@@ -1,12 +1,21 @@
 /**
- * upbit-api.js — 업비트 공개(Quotation) API 클라이언트 (시세 조회 전용, 키 불필요)
- *   캔들·마켓·현재가만 구현. 인증 API(주문·잔고)는 의도적 미구현 —
- *   백테스트로 엣지가 실증되기 전까지 코인 실거래 경로를 만들지 않는다 (PLAN-100M.md 규율).
+ * upbit-api.js — 업비트 API 클라이언트
+ *   Quotation(시세): 키 불필요. 캔들·마켓·현재가.
+ *   Exchange(잔고·주문): JWT 인증 (UPBIT_ACCESS_KEY / UPBIT_SECRET_KEY in .env).
+ *     ※ 원래 "엣지 실증 전 실거래 경로 미구현" 규율이었으나 2026-07-18 사용자 명시 지시로 구현.
+ *       76개 검증 채택 0 상태에서의 실거래임을 사용자가 인지하고 결정함 (스펙 기록 참조).
  *
- *   레이트리밋: quotation 캔들 그룹 ~10 req/s per IP → 125ms 슬롯 페이싱 + 429 백오프.
+ *   레이트리밋: quotation 캔들 ~10 req/s → 125ms 페이싱 / exchange 주문 8 req/s·비주문 30 req/s.
  *   반환 정규화: { timestamp(KST ISO), open, high, low, close, volume, turnover(원) } 최신순.
  */
+import crypto from "node:crypto";
+import dotenv from "dotenv";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { FETCH_TIMEOUT_MS } from "./config.js";
+
+const __dirname2 = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.join(__dirname2, ".env") });
 
 const UPBIT_BASE = "https://api.upbit.com";
 
@@ -99,4 +108,61 @@ export async function getDailyCandles(market, total = 200, to = null) {
 /** 분봉 — unit ∈ {1,3,5,15,10,30,60,240} */
 export async function getMinuteCandles(market, unit = 60, total = 200, to = null) {
   return getCandlesPaged(`/v1/candles/minutes/${unit}`, market, total, to);
+}
+
+// ── Exchange API (JWT 인증) ──────────────────────────────────
+export function isUpbitTradingConfigured(env = process.env) {
+  return Boolean(env.UPBIT_ACCESS_KEY && env.UPBIT_SECRET_KEY);
+}
+
+function upbitJwt(queryString) {
+  const payload = { access_key: process.env.UPBIT_ACCESS_KEY, nonce: crypto.randomUUID() };
+  if (queryString) {
+    payload.query_hash = crypto.createHash("sha512").update(queryString, "utf8").digest("hex");
+    payload.query_hash_alg = "SHA512";
+  }
+  const b64 = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
+  const head = b64({ alg: "HS256", typ: "JWT" });
+  const body = b64(payload);
+  const sig = crypto.createHmac("sha256", process.env.UPBIT_SECRET_KEY).update(`${head}.${body}`).digest("base64url");
+  return `${head}.${body}.${sig}`;
+}
+
+// 주문은 멱등하지 않음 — 429/5xx 자동 재시도 금지(toss-api와 동일 원칙), 실패는 즉시 throw.
+async function exchangeReq(method, apiPath, params = {}) {
+  const qs = new URLSearchParams(params).toString();
+  const url = `${UPBIT_BASE}${apiPath}${method !== "POST" && qs ? `?${qs}` : ""}`;
+  await rateSlot();
+  const res = await fetchT(url, {
+    method,
+    headers: {
+      Authorization: `Bearer ${upbitJwt(qs)}`,
+      ...(method === "POST" ? { "Content-Type": "application/json" } : {}),
+    },
+    ...(method === "POST" ? { body: JSON.stringify(params) } : {}),
+  });
+  if (!res.ok) throw new Error(`업비트 Exchange ${method} ${apiPath}: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+/** 전체 잔고 — [{ currency, balance, locked, avg_buy_price, unit_currency }] */
+export async function getUpbitAccounts() {
+  return exchangeReq("GET", "/v1/accounts");
+}
+
+/** 주문 생성 — 시장가 매수: { market, side:'bid', ord_type:'price', price:<KRW금액> }
+ *              시장가 매도: { market, side:'ask', ord_type:'market', volume:<수량> }
+ *              지정가:      { market, side, ord_type:'limit', price, volume } */
+export async function createUpbitOrder(params) {
+  return exchangeReq("POST", "/v1/orders", params);
+}
+
+/** 개별 주문 조회 */
+export async function getUpbitOrder(uuid) {
+  return exchangeReq("GET", "/v1/order", { uuid });
+}
+
+/** 주문 취소 */
+export async function cancelUpbitOrder(uuid) {
+  return exchangeReq("DELETE", "/v1/order", { uuid });
 }
