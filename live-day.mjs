@@ -179,7 +179,25 @@ async function reEnter(bookReq, excludeSet) {
     }
     if (!scored.length) { log('재진입 후보 없음'); return; }
     scored.sort((a, b) => b.ret7 - a.ret7);
-    const pick = book.startsWith('A') ? scored[0] : scored[scored.length - 1];
+    // 7일 순위 후보군(A=상위, B=하위) 중 지표 점수(scoreSignal) 최고를 선택하고, 최소 점수 게이트 적용.
+    // 지표 점수 무시하고 저품질(score 32 등) 셋업 매수하던 문제 교정 — "지표로 거래" 목표에 부합.
+    const MIN_SCORE = 50;
+    const shortlist = (book.startsWith('A') ? scored.slice(0, 8) : scored.slice(-8)).reverse();
+    let best = null;
+    for (const cand of shortlist) {
+      try {
+        const cd = (await getDailyCandles(cand.market, 70)).reverse();
+        if (cd.length < 61) continue;
+        const s = scoreSignal(cd.map(b => b.close), cd.map(b => b.high), cd.map(b => b.low), cd.map(b => b.volume), cd.length - 1);
+        if (s && (!best || s.score > best.score)) best = { ...cand, score: s.score };
+      } catch { /* skip */ }
+    }
+    if (!best || best.score < MIN_SCORE) {
+      log(`재진입 보류 — 지표 점수 게이트 미달(최고 ${best ? best.score : 'N/A'} < ${MIN_SCORE}), 현금 대기`);
+      return;
+    }
+    const pick = best;
+    log(`재진입 선정 ${pick.market} (지표점수 ${pick.score}/100, 7일 ${(pick.ret7 * 100).toFixed(1)}%)`);
     const order = await createUpbitOrder({ market: pick.market, side: 'bid', ord_type: 'price', price: String(budget) });
     const fill = await waitFill(order.uuid, `재진입 ${pick.market}`);
     if (fill && fill.vol > 0) {
