@@ -28,6 +28,17 @@ const LOG = join(__dirname, 'live-day-log.txt');
 const now = () => new Date(Date.now() + 9 * 3_600_000).toISOString().replace('T', ' ').slice(0, 19); // KST
 const log = (msg) => { const line = `[${now()}] ${msg}`; console.log(line); appendFileSync(LOG, line + '\n'); };
 
+// 레짐 게이트 (2026-07-19 회고 반영): BTC 일봉 종가 > MA50이면 진입 허용, 아니면 현금 대기.
+// 백테스트에서 hi-break train을 +31.6%p 개선한 유일한 실증 장치. 진입·재진입·스윕 모두에 적용.
+async function btcRegimeOk() {
+  try {
+    const c = (await getDailyCandles('KRW-BTC', 51)).reverse();
+    if (c.length < 51) return true; // 데이터 부족 시 게이트 미적용(보수적으로 진입 허용)
+    const ma50 = c.slice(-50).reduce((s, b) => s + b.close, 0) / 50;
+    return c[c.length - 1].close > ma50;
+  } catch { return true; }
+}
+
 async function waitFill(uuid, tag) {
   for (let i = 0; i < 30; i++) {
     await new Promise(r => setTimeout(r, 1200));
@@ -46,7 +57,14 @@ async function waitFill(uuid, tag) {
 if (argv.includes('--plan')) {
   const accounts = await getUpbitAccounts();
   const krw = Math.floor(Number(accounts.find(a => a.currency === 'KRW')?.balance ?? 0));
-  log(`플랜 생성 — KRW ${krw.toLocaleString()}원, 유니버스 스캔(24h 거래대금 ${MIN_TURN_24H / 1e8}억+, 유의 제외)`);
+  const regime = await btcRegimeOk();
+  if (!regime) {
+    log(`레짐 게이트 OFF — BTC < MA50(약세장) → 신규 진입 보류, 현금 대기. (KRW ${krw.toLocaleString()}원)`);
+    writeFileSync(PLAN, JSON.stringify({ createdAt: now(), krw, per: 0, picks: [], regimeBlocked: true }, null, 1));
+    console.log('\n=== 레짐 게이트 OFF: 약세장이라 신규 진입 안 함 (현금 유지) ===');
+    process.exit(0);
+  }
+  log(`플랜 생성 — KRW ${krw.toLocaleString()}원, 레짐 ON(BTC>MA50), 유니버스 스캔(24h 거래대금 ${MIN_TURN_24H / 1e8}억+, 유의 제외)`);
   const markets = await getKrwMarkets();
   const scored = [];
   for (const m of markets) {
@@ -104,6 +122,7 @@ if (existsSync(STATE)) {
 // 방금 청산한 마켓·현재 보유 마켓은 제외. 기간종료 청산에는 미적용.
 async function reEnter(book, excludeSet) {
   try {
+    if (!(await btcRegimeOk())) { log(`재진입 보류 — 레짐 OFF(BTC<MA50), 현금 대기`); return; }
     const accounts = await getUpbitAccounts();
     const krw = Math.floor(Number(accounts.find(a => a.currency === 'KRW')?.balance ?? 0));
     const budget = Math.floor(krw * 0.995);

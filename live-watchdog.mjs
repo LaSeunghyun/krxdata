@@ -15,7 +15,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const STATE = join(__dirname, 'live-day-state.json');
 const LOG = join(__dirname, 'live-day-log.txt');
 const CHECK_MS = 30_000;
-const GO_ARGS = ['live-day.mjs', '--go', '--until', '2026-07-19T11:00:00+09:00', '--tp', '2', '--stop', '15'];
+const GO_ARGS = ['live-day.mjs', '--go', '--until', '2026-07-26T11:00:00+09:00', '--tp', '2', '--stop', '15'];
 
 const now = () => new Date(Date.now() + 9 * 3_600_000).toISOString().replace('T', ' ').slice(0, 19);
 const log = (m) => { const line = `[${now()}] [watchdog] ${m}`; console.log(line); appendFileSync(LOG, line + '\n'); };
