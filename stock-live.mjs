@@ -16,7 +16,7 @@ import dotenv from 'dotenv';
 import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { getAccounts, getHoldings, getBuyingPower, getPricesMap, getDailyCandles, createOrder, getOrder } from './toss-api.js';
+import { getAccounts, getHoldings, getBuyingPower, getPricesMap, getDailyCandles, createOrder, getOrder, cancelOrder } from './toss-api.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: join(__dirname, '.env') });
@@ -31,6 +31,12 @@ const kst = () => new Date(Date.now() + 9 * 3_600_000);
 const now = () => kst().toISOString().replace('T', ' ').slice(0, 19);
 const log = (m) => { const l = `[${now()}] ${m}`; console.log(l); appendFileSync(LOG, l + '\n'); };
 const marketOpen = () => { const h = kst().getUTCHours(); return h >= 8 && h < 20; }; // 08:00~20:00 KST (NXT 포함)
+// KR 호가단위(2023 개편) — LIMIT 주문가는 틱에 맞아야 함
+function tick(p) { if (p < 2_000) return 1; if (p < 5_000) return 5; if (p < 20_000) return 10; if (p < 50_000) return 50; if (p < 200_000) return 100; if (p < 500_000) return 500; return 1_000; }
+const roundTick = (p) => Math.round(p / tick(p)) * tick(p);
+// NXT 애프터마켓은 MARKET 거부 → LIMIT만. 스프레드 크로싱 지정가로 시장가처럼 즉시 체결 유도.
+const limitBuyPx = (p) => { const t = tick(p); return Math.round((p * 1.005) / t) * t; };   // 현재가 +0.5% 올림틱 (매수 체결 유도)
+const limitSellPx = (p) => { const t = tick(p); return Math.round((p * 0.995) / t) * t; };  // 현재가 -0.5% 내림틱 (매도 체결 유도)
 
 const dbQuery = async (sql) => {
   const r = await fetch(`https://api.supabase.com/v1/projects/${process.env.SUPABASE_PROJECT_REF}/database/query`,
@@ -98,12 +104,19 @@ let state = existsSync(STATE) ? JSON.parse(readFileSync(STATE, 'utf8')) : { meta
 const loadJournal = () => { try { return JSON.parse(readFileSync(JOURNAL, 'utf8')); } catch { return { trades: [] }; } };
 function recordTrade(t) { const j = loadJournal(); j.trades.push(t); writeFileSync(JOURNAL, JSON.stringify(j, null, 1)); }
 
-async function waitFill(orderId, tag) {
-  for (let i = 0; i < 20; i++) {
-    await new Promise(r => setTimeout(r, 1500));
-    try { const o = await getOrder(seq, orderId); if (o?.orderState === 'FILLED' || o?.status === 'FILLED' || o?.orderState === 'DONE') return o; } catch {}
+// 체결 확인: 주문상태 필드명 불확실 → 보유수량 변화로 검증(견고). 미체결이면 주문 취소해 스테일 방지.
+async function settleOrder(orderId, symbol, side, qtyBefore, tag) {
+  for (let i = 0; i < 12; i++) {
+    await new Promise(r => setTimeout(r, 2000));
+    try {
+      const h = await getHoldings(seq);
+      const cur = Number((h?.items ?? []).find(x => x.symbol === symbol)?.quantity ?? 0);
+      if (side === 'BUY' && cur > qtyBefore) return true;
+      if (side === 'SELL' && cur < qtyBefore) return true;
+    } catch {}
   }
-  log(`경고: ${tag} 체결확인 실패 (수동 확인 필요)`); return null;
+  try { await cancelOrder(seq, orderId); log(`  ${tag} 미체결 → 주문취소(스테일 방지)`); } catch {}
+  return false;
 }
 
 log(`=== 주식 연속 트레이더 시작 (계좌 ${accounts[0].no}, 08:00~20:00, LIVE_SLOTS=1, 트레일-${TRAIL_PCT}%/하드-${HARD_STOP_PCT}%) ===`);
@@ -135,11 +148,14 @@ while (true) {
     else if (px <= m.hi * (1 - TRAIL_PCT / 100)) reason = `트레일손절(고점대비 -${TRAIL_PCT}%, ${ret.toFixed(1)}%)`;
     if (reason) {
       try {
-        const o = await createOrder(seq, { symbol: it.symbol, side: 'SELL', orderType: 'MARKET', quantity: String(qty) });
-        await waitFill(o?.orderId ?? o?.id, `매도 ${it.symbol}`);
-        log(`매도 ${it.name}(${it.symbol}) ${qty}주 @${px.toLocaleString()} (${reason})`);
-        recordTrade({ ts: now(), code: it.symbol, name: it.name, side: 'SELL', px, entry, ret: Number(ret.toFixed(1)), reason });
-        delete state.meta[it.symbol];
+        const lpx = limitSellPx(px);
+        const o = await createOrder(seq, { symbol: it.symbol, side: 'SELL', orderType: 'LIMIT', price: String(lpx), quantity: String(qty) });
+        const filled = await settleOrder(o?.orderId ?? o?.id, it.symbol, 'SELL', qty, `매도 ${it.symbol}`);
+        if (filled) {
+          log(`매도 ${it.name}(${it.symbol}) ${qty}주 @${lpx.toLocaleString()} (${reason})`);
+          recordTrade({ ts: now(), code: it.symbol, name: it.name, side: 'SELL', px: lpx, entry, ret: Number(ret.toFixed(1)), reason });
+          delete state.meta[it.symbol];
+        }
       } catch (e) { log(`매도 오류 ${it.symbol}: ${e.message.slice(0, 80)}`); }
     }
   }
@@ -150,16 +166,19 @@ while (true) {
     if (Date.now() - lastSignal >= 900_000 || !signalCache) { signalCache = await pickCandidate(cash); lastSignal = Date.now(); }
     const { regime, pick } = signalCache;
     if (pick) {
-      const qty = Math.floor(cash * 0.999 / pick.px);
+      const lpx = limitBuyPx(pick.px);
+      const qty = Math.floor(cash * 0.999 / lpx);
       if (qty >= 1) {
         try {
-          const o = await createOrder(seq, { symbol: pick.code, side: 'BUY', orderType: 'MARKET', quantity: String(qty) });
-          await waitFill(o?.orderId ?? o?.id, `매수 ${pick.code}`);
-          state.meta[pick.code] = { hi: pick.px, entry: pick.px, sub: pick.sub, boughtAt: now() };
-          log(`매수 ${pick.name}(${pick.code}) ${qty}주 @${pick.px.toLocaleString()} [${pick.sub}, 레짐 ${regime}${pick.rsi2 != null ? ', RSI2 ' + pick.rsi2.toFixed(1) : ''}]`);
-          recordTrade({ ts: now(), code: pick.code, name: pick.name, side: 'BUY', px: pick.px, qty, sub: pick.sub, regime });
-          signalCache = null;
-          writeFileSync(STATE, JSON.stringify(state, null, 1));
+          const o = await createOrder(seq, { symbol: pick.code, side: 'BUY', orderType: 'LIMIT', price: String(lpx), quantity: String(qty) });
+          const filled = await settleOrder(o?.orderId ?? o?.id, pick.code, 'BUY', 0, `매수 ${pick.code}`);
+          if (filled) {
+            state.meta[pick.code] = { hi: pick.px, entry: pick.px, sub: pick.sub, boughtAt: now() };
+            log(`매수 ${pick.name}(${pick.code}) ${qty}주 @${lpx.toLocaleString()} [${pick.sub}, 레짐 ${regime}${pick.rsi2 != null ? ', RSI2 ' + pick.rsi2.toFixed(1) : ''}]`);
+            recordTrade({ ts: now(), code: pick.code, name: pick.name, side: 'BUY', px: lpx, qty, sub: pick.sub, regime });
+            signalCache = null;
+            writeFileSync(STATE, JSON.stringify(state, null, 1));
+          }
         } catch (e) { log(`매수 오류 ${pick.code}: ${e.message.slice(0, 80)}`); }
       }
     }
