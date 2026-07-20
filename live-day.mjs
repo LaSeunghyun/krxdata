@@ -182,22 +182,25 @@ async function reEnter(bookReq, excludeSet) {
     // 7일 순위 후보군(A=상위, B=하위) 중 지표 점수(scoreSignal) 최고를 선택하고, 최소 점수 게이트 적용.
     // 지표 점수 무시하고 저품질(score 32 등) 셋업 매수하던 문제 교정 — "지표로 거래" 목표에 부합.
     const MIN_SCORE = 50;
+    const MAX_ENTRY_RSI = 70; // 회고(2026-07-20): A북 0/3 손절 전부 과열 진입 → RSI>70 파라볼릭 꼭지 매수 veto
     const shortlist = (book.startsWith('A') ? scored.slice(0, 8) : scored.slice(-8)).reverse();
-    let best = null;
+    let best = null, vetoed = 0;
     for (const cand of shortlist) {
       try {
         const cd = (await getDailyCandles(cand.market, 70)).reverse();
         if (cd.length < 61) continue;
         const s = scoreSignal(cd.map(b => b.close), cd.map(b => b.high), cd.map(b => b.low), cd.map(b => b.volume), cd.length - 1);
-        if (s && (!best || s.score > best.score)) best = { ...cand, score: s.score };
+        if (!s) continue;
+        if (s.rsi > MAX_ENTRY_RSI) { vetoed++; continue; } // 과열 종목 진입 차단
+        if (!best || s.score > best.score) best = { ...cand, score: s.score, rsi: s.rsi };
       } catch { /* skip */ }
     }
     if (!best || best.score < MIN_SCORE) {
-      log(`재진입 보류 — 지표 점수 게이트 미달(최고 ${best ? best.score : 'N/A'} < ${MIN_SCORE}), 현금 대기`);
+      log(`재진입 보류 — ${!best ? `과열 veto ${vetoed}건 등으로 후보 없음` : `점수게이트 미달(${best.score}<${MIN_SCORE})`}, 현금 대기`);
       return;
     }
     const pick = best;
-    log(`재진입 선정 ${pick.market} (지표점수 ${pick.score}/100, 7일 ${(pick.ret7 * 100).toFixed(1)}%)`);
+    log(`재진입 선정 ${pick.market} (지표점수 ${pick.score}/100, RSI ${pick.rsi.toFixed(0)}, 7일 ${(pick.ret7 * 100).toFixed(1)}%${vetoed ? `, 과열veto ${vetoed}건 제외` : ''})`);
     const order = await createUpbitOrder({ market: pick.market, side: 'bid', ord_type: 'price', price: String(budget) });
     const fill = await waitFill(order.uuid, `재진입 ${pick.market}`);
     if (fill && fill.vol > 0) {
