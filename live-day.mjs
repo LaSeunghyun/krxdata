@@ -287,6 +287,26 @@ while (true) {
   try { tick = await getTickers([...new Set([...open.map(p => p.market), 'KRW-BTC'])]); }
   catch (e) { log(`시세 실패(재시도): ${e.message.slice(0, 60)}`); await new Promise(r => setTimeout(r, POLL_MS)); continue; }
   if (state.btcBench == null && tick.get('KRW-BTC')) state.btcBench = tick.get('KRW-BTC').price;
+  // 재량 판단의 규칙화 (2026-07-20): 3분마다 각 포지션 지표 재계산 → 과열 자동익절 / 지표붕괴 조기손절.
+  // "1초마다 내가 판단해서 매매"를 실행가능형으로: 판단을 엔진 규칙으로 심어 10초 루프가 자동 집행.
+  const INDIC_REFRESH_MS = 180_000;
+  if (!state._lastIndic || Date.now() - state._lastIndic >= INDIC_REFRESH_MS) {
+    state._lastIndic = Date.now();
+    for (const p of open) {
+      if (p.status !== 'open') continue;
+      try {
+        const cd = (await getDailyCandles(p.market, 70)).reverse();
+        const sig = scoreSignal(cd.map(b => b.close), cd.map(b => b.high), cd.map(b => b.low), cd.map(b => b.volume), cd.length - 1);
+        if (!sig) continue;
+        const t = tick.get(p.market); if (!t) continue;
+        const ret = (t.price / p.entry - 1) * 100;
+        // 과열 자동익절: RSI>70 + 상단밴드 이탈(%B>=1.0) + 이익 중 → 반전 전 익절 (KAITO 판단의 규칙화)
+        if (sig.rsi > 70 && sig.pctB >= 1.0 && ret > 0.5) { p._discSell = `과열익절(RSI${sig.rsi.toFixed(0)},%B${sig.pctB.toFixed(2)},+${ret.toFixed(1)}%)`; }
+        // 지표붕괴 조기손절: MACD 음전 + RSI<45 + 손실 중 → -10% 기다리지 말고 조기 컷
+        else if (sig.macd && sig.macd.hist < 0 && sig.rsi < 45 && ret < -3) { p._discSell = `지표붕괴 조기손절(RSI${sig.rsi.toFixed(0)},MACD음전,${ret.toFixed(1)}%)`; }
+      } catch { /* skip */ }
+    }
+  }
   for (const p of open) {
     const t = tick.get(p.market);
     if (!t) continue;
@@ -297,6 +317,7 @@ while (true) {
     const stopHit = t.price <= effStop;
     const tgtHit = p.targetPrice != null ? t.price >= p.targetPrice : (tpPct > 0 && t.price >= p.entry * (1 + tpPct / 100));
     if (ended) await sellAll(p, '기간종료');
+    else if (p._discSell) await sellAll(p, p._discSell);  // 재량규칙 우선 (과열익절/조기손절)
     else if (stopHit) await sellAll(p, `손절(${Math.round((effStop / p.entry - 1) * 100)}%${p.stopPrice != null && p.stopPrice < hardFloor ? ' 하드캡' : ''})`);
     else if (tgtHit) await sellAll(p, `익절(종목별 ${p.targetPrice != null ? '+' + Math.round((p.targetPrice / p.entry - 1) * 100) + '%' : '+' + tpPct + '%'})`);
     // 청산 직후 재진입 (기간종료 제외)
