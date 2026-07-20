@@ -2,11 +2,12 @@
 /**
  * stock-live.mjs — 주식 실계좌 단일 연속 트레이더 (토스, 2026-07-20 사용자 지시).
  *   코인 live-day를 주식용으로 이식: 08:00~20:00(NXT 포함) 연속 감시, combo-v2 신호 진입,
- *   트레일링(최대익절 지향) 청산, LIVE_SLOTS=1(전액 집중). 단일 프로세스라 이중주문 없음.
+ *   트레일링(최대익절 지향) 청산, LIVE_SLOTS=5 분산 + 확신도 기반 집중(몰빵) 사이징. 단일 프로세스라 이중주문 없음.
  *   ※ 기존 스케줄러 phase(PaperMorning/PaperClose)는 이중주문 방지 위해 비활성화해야 함.
  *
  *   진입: 레짐(005930 MA20/60) → UP:hi120/rsi2, NEUTRAL/DOWN:rsi2. 시총상위·유동성 필터.
- *         현금으로 살 수 있는(주당<cash) 최상위 신호 1종 MARKET 매수.
+ *         후보를 확신도(conviction 0~10)순 정렬 → 확실(≥strongThreshold)하면 현금 집중(몰빵),
+ *         아니면 현금/남은슬롯 균등분산. 살 수 있는 최상위 신호 1종 LIMIT 매수(사이클당 1건).
  *   청산(승자 태우기): 고점대비 트레일 -8% OR 진입대비 하드손절 -7% OR 레짐 DOWN 이탈.
  *         (MA5 조기청산 폐기 — 최대 익절가까지 트레일링)
  *   실행: node stock-live.mjs --plan   (미리보기, 주문 없음)
@@ -17,7 +18,7 @@ import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { getAccounts, getHoldings, getBuyingPower, getPricesMap, getDailyCandles, createOrder, getOrder, cancelOrder } from './toss-api.js';
-import { LIVE_SLOTS } from './strategy-contract.mjs';
+import { LIVE_SLOTS, CONVICTION_SIZING } from './strategy-contract.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: join(__dirname, '.env') });
@@ -56,32 +57,34 @@ async function regimeOf() {
   return 'NEUTRAL';
 }
 
-// combo-v2 진입 후보: 레짐별 rsi2 과매도(전 레짐) + hi120 신고가돌파(UP만), 현금으로 살 수 있는 것만
-async function pickCandidate(budget, heldSet = new Set()) {
+// combo-v2 진입 후보: 레짐별 rsi2 과매도(전 레짐) + hi120 신고가돌파(UP만). cashCeil로 살 수 있는 것만.
+// 각 후보에 conviction(0~10) 부여 → 확신도 내림차순 반환(사이징은 호출부에서).
+const REGIME_F = { UP: 1.0, NEUTRAL: 0.85, DOWN: 0.5 };  // rsi2 평균회귀 신뢰도 레짐 가중
+async function pickCandidate(cashCeil, heldSet = new Set()) {
   const regime = await regimeOf();
-  const rows = await dbQuery(`SELECT stock_code,corp_name,current_price FROM stock_analysis WHERE current_price>=${MIN_PRICE} AND current_price<${Math.floor(budget)} AND avg_turnover_20d>=${MIN_TURNOVER} ORDER BY market_cap_tril DESC LIMIT 40`);
-  const rsiCands = [], hiCands = [];
+  const rows = await dbQuery(`SELECT stock_code,corp_name,current_price FROM stock_analysis WHERE current_price>=${MIN_PRICE} AND current_price<${Math.floor(cashCeil)} AND avg_turnover_20d>=${MIN_TURNOVER} ORDER BY market_cap_tril DESC LIMIT 40`);
+  const cands = [];
   for (const r of rows) {
     if (heldSet.has(r.stock_code)) continue; // 이미 보유 종목 제외 (분산)
     try {
       const cd = (await getDailyCandles(r.stock_code, 130)).reverse();
       if (cd.length < 61) continue;
       const cl = cd.map(b => b.close), px = cl[cl.length - 1];
-      if (px >= budget) continue;
+      if (px >= cashCeil) continue;
       const rv = rsi2(cl);
-      if (rv < RSI_MAX) rsiCands.push({ code: r.stock_code, name: r.corp_name, px, rsi2: rv, sub: 'rsi2' });
+      if (rv < RSI_MAX) cands.push({ code: r.stock_code, name: r.corp_name, px, rsi2: rv, sub: 'rsi2', conviction: (RSI_MAX - rv) * (REGIME_F[regime] ?? 0.85) });
       if (regime === 'UP') {
         let hh = 0; for (let j = cl.length - 121; j < cl.length - 1; j++) hh = Math.max(hh, cd[j].high);
         const brk = (px / hh - 1) * 100;
-        if (px > hh && brk >= 3) hiCands.push({ code: r.stock_code, name: r.corp_name, px, breakout: brk, sub: 'hi120' });
+        if (px > hh && brk >= 3) cands.push({ code: r.stock_code, name: r.corp_name, px, breakout: brk, sub: 'hi120', conviction: Math.min(10, brk) });
       }
     } catch { /* skip */ }
   }
-  // UP: hi120 우선(돌파폭 큰 것), 그 외: rsi2(가장 과매도)
-  let pick = null;
-  if (regime === 'UP' && hiCands.length) { hiCands.sort((a, b) => b.breakout - a.breakout); pick = hiCands[0]; }
-  else if (rsiCands.length) { rsiCands.sort((a, b) => a.rsi2 - b.rsi2); pick = rsiCands[0]; }
-  return { regime, pick, rsiCount: rsiCands.length, hiCount: hiCands.length };
+  // 확신도 내림차순, 동점이면 hi120(추세) 우선
+  cands.sort((a, b) => b.conviction - a.conviction || (a.sub === 'hi120' ? -1 : 1));
+  const rsiCount = cands.filter(c => c.sub === 'rsi2').length;
+  const hiCount = cands.filter(c => c.sub === 'hi120').length;
+  return { regime, cands, pick: cands[0] ?? null, rsiCount, hiCount };
 }
 
 const accounts = await getAccounts();
@@ -91,11 +94,24 @@ if (seq == null) { log('토스 계좌 조회 실패 — 중단'); process.exit(1
 // ── PLAN: 미리보기 ────────────────────────────────────────────
 if (argv.includes('--plan')) {
   const cash = Number((await getBuyingPower(seq, { currency: 'KRW' }))?.cashBuyingPower ?? 0);
-  const { regime, pick, rsiCount, hiCount } = await pickCandidate(cash);
+  const { regime, cands, rsiCount, hiCount } = await pickCandidate(cash);
   console.log(`\n=== 주식 실계좌 매수 플랜 (미리보기) ===`);
-  console.log(`현금 ${cash.toLocaleString()}원 | 레짐 ${regime} | rsi2후보 ${rsiCount} / hi120후보 ${hiCount}`);
-  if (pick) console.log(`→ 매수 예정: ${pick.name}(${pick.code}) ${pick.px.toLocaleString()}원 × ${Math.floor(cash * 0.999 / pick.px)}주 [${pick.sub}${pick.rsi2 != null ? ' RSI2 ' + pick.rsi2.toFixed(1) : ' 돌파 ' + pick.breakout?.toFixed(1) + '%'}]`);
-  else console.log(`→ 매수 대상 없음 (현금으로 살 수 있는 신호 종목 없음 — 현금 대기)`);
+  console.log(`현금 ${cash.toLocaleString()}원 | 레짐 ${regime} | rsi2후보 ${rsiCount} / hi120후보 ${hiCount} | 슬롯 ${LIVE_SLOTS} | 몰빵임계 ${CONVICTION_SIZING.strongThreshold}(현금×${CONVICTION_SIZING.strongFraction})`);
+  const diversified = Math.floor(cash / LIVE_SLOTS);
+  // 확신도순으로 훑어 예산에 맞는(살 수 있는) 후보만 최대 슬롯수만큼 표시 = 라이브 진입순서
+  let shownN = 0;
+  for (const p of (cands ?? [])) {
+    if (shownN >= LIVE_SLOTS) break;
+    const strong = CONVICTION_SIZING.enabled && p.conviction >= CONVICTION_SIZING.strongThreshold;
+    const budget = strong ? Math.floor(cash * CONVICTION_SIZING.strongFraction) : diversified;
+    if (p.px >= budget) continue;
+    const qty = Math.floor(budget * 0.999 / limitBuyPx(p.px));
+    if (qty < 1) continue;
+    console.log(`→ ${strong ? '[집중몰빵]' : '[분산]'} ${p.name}(${p.code}) ${p.px.toLocaleString()}원 × ${qty}주 (예산 ${budget.toLocaleString()}) [${p.sub}, 확신도 ${p.conviction.toFixed(1)}${p.rsi2 != null ? ', RSI2 ' + p.rsi2.toFixed(1) : ', 돌파 ' + p.breakout?.toFixed(1) + '%'}]`);
+    shownN++;
+  }
+  if (!shownN) console.log(`→ 매수 대상 없음 (예산 내 신호 종목 없음 — 현금 대기)`);
+  console.log(`※ 미리보기는 각 후보에 전액현금 기준 사이징 표시(실제론 매 사이클 잔여현금 재계산)`);
   console.log(`청산 규칙: 고점대비 -${TRAIL_PCT}% 트레일 / 진입대비 -${HARD_STOP_PCT}% 하드손절 / DOWN레짐 이탈`);
   process.exit(0);
 }
@@ -163,28 +179,36 @@ while (true) {
   }
   writeFileSync(STATE, JSON.stringify(state, null, 1));
 
-  // ② 진입 (빈 슬롯 있고 현금 있으면) — 다중슬롯 분산: 슬롯당 예산 = 현금/남은슬롯, 보유종목 제외
+  // ② 진입 (빈 슬롯 있고 현금 있으면) — 확신도 기반 사이징: 확실하면 현금 집중(몰빵), 아니면 균등분산
   if (items.length < LIVE_SLOTS && cash >= MIN_PRICE) {
     const heldSet = new Set(items.map(i => i.symbol));
-    const budget = Math.floor(cash / (LIVE_SLOTS - items.length));
-    if (Date.now() - lastSignal >= 900_000 || !signalCache) { signalCache = await pickCandidate(budget, heldSet); lastSignal = Date.now(); }
-    const { regime, pick } = signalCache;
-    if (pick && !heldSet.has(pick.code) && pick.px < budget) {
+    const remainingSlots = LIVE_SLOTS - items.length;
+    const diversified = Math.floor(cash / remainingSlots);
+    // 전액현금 기준으로 최상위 신호 탐색(집중매수 시 비싼 확신종목도 후보에 포함)
+    if (Date.now() - lastSignal >= 900_000 || !signalCache) { signalCache = await pickCandidate(cash, heldSet); lastSignal = Date.now(); }
+    const { regime, cands } = signalCache;
+    // 확신도순으로 훑어 각 후보의 예산(집중 or 분산)에 맞는 첫 종목 1건 매수
+    for (const pick of (cands ?? [])) {
+      if (heldSet.has(pick.code)) continue;
+      const strong = CONVICTION_SIZING.enabled && pick.conviction >= CONVICTION_SIZING.strongThreshold;
+      const budget = strong ? Math.floor(cash * CONVICTION_SIZING.strongFraction) : diversified;
+      if (pick.px >= budget) continue;   // 이 예산으론 못 삼 → 다음 후보
       const lpx = limitBuyPx(pick.px);
       const qty = Math.floor(budget * 0.999 / lpx);
-      if (qty >= 1) {
-        try {
-          const o = await createOrder(seq, { symbol: pick.code, side: 'BUY', orderType: 'LIMIT', price: String(lpx), quantity: String(qty) });
-          const filled = await settleOrder(o?.orderId ?? o?.id, pick.code, 'BUY', 0, `매수 ${pick.code}`);
-          if (filled) {
-            state.meta[pick.code] = { hi: pick.px, entry: pick.px, sub: pick.sub, boughtAt: now() };
-            log(`매수 ${pick.name}(${pick.code}) ${qty}주 @${lpx.toLocaleString()} [${pick.sub}, 레짐 ${regime}${pick.rsi2 != null ? ', RSI2 ' + pick.rsi2.toFixed(1) : ''}]`);
-            recordTrade({ ts: now(), code: pick.code, name: pick.name, side: 'BUY', px: lpx, qty, sub: pick.sub, regime });
-            signalCache = null;
-            writeFileSync(STATE, JSON.stringify(state, null, 1));
-          }
-        } catch (e) { log(`매수 오류 ${pick.code}: ${e.message.slice(0, 80)}`); }
-      }
+      if (qty < 1) continue;
+      try {
+        const o = await createOrder(seq, { symbol: pick.code, side: 'BUY', orderType: 'LIMIT', price: String(lpx), quantity: String(qty) });
+        const filled = await settleOrder(o?.orderId ?? o?.id, pick.code, 'BUY', 0, `매수 ${pick.code}`);
+        if (filled) {
+          state.meta[pick.code] = { hi: pick.px, entry: pick.px, sub: pick.sub, boughtAt: now() };
+          const size = strong ? `집중 ${Math.round(CONVICTION_SIZING.strongFraction * 100)}%몰빵` : `분산 1/${remainingSlots}`;
+          log(`매수 ${pick.name}(${pick.code}) ${qty}주 @${lpx.toLocaleString()} [${pick.sub}, 레짐 ${regime}, 확신도 ${pick.conviction.toFixed(1)}, ${size}${pick.rsi2 != null ? ', RSI2 ' + pick.rsi2.toFixed(1) : ', 돌파 ' + pick.breakout?.toFixed(1) + '%'}]`);
+          recordTrade({ ts: now(), code: pick.code, name: pick.name, side: 'BUY', px: lpx, qty, sub: pick.sub, regime, conviction: Number(pick.conviction.toFixed(1)), sizing: strong ? 'concentrate' : 'diversify' });
+          signalCache = null;
+          writeFileSync(STATE, JSON.stringify(state, null, 1));
+        }
+      } catch (e) { log(`매수 오류 ${pick.code}: ${e.message.slice(0, 80)}`); }
+      break;  // 사이클당 진입 1건 (나머지 슬롯은 다음 폴에서 잔여현금 재계산 후 평가)
     }
   }
   await new Promise(r => setTimeout(r, POLL_MS));
