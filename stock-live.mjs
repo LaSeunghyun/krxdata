@@ -17,6 +17,7 @@ import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { getAccounts, getHoldings, getBuyingPower, getPricesMap, getDailyCandles, createOrder, getOrder, cancelOrder } from './toss-api.js';
+import { LIVE_SLOTS } from './strategy-contract.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: join(__dirname, '.env') });
@@ -56,16 +57,17 @@ async function regimeOf() {
 }
 
 // combo-v2 진입 후보: 레짐별 rsi2 과매도(전 레짐) + hi120 신고가돌파(UP만), 현금으로 살 수 있는 것만
-async function pickCandidate(cash) {
+async function pickCandidate(budget, heldSet = new Set()) {
   const regime = await regimeOf();
-  const rows = await dbQuery(`SELECT stock_code,corp_name,current_price FROM stock_analysis WHERE current_price>=${MIN_PRICE} AND current_price<${Math.floor(cash)} AND avg_turnover_20d>=${MIN_TURNOVER} ORDER BY market_cap_tril DESC LIMIT 40`);
+  const rows = await dbQuery(`SELECT stock_code,corp_name,current_price FROM stock_analysis WHERE current_price>=${MIN_PRICE} AND current_price<${Math.floor(budget)} AND avg_turnover_20d>=${MIN_TURNOVER} ORDER BY market_cap_tril DESC LIMIT 40`);
   const rsiCands = [], hiCands = [];
   for (const r of rows) {
+    if (heldSet.has(r.stock_code)) continue; // 이미 보유 종목 제외 (분산)
     try {
       const cd = (await getDailyCandles(r.stock_code, 130)).reverse();
       if (cd.length < 61) continue;
       const cl = cd.map(b => b.close), px = cl[cl.length - 1];
-      if (px >= cash) continue;
+      if (px >= budget) continue;
       const rv = rsi2(cl);
       if (rv < RSI_MAX) rsiCands.push({ code: r.stock_code, name: r.corp_name, px, rsi2: rv, sub: 'rsi2' });
       if (regime === 'UP') {
@@ -119,7 +121,7 @@ async function settleOrder(orderId, symbol, side, qtyBefore, tag) {
   return false;
 }
 
-log(`=== 주식 연속 트레이더 시작 (계좌 ${accounts[0].no}, 08:00~20:00, LIVE_SLOTS=1, 트레일-${TRAIL_PCT}%/하드-${HARD_STOP_PCT}%) ===`);
+log(`=== 주식 연속 트레이더 시작 (계좌 ${accounts[0].accountSeq}, 08:00~20:00, LIVE_SLOTS=${LIVE_SLOTS}, 트레일-${TRAIL_PCT}%/하드-${HARD_STOP_PCT}%) ===`);
 let lastSignal = 0, signalCache = null;
 
 while (true) {
@@ -161,13 +163,15 @@ while (true) {
   }
   writeFileSync(STATE, JSON.stringify(state, null, 1));
 
-  // ② 진입 (슬롯 비었고 현금 있으면) — 신호는 15분 캐시(일봉 느림)
-  if (items.length === 0 && cash >= MIN_PRICE) {
-    if (Date.now() - lastSignal >= 900_000 || !signalCache) { signalCache = await pickCandidate(cash); lastSignal = Date.now(); }
+  // ② 진입 (빈 슬롯 있고 현금 있으면) — 다중슬롯 분산: 슬롯당 예산 = 현금/남은슬롯, 보유종목 제외
+  if (items.length < LIVE_SLOTS && cash >= MIN_PRICE) {
+    const heldSet = new Set(items.map(i => i.symbol));
+    const budget = Math.floor(cash / (LIVE_SLOTS - items.length));
+    if (Date.now() - lastSignal >= 900_000 || !signalCache) { signalCache = await pickCandidate(budget, heldSet); lastSignal = Date.now(); }
     const { regime, pick } = signalCache;
-    if (pick) {
+    if (pick && !heldSet.has(pick.code) && pick.px < budget) {
       const lpx = limitBuyPx(pick.px);
-      const qty = Math.floor(cash * 0.999 / lpx);
+      const qty = Math.floor(budget * 0.999 / lpx);
       if (qty >= 1) {
         try {
           const o = await createOrder(seq, { symbol: pick.code, side: 'BUY', orderType: 'LIMIT', price: String(lpx), quantity: String(qty) });
