@@ -1,0 +1,189 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e3]:
+      - button "마이크" [ref=e4] [cursor=pointer]:
+        - generic [ref=e5]: mic_external_on
+      - heading "MIC VOCAL" [level=1] [ref=e6]
+      - button "이도현 로그아웃" [ref=e7] [cursor=pointer]:
+        - generic [ref=e8]: 이도현
+        - generic [ref=e10]: logout
+  - main [ref=e11]:
+    - generic [ref=e12]:
+      - heading "레슨 예약" [level=2] [ref=e13]
+      - paragraph [ref=e14]: 코치 · 날짜 · 시간을 고르면 끝나요.
+    - generic [ref=e15]:
+      - heading "1 코치 선택" [level=3] [ref=e16]:
+        - generic [ref=e17]: "1"
+        - text: 코치 선택
+      - generic [ref=e18]:
+        - button "🧑‍🎤 이도현 보컬 디렉터 · 발성 ₩80,000/회" [ref=e19] [cursor=pointer]:
+          - generic [ref=e20]: 🧑‍🎤
+          - generic [ref=e21]: 이도현
+          - generic [ref=e22]: 보컬 디렉터 · 발성
+          - generic [ref=e23]: ₩80,000/회
+        - button "👩‍🎤 최서아 R&B · Soul 코치 ₩75,000/회" [ref=e24] [cursor=pointer]:
+          - generic [ref=e25]: 👩‍🎤
+          - generic [ref=e26]: 최서아
+          - generic [ref=e27]: R&B · Soul 코치
+          - generic [ref=e28]: ₩75,000/회
+        - button "🧔‍♂️ 정민재 랩 · 힙합 코치 ₩70,000/회" [ref=e29] [cursor=pointer]:
+          - generic [ref=e30]: 🧔‍♂️
+          - generic [ref=e31]: 정민재
+          - generic [ref=e32]: 랩 · 힙합 코치
+          - generic [ref=e33]: ₩70,000/회
+        - button "👩‍🦰 김하늘 오디션 디렉터 ₩90,000/회" [ref=e34] [cursor=pointer]:
+          - generic [ref=e35]: 👩‍🦰
+          - generic [ref=e36]: 김하늘
+          - generic [ref=e37]: 오디션 디렉터
+          - generic [ref=e38]: ₩90,000/회
+    - generic [ref=e39]:
+      - generic [ref=e40]:
+        - heading "2 날짜 선택" [level=3] [ref=e41]:
+          - generic [ref=e42]: "2"
+          - text: 날짜 선택
+        - generic [ref=e43]: 월요일 휴무
+      - generic [ref=e44]:
+        - button "일 14" [ref=e45] [cursor=pointer]:
+          - generic [ref=e46]: 일
+          - generic [ref=e47]: "14"
+        - button "월 15" [disabled] [ref=e48]:
+          - generic [ref=e49]: 월
+          - generic [ref=e50]: "15"
+        - button "화 16" [ref=e51] [cursor=pointer]:
+          - generic [ref=e52]: 화
+          - generic [ref=e53]: "16"
+        - button "수 17" [ref=e54] [cursor=pointer]:
+          - generic [ref=e55]: 수
+          - generic [ref=e56]: "17"
+        - button "목 18" [ref=e57] [cursor=pointer]:
+          - generic [ref=e58]: 목
+          - generic [ref=e59]: "18"
+        - button "금 19" [ref=e60] [cursor=pointer]:
+          - generic [ref=e61]: 금
+          - generic [ref=e62]: "19"
+        - button "토 20" [ref=e63] [cursor=pointer]:
+          - generic [ref=e64]: 토
+          - generic [ref=e65]: "20"
+        - button "일 21" [ref=e66] [cursor=pointer]:
+          - generic [ref=e67]: 일
+          - generic [ref=e68]: "21"
+        - button "월 22" [disabled] [ref=e69]:
+          - generic [ref=e70]: 월
+          - generic [ref=e71]: "22"
+        - button "화 23" [ref=e72] [cursor=pointer]:
+          - generic [ref=e73]: 화
+          - generic [ref=e74]: "23"
+        - button "수 24" [ref=e75] [cursor=pointer]:
+          - generic [ref=e76]: 수
+          - generic [ref=e77]: "24"
+        - button "목 25" [ref=e78] [cursor=pointer]:
+          - generic [ref=e79]: 목
+          - generic [ref=e80]: "25"
+        - button "금 26" [ref=e81] [cursor=pointer]:
+          - generic [ref=e82]: 금
+          - generic [ref=e83]: "26"
+        - button "토 27" [ref=e84] [cursor=pointer]:
+          - generic [ref=e85]: 토
+          - generic [ref=e86]: "27"
+    - generic [ref=e87]:
+      - heading "3 시간 선택" [level=3] [ref=e88]:
+        - generic [ref=e89]: "3"
+        - text: 시간 선택
+      - paragraph [ref=e91]: 날짜를 먼저 선택하세요
+    - generic [ref=e92]:
+      - generic [ref=e93]:
+        - generic [ref=e94]: 코치를 선택해주세요
+        - generic [ref=e95]: —
+      - button "예약 및 결제하기" [disabled] [ref=e96]
+    - separator [ref=e97]
+    - generic [ref=e98]:
+      - heading "수강권으로 더 저렴하게" [level=3] [ref=e99]
+      - paragraph [ref=e100]: 회차권·정기권을 미리 결제하고 회당 단가를 낮추세요.
+      - generic [ref=e101]:
+        - generic [ref=e102]:
+          - generic [ref=e103]:
+            - generic [ref=e104]:
+              - generic [ref=e106]: 4회권
+              - paragraph [ref=e107]: 가볍게 시작하는 체험형
+            - generic [ref=e108]:
+              - generic [ref=e109]: ₩200,000
+              - generic [ref=e110]: ₩220,000
+          - list [ref=e111]:
+            - listitem [ref=e112]:
+              - generic [ref=e113]: check_circle
+              - text: 1:1 레슨 4회
+            - listitem [ref=e114]:
+              - generic [ref=e115]: check_circle
+              - text: 보이스 진단 리포트
+            - listitem [ref=e116]:
+              - generic [ref=e117]: check_circle
+              - text: 연습실 무료 2회
+          - button "결제하기" [ref=e118] [cursor=pointer]
+        - generic [ref=e119]:
+          - generic [ref=e120]:
+            - generic [ref=e121]:
+              - generic [ref=e122]:
+                - generic [ref=e123]: 12회권
+                - generic [ref=e124]: BEST
+              - paragraph [ref=e125]: 가장 많이 선택하는 정규반
+            - generic [ref=e126]:
+              - generic [ref=e127]: ₩540,000
+              - generic [ref=e128]: ₩660,000
+          - list [ref=e129]:
+            - listitem [ref=e130]:
+              - generic [ref=e131]: check_circle
+              - text: 1:1 레슨 12회
+            - listitem [ref=e132]:
+              - generic [ref=e133]: check_circle
+              - text: VOD 콘텐츠 무제한
+            - listitem [ref=e134]:
+              - generic [ref=e135]: check_circle
+              - text: 연습실 무료 8회
+            - listitem [ref=e136]:
+              - generic [ref=e137]: check_circle
+              - text: 녹음 피드백 3회
+          - button "결제하기" [ref=e138] [cursor=pointer]
+        - generic [ref=e139]:
+          - generic [ref=e140]:
+            - generic [ref=e141]:
+              - generic [ref=e143]: 정기권
+              - paragraph [ref=e144]: 데뷔·입시 집중반 풀패스
+            - generic [ref=e145]:
+              - generic [ref=e146]: ₩390,000
+              - generic [ref=e147]: 월 정기결제
+          - list [ref=e148]:
+            - listitem [ref=e149]:
+              - generic [ref=e150]: check_circle
+              - text: 주 2회 정규 레슨
+            - listitem [ref=e151]:
+              - generic [ref=e152]: check_circle
+              - text: VOD 전체 + 신규 강의
+            - listitem [ref=e153]:
+              - generic [ref=e154]: check_circle
+              - text: 연습실 무제한
+            - listitem [ref=e155]:
+              - generic [ref=e156]: check_circle
+              - text: 월 1회 모의 무대
+          - button "결제하기" [ref=e157] [cursor=pointer]
+  - navigation [ref=e158]:
+    - link "홈" [ref=e159] [cursor=pointer]:
+      - /url: index.html
+      - generic [ref=e160]: home
+      - generic [ref=e161]: 홈
+    - link "클래스" [ref=e162] [cursor=pointer]:
+      - /url: booking.html
+      - generic [ref=e163]: calendar_month
+      - generic [ref=e164]: 클래스
+    - link "강사" [ref=e165] [cursor=pointer]:
+      - /url: coach.html
+      - generic [ref=e166]: co_present
+      - generic [ref=e167]: 강사
+    - link "커뮤니티" [ref=e168] [cursor=pointer]:
+      - /url: community.html
+      - generic [ref=e169]: forum
+      - generic [ref=e170]: 커뮤니티
+    - link "마이" [ref=e171] [cursor=pointer]:
+      - /url: mypage.html
+      - generic [ref=e172]: person
+      - generic [ref=e173]: 마이
+  - generic [ref=e175]: check_circle

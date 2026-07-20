@@ -1,0 +1,26 @@
+- main [ref=e2]:
+  - link "홈으로" [ref=e3] [cursor=pointer]:
+    - /url: index.html
+    - generic [ref=e4]: arrow_back
+    - text: 홈으로
+  - generic [ref=e5]:
+    - generic [ref=e7]: mic_external_on
+    - heading "MIC VOCAL" [level=1] [ref=e8]
+    - paragraph [ref=e9]: 로그인하고 레슨을 예약하세요
+  - generic [ref=e10]:
+    - button "로그인" [ref=e11] [cursor=pointer]
+    - button "회원가입" [ref=e12] [cursor=pointer]
+  - generic [ref=e13]:
+    - generic [ref=e14]:
+      - generic [ref=e15]: 이메일
+      - textbox "you@example.com" [ref=e16]
+    - generic [ref=e17]:
+      - generic [ref=e18]: 비밀번호
+      - textbox "••••" [ref=e19]
+    - button "로그인" [ref=e20] [cursor=pointer]
+  - generic [ref=e22]:
+    - generic [ref=e23]: 🔑 데모 계정 (클릭하면 자동 입력)
+    - generic [ref=e24]:
+      - button "👑 원장 — director@mic.com / 1234" [ref=e25] [cursor=pointer]
+      - button "🎤 강사 — lee@mic.com / 1234" [ref=e26] [cursor=pointer]
+      - button "🎓 학생 — student@mic.com / 1234" [ref=e27] [cursor=pointer]

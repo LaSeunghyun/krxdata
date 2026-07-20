@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html class="dark" lang="ko">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>MIC VOCAL — 마이크보컬스튜디오</title>
+<meta name="description" content="강남 보컬 스튜디오. 레슨 예약·수강권 결제·보컬 콘텐츠를 한 곳에서."/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script src="tw-config.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
+<link href="styles.css" rel="stylesheet"/>
+</head>
+<body class="bg-background text-on-background min-h-screen pb-28 pt-16">
+<main class="w-full max-w-[720px] mx-auto px-container-margin py-stack-md flex flex-col gap-stack-lg">
+
+  <!-- HERO -->
+  <section class="relative overflow-hidden rounded-3xl bg-surface-container border border-outline-variant/10 p-stack-md">
+    <div class="absolute -top-16 -right-16 w-56 h-56 rounded-full bg-primary-container/30 blur-3xl pointer-events-none"></div>
+    <div class="relative">
+      <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-primary/15 text-primary font-label-sm text-label-sm border border-primary/20">
+        <span class="material-symbols-outlined text-[15px]" style="font-variation-settings:'FILL' 1">location_on</span> 강남 봉은사역 · since 2014
+      </span>
+      <h2 class="font-headline-lg-mobile text-headline-lg-mobile text-on-surface mt-4 leading-tight">목소리를 무대 위에,<br/><span class="text-primary">마이크보컬</span>에서</h2>
+      <p class="font-body-md text-body-md text-on-surface-variant mt-2">1:1 맞춤 레슨 · 수강권 · 보컬 콘텐츠.<br/>첫 시작은 무료 보이스 진단으로.</p>
+      <div class="flex gap-2 mt-5">
+        <a href="booking.html" class="h-12 px-6 rounded-full bg-primary text-on-primary font-label-md text-label-md flex items-center gap-1.5 active:scale-95 transition shadow-[0_4px_20px_rgba(184,195,255,.2)]">
+          <span class="material-symbols-outlined text-[20px]" style="font-variation-settings:'FILL' 1">event</span> 레슨 예약</a>
+        <a href="#clips" class="h-12 px-5 rounded-full bg-surface-variant text-on-surface font-label-md text-label-md flex items-center gap-1.5 active:scale-95 transition">
+          <span class="material-symbols-outlined text-[20px]">play_circle</span> 클립 보기</a>
+      </div>
+      <div class="flex gap-stack-md mt-6 pt-5 border-t border-outline-variant/10">
+        <div><div class="font-headline-md text-headline-md text-on-surface">12K+</div><div class="font-label-sm text-label-sm text-on-surface-variant">누적 수강생</div></div>
+        <div><div class="font-headline-md text-headline-md text-on-surface">4.9</div><div class="font-label-sm text-label-sm text-on-surface-variant">평균 만족도</div></div>
+        <div><div class="font-headline-md text-headline-md text-on-surface">92%</div><div class="font-label-sm text-label-sm text-on-surface-variant">입시 합격률</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- QUICK ACTIONS -->
+  <section class="grid grid-cols-4 gap-2">
+    <a href="booking.html" class="flex flex-col items-center gap-2 py-3 rounded-2xl bg-surface-container border border-outline-variant/10 active:scale-95 transition">
+      <span class="material-symbols-outlined text-primary">event_available</span><span class="font-label-sm text-label-sm text-on-surface">예약</span></a>
+    <a href="booking.html#passes" class="flex flex-col items-center gap-2 py-3 rounded-2xl bg-surface-container border border-outline-variant/10 active:scale-95 transition">
+      <span class="material-symbols-outlined text-primary">confirmation_number</span><span class="font-label-sm text-label-sm text-on-surface">수강권</span></a>
+    <a href="community.html" class="flex flex-col items-center gap-2 py-3 rounded-2xl bg-surface-container border border-outline-variant/10 active:scale-95 transition">
+      <span class="material-symbols-outlined text-primary">help</span><span class="font-label-sm text-label-sm text-on-surface">Q&amp;A</span></a>
+    <a href="mypage.html" class="flex flex-col items-center gap-2 py-3 rounded-2xl bg-surface-container border border-outline-variant/10 active:scale-95 transition">
+      <span class="material-symbols-outlined text-primary">receipt_long</span><span class="font-label-sm text-label-sm text-on-surface">내역</span></a>
+  </section>
+
+  <!-- VIDEO FEED -->
+  <section id="clips" class="flex flex-col gap-stack-sm scroll-mt-20">
+    <div class="flex items-end justify-between">
+      <div>
+        <h3 class="font-headline-md text-headline-md text-on-surface">인기 보컬 클립</h3>
+        <p class="font-label-sm text-label-sm text-on-surface-variant mt-1 flex items-center gap-1">
+          <span class="material-symbols-outlined text-[15px]" style="font-variation-settings:'FILL' 1">verified</span> @vocalmic 공식 채널</p>
+      </div>
+      <a href="https://www.youtube.com/@vocalmic" target="_blank" rel="noopener" class="font-label-sm text-label-sm text-primary flex items-center gap-0.5">전체<span class="material-symbols-outlined text-[16px]" aria-hidden="true">chevron_right</span></a>
+    </div>
+    <div id="filters" class="flex gap-2 overflow-x-auto no-scrollbar pb-1"></div>
+    <div id="feed" class="flex flex-col gap-stack-sm"></div>
+  </section>
+
+</main>
+
+<script src="domain.js"></script>
+<script src="app.js"></script>
+<script src="auth.js"></script>
+<script>
+const {VIDEO_CATS,$,thumb,openVideo,esc}=MIC;
+let filter='전체';
+function renderFilters(){
+  document.getElementById('filters').innerHTML=VIDEO_CATS.map(c=>
+    `<button data-cat="${c}" class="px-4 py-2 rounded-full whitespace-nowrap font-label-md text-label-md border transition ${c===filter?'bg-primary/15 text-primary border-primary/30':'bg-surface-container text-on-surface-variant border-outline-variant/30 hover:bg-surface-container-high'}">${c}</button>`).join('');
+}
+function renderFeed(){
+  const all=MIC.getVideos();
+  const list=filter==='전체'?all:all.filter(v=>v.cat===filter);
+  document.getElementById('feed').innerHTML=list.map((v,i)=>{
+    const big = v.feat && filter==='전체';
+    return `<article data-vid="${v.id}" data-title="${esc(v.title)}" class="glass-card rounded-2xl overflow-hidden cursor-pointer group active:scale-[.99] transition">
+      <div class="relative w-full ${big?'aspect-video':'aspect-[16/7]'} bg-surface-container-high overflow-hidden">
+        <img src="${thumb(v.id)}" alt="${esc(v.title)}" loading="lazy" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"/>
+        <div class="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent"></div>
+        <div class="absolute inset-0 flex items-center justify-center">
+          <div class="w-14 h-14 rounded-full bg-primary/90 flex items-center justify-center text-on-primary shadow-[0_0_20px_rgba(46,91,255,.4)] group-active:scale-95 transition">
+            <span class="material-symbols-outlined text-[30px]" style="font-variation-settings:'FILL' 1">play_arrow</span></div>
+        </div>
+        <span class="absolute bottom-2.5 right-2.5 bg-black/80 px-2 py-0.5 rounded text-white font-label-sm text-label-sm">${v.dur}</span>
+        <span class="absolute top-2.5 left-2.5 px-2.5 py-1 rounded-full bg-black/55 backdrop-blur-sm text-white font-label-sm text-label-sm border border-white/15">${v.cat}</span>
+      </div>
+      <div class="p-gutter flex items-center justify-between gap-3">
+        <div class="min-w-0">
+          <h4 class="font-body-lg text-body-lg text-on-surface line-clamp-2">${esc(v.title)}</h4>
+          <p class="font-label-sm text-label-sm text-on-surface-variant mt-0.5 flex items-center gap-1">
+            <span class="material-symbols-outlined text-[14px] text-primary" style="font-variation-settings:'FILL' 1">verified</span> 마이크보컬스튜디오</p>
+        </div>
+        <span class="material-symbols-outlined text-on-surface-variant shrink-0">smart_display</span>
+      </div>
+    </article>`;
+  }).join('');
+}
+document.addEventListener('click',e=>{
+  const c=e.target.closest('[data-cat]'); if(c){filter=c.dataset.cat;renderFilters();renderFeed();}
+  const v=e.target.closest('[data-vid]'); if(v)openVideo(v.dataset.vid,v.dataset.title);
+});
+renderFilters();renderFeed();
+MIC.chrome({active:'home'});
+MIC.initReveal();
+</script>
+</body>
+</html>

@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html class="dark" lang="ko">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>커뮤니티 Q&amp;A — MIC VOCAL</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script src="tw-config.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
+<link href="styles.css" rel="stylesheet"/>
+</head>
+<body class="bg-background text-on-background min-h-screen pb-32 pt-16">
+<main class="w-full max-w-[720px] mx-auto px-container-margin py-stack-md flex flex-col gap-stack-md">
+
+  <div>
+    <h2 class="font-headline-lg-mobile text-headline-lg-mobile text-on-surface">질의응답</h2>
+    <p class="font-body-md text-body-md text-on-surface-variant mt-1">궁금한 점을 자유롭게 질문하면 코치가 답변해드려요.</p>
+  </div>
+
+  <div id="tabs" class="flex gap-2 overflow-x-auto no-scrollbar pb-1"></div>
+  <div id="qa-list" class="flex flex-col gap-stack-sm"></div>
+</main>
+
+<!-- FAB -->
+<button id="fab" class="fixed bottom-[100px] right-container-margin z-40 h-14 px-6 rounded-full bg-primary text-on-primary flex items-center gap-2 shadow-[0_0_20px_rgba(46,91,255,.3)] active:scale-95 transition" style="left:auto">
+  <span class="material-symbols-outlined">edit</span><span class="font-label-md text-label-md font-bold">질문하기</span></button>
+
+<!-- ASK SHEET -->
+<div id="ask-sheet" class="modal-overlay fixed inset-0 z-[100] bg-black/85 backdrop-blur-sm flex items-end sm:items-center justify-center">
+  <div class="sheet w-full max-w-[480px] bg-surface-container rounded-t-3xl sm:rounded-3xl border border-outline-variant/15" role="dialog" aria-modal="true" aria-labelledby="ask-title">
+    <div class="flex items-center justify-between p-5 border-b border-outline-variant/10">
+      <h3 id="ask-title" class="font-headline-md text-headline-md text-on-surface">질문하기</h3>
+      <button data-close class="w-9 h-9 rounded-full text-on-surface-variant hover:bg-surface-variant flex items-center justify-center" aria-label="닫기"><span class="material-symbols-outlined">close</span></button>
+    </div>
+    <div class="p-5 flex flex-col gap-4">
+      <div>
+        <label class="font-label-md text-label-md text-on-surface-variant mb-1.5 block">제목</label>
+        <input id="ask-q" maxlength="60" placeholder="예) 고음에서 목이 조여요" class="w-full bg-surface-container-high border border-outline-variant/30 rounded-xl px-4 py-3 font-body-md text-body-md text-on-surface placeholder:text-outline focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition"/>
+      </div>
+      <div>
+        <label class="font-label-md text-label-md text-on-surface-variant mb-1.5 block">자세한 내용 <span class="text-outline font-normal">(선택)</span></label>
+        <textarea id="ask-d" rows="3" maxlength="300" placeholder="상황을 자세히 적어주시면 더 정확히 답변드려요." class="w-full bg-surface-container-high border border-outline-variant/30 rounded-xl px-4 py-3 font-body-md text-body-md text-on-surface placeholder:text-outline focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition resize-none"></textarea>
+      </div>
+      <button id="ask-submit" disabled class="w-full h-13 py-4 rounded-full bg-primary text-on-primary font-label-md text-label-md active:scale-[.98] transition disabled:bg-surface-variant disabled:text-on-surface-variant">등록하기</button>
+    </div>
+  </div>
+</div>
+
+<script src="domain.js"></script>
+<script src="app.js"></script>
+<script src="auth.js"></script>
+<script>
+const {$,$$,store,esc,ic,toast,trapFocus}=MIC;
+const SEED=[
+  {id:'s1',status:'answered',user:'김진수',q:'고음에서 호흡이 딸리는 느낌이 듭니다. 어떻게 연습해야 할까요?',ago:'2시간 전',
+   a:{by:'이도현 코치',text:'진수님, 고음에서 호흡이 부족하게 느껴지는 건 성대가 과도하게 긴장하며 공기가 비효율적으로 새기 때문이에요. 립트릴로 성대를 이완한 뒤 스타카토 호흡을 매일 10분씩 연습해보세요.'}},
+  {id:'s2',status:'answered',user:'최동현',q:'이번 과제곡 리듬 타기가 너무 어렵습니다.',ago:'2일 전',
+   a:{by:'정민재 코치',text:'리듬이 까다로운 곡이죠. 메트로놈을 60bpm으로 두고 박을 손으로 치면서 가사를 말로만 먼저 읽어보세요. 멜로디는 그 다음입니다.'}},
+  {id:'s3',status:'pending',user:'박지민',q:'바이브레이션이 잘 안 됩니다. 연습 팁이 있을까요?',ago:'5시간 전',a:null},
+];
+let tab='전체';
+const TABS=['전체','답변완료','대기중'];
+function all(){ return [...store.get('questions',[]), ...SEED]; }
+function renderTabs(){
+  $('#tabs').innerHTML=TABS.map(t=>`<button data-tab="${t}" class="px-4 py-2 rounded-full whitespace-nowrap font-label-md text-label-md border transition ${t===tab?'bg-primary/15 text-primary border-primary/30':'bg-surface-container text-on-surface-variant border-outline-variant/30'}">${t}</button>`).join('');
+}
+function renderList(){
+  let list=all();
+  if(tab==='답변완료')list=list.filter(x=>x.status==='answered');
+  if(tab==='대기중')list=list.filter(x=>x.status==='pending');
+  if(!list.length){$('#qa-list').innerHTML=`<div class="text-center py-16 text-on-surface-variant"><span class="material-symbols-outlined text-5xl opacity-40">forum</span><p class="font-body-md text-body-md mt-3">아직 질문이 없어요.</p></div>`;return;}
+  $('#qa-list').innerHTML=list.map(item=>{
+    const answered=item.status==='answered';
+    const badge=answered
+      ?`<span class="px-2 py-1 rounded-full bg-primary/20 text-primary font-label-sm text-label-sm border border-primary/30">답변완료</span>`
+      :`<span class="px-2 py-1 rounded-full bg-surface-variant text-on-surface-variant font-label-sm text-label-sm border border-outline-variant/30">대기중</span>`;
+    const ans=answered
+      ?`<div class="p-4 flex gap-3"><div class="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center shrink-0"><span class="material-symbols-outlined text-primary text-[18px]">support_agent</span></div>
+          <div><span class="font-label-md text-label-md text-primary">${esc(item.a.by)}</span><p class="font-body-md text-body-md text-on-surface mt-1.5">${esc(item.a.text)}</p></div></div>`
+      :`<div class="p-6 flex flex-col items-center justify-center text-on-surface-variant"><span class="material-symbols-outlined text-3xl mb-2 opacity-50">hourglass_empty</span><p class="font-body-md text-body-md text-center">코치가 답변을 준비하고 있어요.<br/>조금만 기다려주세요.</p></div>`;
+    return `<div class="glass-card rounded-2xl overflow-hidden accordion-item">
+      <button class="w-full text-left p-4 flex flex-col gap-2 hover:bg-white/[.02] transition" data-acc aria-expanded="false">
+        <div class="flex items-center justify-between w-full">
+          <div class="flex items-center gap-2">${badge}<span class="font-label-md text-label-md text-on-surface-variant">${esc(item.user)} 학생</span></div>
+          <span class="material-symbols-outlined text-on-surface-variant chevron transition-transform duration-300">expand_more</span>
+        </div>
+        <h3 class="font-body-lg text-body-lg text-on-surface">${esc(item.q)}</h3>
+        ${item.d?`<p class="font-body-md text-body-md text-on-surface-variant line-clamp-1">${esc(item.d)}</p>`:''}
+        <span class="font-label-sm text-label-sm text-outline">${esc(item.ago)}</span>
+      </button>
+      <div class="accordion-content bg-surface-container-low border-t border-outline-variant/10">${ans}</div>
+    </div>`;
+  }).join('');
+}
+
+/* ask sheet */
+let lastFocus=null, askRelease=null;
+function openAsk(){lastFocus=document.activeElement;$('#ask-sheet').classList.add('show');document.body.style.overflow='hidden';askRelease=trapFocus($('#ask-sheet'));setTimeout(()=>$('#ask-q').focus(),90);}
+function closeAsk(){$('#ask-sheet').classList.remove('show');document.body.style.overflow='';if(askRelease){askRelease();askRelease=null;}if(lastFocus&&lastFocus.focus)lastFocus.focus();}
+function validateAsk(){$('#ask-submit').disabled=!$('#ask-q').value.trim();}
+
+document.addEventListener('click',e=>{
+  const tb=e.target.closest('[data-tab]'); if(tb){tab=tb.dataset.tab;renderTabs();renderList();}
+  const acc=e.target.closest('[data-acc]'); if(acc){const it=acc.closest('.accordion-item');const on=it.classList.contains('active');
+    $$('.accordion-item').forEach(x=>{x.classList.remove('active');const b=x.querySelector('[data-acc]');if(b)b.setAttribute('aria-expanded','false');});
+    if(!on){it.classList.add('active');acc.setAttribute('aria-expanded','true');}}
+  if(e.target.closest('#fab')){ if(MIC.auth.role()==='visitor'){toast('로그인이 필요해요','로그인 후 질문할 수 있어요','info');setTimeout(()=>location.href='login.html?to=community.html',900);return;} openAsk(); }
+  if(e.target.closest('[data-close]')||e.target.id==='ask-sheet')closeAsk();
+  if(e.target.id==='ask-submit'&&!e.target.disabled){
+    const q=$('#ask-q').value.trim(), d=$('#ask-d').value.trim();
+    const list=store.get('questions',[]);
+    list.unshift({id:'q'+Date.now(),status:'pending',user:'나',q,d,ago:'방금 전',a:null});
+    store.set('questions',list);
+    closeAsk(); $('#ask-q').value='';$('#ask-d').value='';validateAsk();
+    tab='전체';renderTabs();renderList();
+    toast('질문이 등록되었어요','코치 답변이 등록되면 알려드릴게요','success');
+  }
+});
+$('#ask-q').addEventListener('input',validateAsk);
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeAsk();});
+
+renderTabs();renderList();
+MIC.chrome({active:'community'});
+</script>
+</body>
+</html>

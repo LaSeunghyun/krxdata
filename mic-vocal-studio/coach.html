@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html class="dark" lang="ko">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>강사 스페이스 — MIC VOCAL</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script src="tw-config.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
+<link href="styles.css" rel="stylesheet"/>
+</head>
+<body class="bg-background text-on-background min-h-screen pb-28 pt-16">
+<main class="w-full max-w-[720px] mx-auto px-container-margin py-stack-md flex flex-col gap-stack-md">
+  <div>
+    <h2 class="font-headline-lg-mobile text-headline-lg-mobile text-on-surface">강사 스페이스</h2>
+    <p id="who" class="font-body-md text-body-md text-on-surface-variant mt-1"></p>
+  </div>
+
+  <section class="grid grid-cols-2 gap-3">
+    <div class="rounded-2xl bg-surface-container border border-outline-variant/10 p-4"><div id="k-cnt" class="font-headline-lg-mobile text-headline-lg-mobile text-on-surface">—</div><div class="font-label-sm text-label-sm text-on-surface-variant">이번 달 예약</div></div>
+    <div class="rounded-2xl bg-surface-container border border-outline-variant/10 p-4"><div id="k-pay" class="font-headline-lg-mobile text-headline-lg-mobile text-primary">—</div><div class="font-label-sm text-label-sm text-on-surface-variant" id="k-pay-sub">예상 수당</div></div>
+  </section>
+
+  <button id="leave-btn" class="flex items-center justify-center gap-2 rounded-2xl bg-surface-container border border-outline-variant/10 py-4 active:scale-[.99] transition">
+    <span class="material-symbols-outlined text-primary" aria-hidden="true">beach_access</span><span class="font-label-md text-label-md text-on-surface">휴가 신청</span></button>
+  <div id="my-leaves" class="flex flex-wrap gap-1.5"></div>
+
+  <div>
+    <h3 class="font-headline-md text-headline-md text-on-surface mb-3">내 예약</h3>
+    <div id="bk-list" class="flex flex-col gap-2"></div>
+  </div>
+</main>
+
+<!-- LEAVE SHEET -->
+<div id="leave-sheet" class="modal-overlay fixed inset-0 z-[100] bg-black/85 backdrop-blur-sm flex items-end sm:items-center justify-center">
+  <div class="sheet w-full max-w-[420px] bg-surface-container rounded-t-3xl sm:rounded-3xl border border-outline-variant/15" role="dialog" aria-modal="true" aria-labelledby="lv-t">
+    <div class="flex items-center justify-between p-5 border-b border-outline-variant/10">
+      <h3 id="lv-t" class="font-headline-md text-headline-md text-on-surface">휴가 신청</h3>
+      <button data-lvclose class="w-9 h-9 rounded-full text-on-surface-variant hover:bg-surface-variant flex items-center justify-center" aria-label="닫기"><span class="material-symbols-outlined" aria-hidden="true">close</span></button>
+    </div>
+    <div class="p-5 flex flex-col gap-4">
+      <div><label class="font-label-md text-label-md text-on-surface-variant mb-1.5 block">시작일</label><input id="lv-from" type="date" class="w-full bg-surface-container-high border border-outline-variant/30 rounded-xl px-4 py-3 font-body-md text-body-md text-on-surface outline-none focus:border-primary"/></div>
+      <div><label class="font-label-md text-label-md text-on-surface-variant mb-1.5 block">종료일</label><input id="lv-to" type="date" class="w-full bg-surface-container-high border border-outline-variant/30 rounded-xl px-4 py-3 font-body-md text-body-md text-on-surface outline-none focus:border-primary"/></div>
+      <p id="lv-warn" class="hidden font-label-sm text-label-sm text-error"></p>
+      <button id="lv-save" class="w-full h-12 rounded-full bg-primary text-on-primary font-label-md text-label-md active:scale-[.98] transition">신청하기</button>
+    </div>
+  </div>
+</div>
+
+<script src="domain.js"></script>
+<script src="app.js"></script>
+<script src="auth.js"></script>
+<script>
+MIC.auth.requireRole('coachspace');
+const {COACHES,KRW,store,esc,toast,trapFocus}=MIC;
+const D=window.DOMAIN, TODAY=new Date(2026,5,14);
+const me=MIC.auth.current();
+const coachId = me && me.coachId ? me.coachId : COACHES[0].id;
+const coach = COACHES.find(c=>c.id===coachId);
+const $id=id=>document.getElementById(id);
+
+function myBookings(){ return (store.get('bookings',[])||[]).filter(b=>b.coachId===coachId); }
+function render(){
+  $id('who').textContent = `${coach.name} 코치 · ${coach.role} · 입사 ${coach.joinDate}`;
+  const bks=myBookings();
+  const thisMonth=bks.filter(b=>String(b.date).slice(0,7)==='2026-06');
+  $id('k-cnt').textContent=thisMonth.length+'건';
+  // 예상 수당: 완료(과거) 레슨 기준
+  const lessons=bks.filter(b=>new Date(b.date)<TODAY).map(b=>({minutes:coach.fee.includes('60')?60:50, amount:b.price, status:'completed'}));
+  $id('k-pay').textContent=KRW(D.calcCoachPay(lessons, coach.pay));
+  $id('k-pay-sub').textContent = coach.pay.type==='hourly'?`시간제 ${KRW(coach.pay.rate)}/h`:`매출연동 ${Math.round(coach.pay.rate*100)}%`;
+  // 휴가
+  const leaves=(store.get('leaves',[])||[]).filter(l=>l.coachId===coachId);
+  $id('my-leaves').innerHTML=leaves.map(l=>`<span class="px-2.5 py-1 rounded-lg bg-primary/10 text-primary font-label-sm text-label-sm">🏖️ ${l.from} ~ ${l.to}</span>`).join('')||'<span class="font-label-sm text-label-sm text-on-surface-variant px-1">신청한 휴가가 없습니다</span>';
+  // 예약 목록
+  const list=bks.slice().sort((a,b)=>new Date(b.date)-new Date(a.date));
+  $id('bk-list').innerHTML = list.length ? list.map(b=>{
+    const past=new Date(b.date)<TODAY, off=b.offday;
+    return `<div class="rounded-2xl bg-surface-container border border-outline-variant/10 p-4 flex items-center gap-3 ${off?'opacity-60':''}">
+      <div class="w-10 h-10 rounded-xl bg-primary/15 flex items-center justify-center"><span class="material-symbols-outlined text-primary text-[20px]" aria-hidden="true">${off?'event_busy':'event'}</span></div>
+      <div class="flex-1 min-w-0"><div class="font-label-md text-label-md text-on-surface">${b.date} ${b.time}</div><div class="font-label-sm text-label-sm text-on-surface-variant">${b.price?KRW(b.price):'수강권'} · ${b.id}</div></div>
+      ${off?'<span class="px-2 py-1 rounded-full bg-error-container/40 text-error font-label-sm text-label-sm">휴강</span>'
+        : past?'<span class="px-2 py-1 rounded-full bg-surface-variant text-on-surface-variant font-label-sm text-label-sm">완료</span>'
+        : `<button data-off="${b.id}" class="px-3 py-1.5 rounded-full bg-surface-variant text-on-surface-variant hover:text-error font-label-sm text-label-sm active:scale-95 transition">휴강</button>`}
+    </div>`;
+  }).join('') : '<div class="text-center py-12 text-on-surface-variant"><span class="material-symbols-outlined text-4xl opacity-40" aria-hidden="true">event_available</span><p class="font-body-md text-body-md mt-2">예약이 없습니다</p></div>';
+}
+
+/* 휴가 신청 시트 */
+let lvFocus=null, lvRelease=null;
+function openLeave(){lvFocus=document.activeElement;$id('lv-from').value='';$id('lv-to').value='';$id('lv-warn').classList.add('hidden');$id('leave-sheet').classList.add('show');document.body.style.overflow='hidden';lvRelease=trapFocus($id('leave-sheet'));}
+function closeLeave(){$id('leave-sheet').classList.remove('show');document.body.style.overflow='';if(lvRelease){lvRelease();lvRelease=null;}if(lvFocus&&lvFocus.focus)lvFocus.focus();}
+function saveLeave(){
+  const from=$id('lv-from').value,to=$id('lv-to').value,w=$id('lv-warn');
+  if(!from||!to){w.textContent='시작일과 종료일을 선택하세요';w.classList.remove('hidden');return;}
+  if(from>to){w.textContent='종료일이 시작일보다 빠를 수 없습니다';w.classList.remove('hidden');return;}
+  const lv=store.get('leaves',[]);lv.push({coachId,from,to});store.set('leaves',lv);
+  closeLeave();render();toast('휴가가 신청되었어요','해당 기간 예약이 차단됩니다','success');
+}
+
+document.addEventListener('click',e=>{
+  if(e.target.closest('#leave-btn'))openLeave();
+  if(e.target.closest('[data-lvclose]')||e.target.id==='leave-sheet')closeLeave();
+  if(e.target.id==='lv-save')saveLeave();
+  const off=e.target.closest('[data-off]');
+  if(off){
+    const bks=store.get('bookings',[]);const b=bks.find(x=>x.id===off.dataset.off);
+    if(b){b.offday=true;store.set('bookings',bks);render();toast('휴강 처리되었어요','학생에게 통지되었습니다','success');}
+  }
+});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeLeave();});
+
+render();
+MIC.chrome({active:'coachspace'});
+</script>
+</body>
+</html>

@@ -1,0 +1,48 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e3]:
+      - link "뒤로" [ref=e4] [cursor=pointer]:
+        - /url: mypage.html
+        - generic [ref=e5]: arrow_back
+      - heading "원장 콘솔" [level=1] [ref=e6]
+      - generic [ref=e8]: workspace_premium
+  - main [ref=e9]:
+    - generic [ref=e10]:
+      - heading "운영 대시보드" [level=2] [ref=e11]
+      - paragraph [ref=e12]: 2026년 6월 기준
+    - generic [ref=e13]:
+      - generic [ref=e14]:
+        - generic [ref=e15]: 이번 달 순매출
+        - generic [ref=e16]: ₩6,650,000
+        - generic [ref=e17]: 총매출 ₩6,725,000 · 환불 ₩75,000
+      - generic [ref=e18]:
+        - generic [ref=e19]: 77건
+        - generic [ref=e20]: 결제 건수
+      - generic [ref=e21]:
+        - generic [ref=e22]: ₩2,907,500
+        - generic [ref=e23]: 강사 수당 합
+    - generic [ref=e24]:
+      - button "매출" [ref=e25] [cursor=pointer]
+      - button "강사 수당" [ref=e26] [cursor=pointer]
+      - button "강사 관리" [ref=e27] [cursor=pointer]
+      - button "회원·권한" [ref=e28] [cursor=pointer]
+      - button "콘텐츠" [ref=e29] [cursor=pointer]
+    - generic [ref=e30]:
+      - generic [ref=e31]:
+        - generic [ref=e32]: 상품·강사별 매출 분해
+        - generic [ref=e34]:
+          - generic [ref=e35]: 이도현 코치
+          - generic [ref=e36]: ₩1,920,000
+        - generic [ref=e40]:
+          - generic [ref=e41]: 최서아 코치
+          - generic [ref=e42]: ₩1,350,000
+        - generic [ref=e46]:
+          - generic [ref=e47]: 정민재 코치
+          - generic [ref=e48]: ₩840,000
+        - generic [ref=e52]:
+          - generic [ref=e53]: 김하늘 코치
+          - generic [ref=e54]: ₩1,800,000
+        - generic [ref=e58]:
+          - generic [ref=e59]: 수강권 판매
+          - generic [ref=e60]: ₩740,000
+      - paragraph [ref=e63]: "* 매출은 결제 인식 기준, 환불 차감 후 순액입니다. (domain.calcMonthlyRevenue)"

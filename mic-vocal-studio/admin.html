@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html class="dark" lang="ko">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>원장 콘솔 — MIC VOCAL</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script src="tw-config.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
+<link href="styles.css" rel="stylesheet"/>
+</head>
+<body class="bg-background text-on-background min-h-screen pb-12 pt-16">
+<header class="fixed top-0 w-full z-50 bg-surface-dim border-b border-outline-variant/10">
+  <div class="flex justify-between items-center px-container-margin h-16 w-full max-w-[720px] mx-auto">
+    <a href="mypage.html" aria-label="뒤로" class="w-10 h-10 -ml-2 flex items-center justify-center text-on-surface-variant hover:opacity-80"><span class="material-symbols-outlined" aria-hidden="true">arrow_back</span></a>
+    <h1 class="font-display-lg text-[20px] font-extrabold text-primary tracking-tighter">원장 콘솔</h1>
+    <span class="w-10 h-10 flex items-center justify-center text-primary"><span class="material-symbols-outlined" aria-hidden="true" style="font-variation-settings:'FILL' 1">workspace_premium</span></span>
+  </div>
+</header>
+
+<main class="w-full max-w-[720px] mx-auto px-container-margin py-stack-md flex flex-col gap-stack-md">
+  <div>
+    <h2 class="font-headline-lg-mobile text-headline-lg-mobile text-on-surface">운영 대시보드</h2>
+    <p class="font-body-md text-body-md text-on-surface-variant mt-1" id="period-label">2026년 6월 기준</p>
+  </div>
+
+  <!-- KPI -->
+  <section class="grid grid-cols-2 gap-3">
+    <div class="col-span-2 rounded-2xl bg-surface-container border border-outline-variant/10 p-stack-md">
+      <div class="font-body-md text-body-md text-on-surface-variant">이번 달 순매출</div>
+      <div id="kpi-net" class="font-display-lg text-display-lg text-primary mt-1">—</div>
+      <div id="kpi-sub" class="font-label-sm text-label-sm text-on-surface-variant mt-2"></div>
+    </div>
+    <div class="rounded-2xl bg-surface-container border border-outline-variant/10 p-4"><div id="kpi-cnt" class="font-headline-lg-mobile text-headline-lg-mobile text-on-surface">—</div><div class="font-label-sm text-label-sm text-on-surface-variant">결제 건수</div></div>
+    <div class="rounded-2xl bg-surface-container border border-outline-variant/10 p-4"><div id="kpi-pay" class="font-headline-lg-mobile text-headline-lg-mobile text-on-surface">—</div><div class="font-label-sm text-label-sm text-on-surface-variant">강사 수당 합</div></div>
+  </section>
+
+  <div id="tabs" class="flex gap-5 border-b border-outline-variant/15 overflow-x-auto no-scrollbar"></div>
+  <div id="panel" class="flex flex-col gap-3"></div>
+</main>
+
+<!-- LEAVE SHEET -->
+<div id="leave-sheet" class="modal-overlay fixed inset-0 z-[100] bg-black/85 backdrop-blur-sm flex items-end sm:items-center justify-center">
+  <div class="sheet w-full max-w-[420px] bg-surface-container rounded-t-3xl sm:rounded-3xl border border-outline-variant/15" role="dialog" aria-modal="true" aria-labelledby="lv-title">
+    <div class="flex items-center justify-between p-5 border-b border-outline-variant/10">
+      <h3 id="lv-title" class="font-headline-md text-headline-md text-on-surface">휴가 등록</h3>
+      <button data-lvclose class="w-9 h-9 rounded-full text-on-surface-variant hover:bg-surface-variant flex items-center justify-center" aria-label="닫기"><span class="material-symbols-outlined" aria-hidden="true">close</span></button>
+    </div>
+    <div class="p-5 flex flex-col gap-4">
+      <p id="lv-coach" class="font-body-md text-body-md text-on-surface-variant"></p>
+      <div><label class="font-label-md text-label-md text-on-surface-variant mb-1.5 block">시작일</label><input id="lv-from" type="date" class="w-full bg-surface-container-high border border-outline-variant/30 rounded-xl px-4 py-3 font-body-md text-body-md text-on-surface outline-none focus:border-primary"/></div>
+      <div><label class="font-label-md text-label-md text-on-surface-variant mb-1.5 block">종료일</label><input id="lv-to" type="date" class="w-full bg-surface-container-high border border-outline-variant/30 rounded-xl px-4 py-3 font-body-md text-body-md text-on-surface outline-none focus:border-primary"/></div>
+      <p id="lv-warn" class="hidden font-label-sm text-label-sm text-error"></p>
+      <button id="lv-save" class="w-full h-13 py-4 rounded-full bg-primary text-on-primary font-label-md text-label-md active:scale-[.98] transition">휴가 등록</button>
+    </div>
+  </div>
+</div>
+
+<script src="domain.js"></script>
+<script src="app.js"></script>
+<script src="auth.js"></script>
+<script>
+MIC.auth.requireRole('admin');
+const {COACHES,KRW,store,esc,toast}=MIC;
+const D=window.DOMAIN;
+const MONTH='2026-06', DAYS_IN=30;
+const fmtD=ds=>ds;
+
+/* 시드: 이번달 강사별 완료 레슨 (수당/매출 시연) */
+const SEED_LESSONS={
+  lee:Array(24).fill(0).map(()=>({minutes:50,amount:80000,status:'completed'})),
+  choi:Array(18).fill(0).map(()=>({minutes:50,amount:75000,status:'completed'})),
+  jung:Array(12).fill(0).map(()=>({minutes:50,amount:70000,status:'completed'})),
+  kim:Array(20).fill(0).map(()=>({minutes:60,amount:90000,status:'completed'})),
+};
+// 환불 1건 예시 (choi)
+SEED_LESSONS.choi.push({minutes:50,amount:75000,status:'refunded'});
+
+/* 시드 결제 + 실제 localStorage 결제 합산 */
+function allPayments(){
+  const seed=[];
+  Object.keys(SEED_LESSONS).forEach(cid=>{
+    SEED_LESSONS[cid].forEach((l,i)=>{
+      seed.push({amount:l.amount, refundedAmount:l.status==='refunded'?l.amount:0,
+        ts:Date.parse(`2026-06-${String((i%27)+1).padStart(2,'0')}`), coachId:cid, kind:'lesson'});
+    });
+  });
+  // 수강권 시드
+  seed.push({amount:540000,refundedAmount:0,ts:Date.parse('2026-06-08'),coachId:null,kind:'pass'});
+  seed.push({amount:200000,refundedAmount:0,ts:Date.parse('2026-06-12'),coachId:null,kind:'pass'});
+  const real=(store.get('payments',[])||[]).map(p=>({amount:p.amount,refundedAmount:p.refundedAmount||0,ts:p.createdAt,coachId:p.coachId||null,kind:p.kind}));
+  return seed.concat(real);
+}
+
+/* 강사 상태 오버라이드 (퇴사/복직) + 휴가 */
+function coachState(){return store.get('coachState',{});}      // {id:{active,leaveDate}}
+function leaves(){return store.get('leaves',[]);}              // [{coachId,from,to}]
+function coachWithState(c){
+  const ov=coachState()[c.id]||{};
+  return Object.assign({}, c, ov);
+}
+
+function renderKPI(){
+  const rev=D.calcMonthlyRevenue(allPayments(),MONTH);
+  $('kpi-net').textContent=KRW(rev.net);
+  $('kpi-sub').textContent=`총매출 ${KRW(rev.gross)} · 환불 ${KRW(rev.refund)}`;
+  $('kpi-cnt').textContent=rev.count+'건';
+  const payTotal=COACHES.reduce((s,c)=>s+D.calcCoachPay(SEED_LESSONS[c.id]||[],c.pay),0);
+  $('kpi-pay').textContent=KRW(payTotal);
+}
+function $(id){return document.getElementById(id);}
+
+let tab='revenue';
+const TABS=[['revenue','매출'],['pay','강사 수당'],['staff','강사 관리'],['members','회원·권한'],['content','콘텐츠']];
+function renderTabs(){
+  $('tabs').innerHTML=TABS.map(([k,l])=>`<button data-tab="${k}" class="py-3 -mb-px border-b-2 font-label-md text-label-md whitespace-nowrap transition ${k===tab?'border-primary text-primary':'border-transparent text-on-surface-variant'}">${l}</button>`).join('');
+}
+const ROLES=[['student','학생'],['coach','강사'],['director','원장']];
+const ROLE_BADGE={student:'🎓 학생',coach:'🎤 강사',director:'👑 원장'};
+function bar(pct,color){return `<div class="w-full h-2 bg-surface-variant rounded-full overflow-hidden mt-2"><div class="h-full rounded-full" style="width:${pct}%;background:${color}"></div></div>`;}
+
+function renderPanel(){
+  const p=$('panel');
+  if(tab==='revenue'){
+    const pays=allPayments();
+    const byCoach=COACHES.map(c=>{
+      const r=D.calcMonthlyRevenue(pays.filter(x=>x.coachId===c.id),MONTH);
+      return {c,net:r.net};
+    });
+    const passRev=D.calcMonthlyRevenue(pays.filter(x=>x.kind==='pass'),MONTH);
+    const max=Math.max(1,...byCoach.map(x=>x.net),passRev.net);
+    p.innerHTML=`<div class="rounded-2xl bg-surface-container border border-outline-variant/10 p-5 flex flex-col gap-4">
+      <div class="font-label-md text-label-md text-on-surface-variant">상품·강사별 매출 분해</div>
+      ${byCoach.map(x=>`<div><div class="flex justify-between"><span class="font-body-md text-body-md text-on-surface">${esc(x.c.name)} 코치</span><span class="font-label-md text-label-md text-on-surface">${KRW(x.net)}</span></div>${bar(x.net/max*100,x.c.tint)}</div>`).join('')}
+      <div><div class="flex justify-between"><span class="font-body-md text-body-md text-on-surface">수강권 판매</span><span class="font-label-md text-label-md text-on-surface">${KRW(passRev.net)}</span></div>${bar(passRev.net/max*100,'#b8c3ff')}</div>
+    </div>
+    <p class="font-label-sm text-label-sm text-on-surface-variant px-1">* 매출은 결제 인식 기준, 환불 차감 후 순액입니다. (domain.calcMonthlyRevenue)</p>`;
+  }
+  if(tab==='pay'){
+    p.innerHTML=COACHES.map(c=>{
+      const lessons=SEED_LESSONS[c.id]||[];
+      const done=lessons.filter(l=>l.status==='completed');
+      const pay=D.calcCoachPay(lessons,c.pay);
+      const policy=c.pay.type==='hourly'?`시간제 · ${KRW(c.pay.rate)}/h`:`매출연동 · ${Math.round(c.pay.rate*100)}%`;
+      const mins=done.reduce((s,l)=>s+l.minutes,0);
+      return `<div class="rounded-2xl bg-surface-container border border-outline-variant/10 p-4 flex items-center gap-4">
+        <div class="w-12 h-12 rounded-full flex items-center justify-center text-[24px]" style="background:${c.tint}22;border:1px solid ${c.tint}55">${c.emoji}</div>
+        <div class="flex-1 min-w-0"><div class="font-label-md text-label-md text-on-surface">${esc(c.name)} 코치</div>
+          <div class="font-label-sm text-label-sm text-on-surface-variant">${policy} · 완료 ${done.length}회 (${mins}분)</div></div>
+        <div class="text-right"><div class="font-headline-md text-headline-md text-primary">${KRW(pay)}</div><div class="font-label-sm text-[10px] text-on-surface-variant">예상 수당</div></div>
+      </div>`;
+    }).join('')+`<p class="font-label-sm text-label-sm text-on-surface-variant px-1">* 노쇼·환불 레슨 제외. (domain.calcCoachPay)</p>`;
+  }
+  if(tab==='staff'){
+    p.innerHTML=COACHES.map(c=>{
+      const cs=coachWithState(c);
+      const active=cs.active!==false && !cs.leaveDate;
+      const myLeaves=leaves().filter(l=>l.coachId===c.id);
+      return `<div class="rounded-2xl bg-surface-container border border-outline-variant/10 p-4 flex flex-col gap-3">
+        <div class="flex items-center gap-3">
+          <div class="w-11 h-11 rounded-full flex items-center justify-center text-[22px]" style="background:${c.tint}22;border:1px solid ${c.tint}55">${c.emoji}</div>
+          <div class="flex-1 min-w-0"><div class="font-label-md text-label-md text-on-surface">${esc(c.name)} <span class="font-label-sm text-label-sm text-on-surface-variant">${esc(c.role)}</span></div>
+            <div class="font-label-sm text-label-sm text-on-surface-variant">입사 ${c.joinDate}${cs.leaveDate?` · 퇴사 ${cs.leaveDate}`:''}</div></div>
+          <span class="px-2 py-1 rounded-full font-label-sm text-label-sm ${active?'bg-success-container text-success':'bg-surface-variant text-on-surface-variant'}">${active?'재직':'퇴사'}</span>
+        </div>
+        ${myLeaves.length?`<div class="flex flex-wrap gap-1.5">${myLeaves.map((l,i)=>`<span class="px-2 py-1 rounded-lg bg-primary/10 text-primary font-label-sm text-label-sm flex items-center gap-1">🏖️ ${l.from}~${l.to}<button data-rmleave="${c.id}|${i}" class="hover:text-error" aria-label="휴가 삭제"><span class="material-symbols-outlined text-[14px]" aria-hidden="true">close</span></button></span>`).join('')}</div>`:''}
+        <div class="flex gap-2">
+          <button data-leave="${c.id}" class="flex-1 h-10 rounded-full bg-surface-variant text-on-surface font-label-sm text-label-sm active:scale-95 transition">휴가 등록</button>
+          <button data-toggle="${c.id}" class="flex-1 h-10 rounded-full font-label-sm text-label-sm active:scale-95 transition ${active?'bg-error-container/40 text-error':'bg-primary text-on-primary'}">${active?'퇴사 처리':'복직'}</button>
+        </div>
+      </div>`;
+    }).join('');
+  }
+  if(tab==='members'){
+    const me=MIC.auth.current(); const users=MIC.auth.users();
+    p.innerHTML=`<p class="font-label-sm text-label-sm text-on-surface-variant px-1 mb-1">회원의 권한(학생·강사·원장)을 지정합니다. 가입한 방문자는 기본 학생입니다.</p>`
+      + users.map(u=>`<div class="rounded-2xl bg-surface-container border border-outline-variant/10 p-4 flex items-center gap-3">
+        <div class="w-11 h-11 rounded-full bg-primary/15 flex items-center justify-center text-[20px]">${ROLE_BADGE[u.role]?ROLE_BADGE[u.role].split(' ')[0]:'👤'}</div>
+        <div class="flex-1 min-w-0"><div class="font-label-md text-label-md text-on-surface truncate">${esc(u.name)}${u.id===me.id?' <span class="text-primary">(나)</span>':''}</div><div class="font-label-sm text-label-sm text-on-surface-variant truncate">${esc(u.email)}</div></div>
+        ${u.id===me.id
+          ? `<span class="px-3 py-1.5 rounded-full bg-primary/15 text-primary font-label-sm text-label-sm">원장</span>`
+          : `<select data-role="${u.id}" class="bg-surface-container-high border border-outline-variant/30 rounded-xl px-3 py-2 font-label-sm text-label-sm text-on-surface outline-none focus:border-primary">${ROLES.map(([rv,rl])=>`<option value="${rv}" ${u.role===rv?'selected':''}>${rl}</option>`).join('')}</select>`}
+      </div>`).join('');
+  }
+  if(tab==='content'){
+    const cats=MIC.VIDEO_CATS.filter(c=>c!=='전체');
+    const vids=MIC.getVideos();
+    p.innerHTML=`<div class="rounded-2xl bg-surface-container border border-outline-variant/10 p-4">
+        <div class="font-label-md text-label-md text-on-surface mb-3">유튜브 영상 추가</div>
+        <input id="v-url" placeholder="유튜브 링크 또는 영상 ID" class="w-full bg-surface-container-high border border-outline-variant/30 rounded-xl px-4 py-3 font-body-md text-body-md text-on-surface placeholder:text-outline outline-none focus:border-primary mb-2"/>
+        <div class="flex gap-2 mb-1">
+          <input id="v-title" placeholder="영상 제목" class="flex-1 min-w-0 bg-surface-container-high border border-outline-variant/30 rounded-xl px-4 py-3 font-body-md text-body-md text-on-surface placeholder:text-outline outline-none focus:border-primary"/>
+          <select id="v-cat" class="bg-surface-container-high border border-outline-variant/30 rounded-xl px-3 py-3 font-label-sm text-label-sm text-on-surface outline-none focus:border-primary">${cats.map(c=>`<option>${c}</option>`).join('')}</select>
+        </div>
+        <p id="v-err" class="hidden font-label-sm text-label-sm text-error mb-2"></p>
+        <button id="v-add" class="w-full h-12 rounded-full bg-primary text-on-primary font-label-md text-label-md active:scale-95 transition mt-2">추가하기</button>
+      </div>
+      <p class="font-label-sm text-label-sm text-on-surface-variant px-1 mt-1">현재 ${vids.length}개 · 홈 피드에 즉시 반영됩니다</p>
+      ${vids.map(v=>`<div class="rounded-2xl bg-surface-container border border-outline-variant/10 p-3 flex items-center gap-3">
+        <img src="${MIC.thumb(v.id)}" alt="" class="w-24 shrink-0 aspect-video object-cover rounded-lg bg-surface-container-high"/>
+        <div class="flex-1 min-w-0"><div class="font-label-md text-label-md text-on-surface line-clamp-2">${esc(v.title)}</div><div class="font-label-sm text-label-sm text-on-surface-variant mt-0.5">${esc(v.cat)}${v.dur?' · '+v.dur:''}</div></div>
+        <button data-delvid="${v.id}" aria-label="삭제" class="w-9 h-9 shrink-0 rounded-full text-on-surface-variant hover:text-error hover:bg-error-container/20 flex items-center justify-center transition"><span class="material-symbols-outlined text-[20px]" aria-hidden="true">delete</span></button>
+      </div>`).join('')}`;
+  }
+}
+
+/* leave sheet */
+let leaveCoach=null, lvFocus=null, lvRelease=null;
+function openLeave(cid){
+  leaveCoach=cid; lvFocus=document.activeElement;
+  const c=COACHES.find(x=>x.id===cid);
+  $('lv-coach').textContent=`${c.name} 코치의 휴가 기간을 선택하세요.`;
+  $('lv-from').value=''; $('lv-to').value=''; $('lv-warn').classList.add('hidden');
+  $('leave-sheet').classList.add('show'); document.body.style.overflow='hidden';
+  lvRelease=MIC.trapFocus($('leave-sheet'));
+}
+function closeLeave(){$('leave-sheet').classList.remove('show');document.body.style.overflow='';if(lvRelease){lvRelease();lvRelease=null;}if(lvFocus&&lvFocus.focus)lvFocus.focus();}
+function saveLeave(){
+  const from=$('lv-from').value, to=$('lv-to').value;
+  const w=$('lv-warn');
+  if(!from||!to){w.textContent='시작일과 종료일을 모두 선택하세요.';w.classList.remove('hidden');return;}
+  if(from>to){w.textContent='종료일이 시작일보다 빠를 수 없습니다.';w.classList.remove('hidden');return;}
+  const lv=leaves(); lv.push({coachId:leaveCoach,from,to}); store.set('leaves',lv);
+  closeLeave(); renderPanel(); toast('휴가 등록 완료','해당 기간 예약이 차단됩니다','success');
+}
+
+document.addEventListener('click',e=>{
+  const t=e.target.closest('[data-tab]'); if(t){tab=t.dataset.tab;renderTabs();renderPanel();}
+  const lv=e.target.closest('[data-leave]'); if(lv)openLeave(lv.dataset.leave);
+  const tg=e.target.closest('[data-toggle]'); if(tg){
+    const cid=tg.dataset.toggle, cs=coachState(); const c=COACHES.find(x=>x.id===cid);
+    const cur=coachWithState(c); const active=cur.active!==false&&!cur.leaveDate;
+    cs[cid]= active ? {active:false, leaveDate:'2026-06-14'} : {active:true, leaveDate:null};
+    store.set('coachState',cs); renderPanel();
+    if(active){
+      const affected=(store.get('bookings',[])||[]).filter(b=>b.coachId===cid && b.date>='2026-06-14').length;
+      toast('퇴사 처리됨', affected?`⚠ 재배정 필요한 예약 ${affected}건`:'신규 예약이 차단됩니다', affected?'error':'info');
+    } else toast('복직 처리됨','예약을 다시 받습니다','info');
+  }
+  const rm=e.target.closest('[data-rmleave]'); if(rm){
+    const [cid,idx]=rm.dataset.rmleave.split('|'); const lv=leaves();
+    const filtered=lv.filter(l=>l.coachId===cid); const target=filtered[+idx];
+    store.set('leaves', lv.filter(l=>l!==target)); renderPanel();
+  }
+  if(e.target.closest('[data-lvclose]')||e.target.id==='leave-sheet')closeLeave();
+  if(e.target.id==='lv-save')saveLeave();
+  if(e.target.id==='v-add')addVideoFromForm();
+  const dv=e.target.closest('[data-delvid]'); if(dv){MIC.removeVideo(dv.dataset.delvid);renderPanel();renderKPI();toast('영상이 삭제되었어요','홈 피드에서 제거되었습니다','success');}
+});
+document.addEventListener('change',e=>{
+  const rs=e.target.closest('[data-role]'); if(rs){MIC.auth.setRole(rs.dataset.role, rs.value); renderPanel(); toast('권한이 변경되었어요', `${rs.options[rs.selectedIndex].text}(으)로 변경`,'success');}
+});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeLeave();});
+function addVideoFromForm(){
+  const url=document.getElementById('v-url').value, title=document.getElementById('v-title').value.trim(), cat=document.getElementById('v-cat').value;
+  const err=document.getElementById('v-err');
+  const id=D.parseYouTubeId(url);
+  if(!id){err.textContent='유효한 유튜브 링크 또는 영상 ID가 아닙니다';err.classList.remove('hidden');return;}
+  if(!title){err.textContent='영상 제목을 입력하세요';err.classList.remove('hidden');return;}
+  MIC.addVideo({id,title,cat,dur:''});
+  renderPanel(); toast('영상이 추가되었어요','홈 피드에 즉시 반영됩니다','success');
+}
+
+renderKPI();renderTabs();renderPanel();
+</script>
+</body>
+</html>

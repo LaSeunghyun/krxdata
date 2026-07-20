@@ -1,0 +1,158 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - navigation "breadcrumb" [ref=e3]:
+      - list [ref=e4]:
+        - listitem [ref=e5]:
+          - link "NestAds" [ref=e6] [cursor=pointer]:
+            - /url: /
+        - listitem [ref=e7]:
+          - img [ref=e8]
+        - listitem [ref=e10]:
+          - link "Ads" [ref=e11] [cursor=pointer]:
+            - /url: /ads
+    - generic [ref=e12]:
+      - button "Logger" [ref=e13] [cursor=pointer]:
+        - img
+        - paragraph [ref=e14]: Logger
+      - button [ref=e15]:
+        - img [ref=e16]
+  - generic [ref=e19]: "1"
+  - generic [ref=e23]:
+    - banner [ref=e24]:
+      - generic [ref=e25]:
+        - heading "맛있는 발견" [level=1] [ref=e27]:
+          - img [ref=e28]
+          - text: 맛있는 발견
+        - generic [ref=e33]:
+          - button [ref=e34] [cursor=pointer]:
+            - img
+          - button "3" [ref=e35] [cursor=pointer]:
+            - img
+            - generic [ref=e36]: "3"
+    - generic [ref=e41]:
+      - iframe [ref=e42]:
+        - generic [ref=f2e2]:
+          - img
+          - generic:
+            - img
+            - generic: "8"
+          - generic [ref=f2e4] [cursor=pointer]: AD
+      - iframe [ref=e43]:
+        - generic [ref=f3e4]:
+          - generic [ref=f3e5]: AD
+          - img [ref=f3e6] [cursor=pointer]
+    - generic [ref=e48]:
+      - generic [ref=e49]:
+        - img [ref=e50]
+        - generic [ref=e55]: 200+
+        - generic [ref=e56]: 전체 레시피
+      - generic [ref=e57]:
+        - img [ref=e58]
+        - generic [ref=e63]: 15.2K
+        - generic [ref=e64]: 활성 회원
+      - generic [ref=e65]:
+        - img [ref=e66]
+        - generic [ref=e68]: 48명
+        - generic [ref=e69]: 전문 셰프
+      - generic [ref=e70]:
+        - img [ref=e71]
+        - generic [ref=e73]: 12개
+        - generic [ref=e74]: 오늘의 신규
+    - generic [ref=e76]:
+      - generic [ref=e77]:
+        - heading "지금 인기 있는 레시피" [level=2] [ref=e78]:
+          - img [ref=e79]
+          - text: 지금 인기 있는 레시피
+        - paragraph [ref=e81]: 실시간 인기 순위를 확인해보세요
+      - button "전체보기" [ref=e82] [cursor=pointer]:
+        - text: 전체보기
+        - img
+    - generic [ref=e110]:
+      - heading "주간 랭킹 TOP 10" [level=2] [ref=e114]:
+        - img [ref=e115]
+        - text: 주간 랭킹 TOP 10
+      - generic [ref=e151]:
+        - generic [ref=e152]:
+          - heading "밀키트 스토어" [level=2] [ref=e153]:
+            - img [ref=e154]
+            - text: 밀키트 스토어
+          - paragraph [ref=e158]: 셰프의 레시피를 집에서 간편하게
+        - button "스토어 가기" [ref=e159] [cursor=pointer]:
+          - text: 스토어 가기
+          - img
+    - generic [ref=e205]:
+      - generic [ref=e206]:
+        - heading "푸드 매거진" [level=2] [ref=e207]:
+          - img [ref=e208]
+          - text: 푸드 매거진
+        - paragraph [ref=e211]: 전문가가 전하는 음식 이야기
+      - button "전체 기사" [ref=e212] [cursor=pointer]:
+        - text: 전체 기사
+        - img
+    - iframe [ref=e237]:
+      - generic [ref=f5e4]:
+        - generic [ref=f5e5]: AD
+        - img [ref=f5e6] [cursor=pointer]
+    - generic [ref=e241]:
+      - generic [ref=e242]:
+        - heading "요리 클래스에 참여해보세요!" [level=2] [ref=e243]
+        - paragraph [ref=e244]: 전문 셰프와 함께하는 온라인 쿠킹 클래스, 첫 수강 50% 할인
+      - button "클래스 보러가기" [ref=e245] [cursor=pointer]:
+        - img
+        - text: 클래스 보러가기
+    - generic [ref=e247]:
+      - tablist [ref=e248]:
+        - tab "전체 레시피" [selected] [ref=e249]:
+          - img
+          - text: 전체 레시피
+        - tab "커뮤니티" [ref=e250]:
+          - img
+          - text: 커뮤니티
+      - tabpanel "전체 레시피" [ref=e251]:
+        - generic [ref=e255]:
+          - button "전체" [ref=e256] [cursor=pointer]
+          - button "한식" [ref=e257] [cursor=pointer]
+          - button "양식" [ref=e258] [cursor=pointer]
+          - button "일식" [ref=e259] [cursor=pointer]
+          - button "중식" [ref=e260] [cursor=pointer]
+          - button "디저트" [ref=e261] [cursor=pointer]
+          - button "건강식" [ref=e262] [cursor=pointer]
+          - button "간편식" [ref=e263] [cursor=pointer]
+    - contentinfo [ref=e313]:
+      - generic [ref=e314]:
+        - generic [ref=e315]:
+          - generic [ref=e316]:
+            - heading "서비스" [level=3] [ref=e317]
+            - list [ref=e318]:
+              - listitem [ref=e319]: 레시피 검색
+              - listitem [ref=e320]: 맛집 지도
+              - listitem [ref=e321]: 밀키트 주문
+              - listitem [ref=e322]: 요리 클래스
+          - generic [ref=e323]:
+            - heading "고객지원" [level=3] [ref=e324]
+            - list [ref=e325]:
+              - listitem [ref=e326]: 자주 묻는 질문
+              - listitem [ref=e327]: 1:1 문의
+              - listitem [ref=e328]: 공지사항
+              - listitem [ref=e329]: 이용약관
+          - generic [ref=e330]:
+            - heading "회사" [level=3] [ref=e331]
+            - list [ref=e332]:
+              - listitem [ref=e333]: 회사 소개
+              - listitem [ref=e334]: 채용 정보
+              - listitem [ref=e335]: 블로그
+              - listitem [ref=e336]: 제휴 문의
+          - generic [ref=e337]:
+            - heading "SNS" [level=3] [ref=e338]
+            - list [ref=e339]:
+              - listitem [ref=e340]: Instagram
+              - listitem [ref=e341]: YouTube
+              - listitem [ref=e342]: Facebook
+              - listitem [ref=e343]: X (Twitter)
+        - generic [ref=e344]:
+          - generic [ref=e345]: © 2026 맛있는 발견. All rights reserved.
+          - generic [ref=e346]:
+            - generic [ref=e347]: 개인정보처리방침
+            - generic [ref=e348]: 이용약관
+            - generic [ref=e349]: 쿠키 설정
+  - region "Notifications alt+T"

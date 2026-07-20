@@ -1,0 +1,117 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - link [ref=e3] [cursor=pointer]:
+      - /url: "#"
+      - img "NEST ADS" [ref=e4]
+    - button "알림" [ref=e5] [cursor=pointer]:
+      - generic [ref=e10]: "3"
+    - button [ref=e11] [cursor=pointer]
+  - generic [ref=e15]:
+    - navigation [ref=e16]:
+      - combobox [ref=e19]:
+        - option "기획팀 매체" [selected]
+        - option "마케팅팀 매체"
+      - generic [ref=e20]:
+        - link "대시보드" [ref=e21] [cursor=pointer]:
+          - /url: "#"
+        - generic [ref=e29] [cursor=pointer]: 인벤토리
+        - generic [ref=e39]:
+          - link "채널" [ref=e40] [cursor=pointer]:
+            - /url: "#"
+          - link "게재위치" [ref=e41] [cursor=pointer]:
+            - /url: "#"
+          - link "광고상품" [ref=e42] [cursor=pointer]:
+            - /url: "#"
+          - link "판매 현황" [ref=e43] [cursor=pointer]:
+            - /url: "#"
+          - link "소재 스펙" [ref=e44] [cursor=pointer]:
+            - /url: "#"
+        - generic [ref=e45] [cursor=pointer]: 광고 관리
+        - generic [ref=e54] [cursor=pointer]: 보고서
+        - generic [ref=e63] [cursor=pointer]: 설정
+      - button "LNB 접기" [ref=e73] [cursor=pointer]
+    - main [ref=e77]:
+      - generic [ref=e78]:
+        - button "뒤로 가기" [ref=e79] [cursor=pointer]
+        - heading "메인 홈 상단 배너 – 스탠다드" [level=1] [ref=e83]
+        - generic [ref=e84]: 운영중
+        - button "도움말" [ref=e87]
+      - generic [ref=e93]:
+        - heading "기본 정보" [level=2] [ref=e94]
+        - generic [ref=e95]:
+          - generic [ref=e96]:
+            - generic [ref=e97]: 상품명
+            - generic [ref=e98]: 메인 홈 상단 배너 – 스탠다드
+          - generic [ref=e101]:
+            - generic [ref=e102]: 상품코드
+            - generic [ref=e103]: PRD-2026-00184
+          - generic [ref=e106]:
+            - generic [ref=e107]: 카테고리
+            - generic [ref=e108]: 디스플레이 배너
+          - generic [ref=e111]:
+            - generic [ref=e112]: 등록일
+            - generic [ref=e113]: 2025.11.03
+          - generic [ref=e116]:
+            - generic [ref=e117]: 최종수정일
+            - generic [ref=e118]: 2026.06.18
+        - heading "노출 위치 및 형태" [level=2] [ref=e121]
+        - generic [ref=e122]:
+          - generic [ref=e123]:
+            - generic [ref=e124]: 게재위치
+            - generic [ref=e125]: 홈 최상단 배너
+          - generic [ref=e128]:
+            - generic [ref=e129]: 노출 디바이스
+            - generic [ref=e130]: PC, Mobile
+          - generic [ref=e133]:
+            - generic [ref=e134]: 노출 형태
+            - generic [ref=e135]: 고정형 (로테이션 없음)
+        - heading "가격 및 과금" [level=2] [ref=e138]
+        - generic [ref=e139]:
+          - generic [ref=e140]:
+            - generic [ref=e141]: 과금 방식
+            - generic [ref=e142]: CPD — 기간당 과금
+          - generic [ref=e145]:
+            - generic [ref=e146]: 일 단가
+            - generic [ref=e148]:
+              - generic [ref=e149]: 3,000,000
+              - generic [ref=e150]: 원
+          - generic [ref=e151]:
+            - generic [ref=e152]: 최소 집행기간
+            - generic [ref=e154]:
+              - generic [ref=e155]: "7"
+              - generic [ref=e156]: 일
+          - generic [ref=e157]:
+            - generic [ref=e158]: 최소 집행예산
+            - generic [ref=e160]:
+              - generic [ref=e161]: 21,000,000
+              - generic [ref=e162]: 원
+        - heading "소재 스펙" [level=2] [ref=e163]
+        - generic [ref=e164]:
+          - generic [ref=e165]:
+            - generic [ref=e166]: 이미지 사이즈
+            - generic [ref=e167]: 1920 x 400 px
+          - generic [ref=e170]:
+            - generic [ref=e171]: 파일 형식
+            - generic [ref=e172]: JPG, PNG, GIF
+          - generic [ref=e175]:
+            - generic [ref=e176]: 최대 용량
+            - generic [ref=e178]:
+              - generic [ref=e179]: "500"
+              - generic [ref=e180]: KB
+          - generic [ref=e181]:
+            - generic [ref=e182]: 랜딩 URL
+            - generic [ref=e183]: 필수
+        - heading "집행 조건" [level=2] [ref=e186]
+        - generic [ref=e187]:
+          - generic [ref=e188]:
+            - generic [ref=e189]: 사전 검수
+            - generic [ref=e190]: 필요 (최대 1영업일 소요)
+          - generic [ref=e193]:
+            - generic [ref=e194]: 집행 가능 기간
+            - generic [ref=e195]: 2026.01.01 ~ 2026.12.31
+          - generic [ref=e198]:
+            - generic [ref=e199]: 유의사항
+            - generic [ref=e200]: 소재 심사에 최대 1영업일이 소요됩니다. 정책 위반 소재는 게재가 거부될 수 있습니다. 집행 종료 3영업일 전까지 소재 교체를 요청해 주세요.
+      - generic [ref=e203]:
+        - button "목록" [ref=e204] [cursor=pointer]
+        - button "수정" [ref=e205] [cursor=pointer]

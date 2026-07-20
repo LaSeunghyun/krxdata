@@ -1,0 +1,61 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e3]:
+      - button "마이크" [ref=e4] [cursor=pointer]:
+        - generic [ref=e5]: mic_external_on
+      - heading "MIC VOCAL" [level=1] [ref=e6]
+      - button "이도현 로그아웃" [ref=e7] [cursor=pointer]:
+        - generic [ref=e8]: 이도현
+        - generic [ref=e10]: logout
+  - main [ref=e11]:
+    - generic [ref=e12]:
+      - heading "강사 스페이스" [level=2] [ref=e13]
+      - paragraph [ref=e14]: 이도현 코치 · 보컬 디렉터 · 발성 · 입사 2023-03-01
+    - generic [ref=e15]:
+      - generic [ref=e16]:
+        - generic [ref=e17]: 2건
+        - generic [ref=e18]: 이번 달 예약
+      - generic [ref=e19]:
+        - generic [ref=e20]: ₩0
+        - generic [ref=e21]: 매출연동 50%
+    - button "휴가 신청" [ref=e22] [cursor=pointer]:
+      - generic [ref=e23]: beach_access
+      - generic [ref=e24]: 휴가 신청
+    - generic [ref=e26]: 신청한 휴가가 없습니다
+    - generic [ref=e27]:
+      - heading "내 예약" [level=3] [ref=e28]
+      - generic [ref=e29]:
+        - generic [ref=e30]:
+          - generic [ref=e32]: event
+          - generic [ref=e33]:
+            - generic [ref=e34]: 2026-06-19 16:00
+            - generic [ref=e35]: ₩80,000 · BKb
+          - button "휴강" [ref=e36] [cursor=pointer]
+        - generic [ref=e37]:
+          - generic [ref=e39]: event
+          - generic [ref=e40]:
+            - generic [ref=e41]: 2026-06-18 15:00
+            - generic [ref=e42]: ₩80,000 · BKa
+          - button "휴강" [ref=e43] [cursor=pointer]
+  - navigation [ref=e44]:
+    - link "홈" [ref=e45] [cursor=pointer]:
+      - /url: index.html
+      - generic [ref=e46]: home
+      - generic [ref=e47]: 홈
+    - link "클래스" [ref=e48] [cursor=pointer]:
+      - /url: booking.html
+      - generic [ref=e49]: calendar_month
+      - generic [ref=e50]: 클래스
+    - link "강사" [ref=e51] [cursor=pointer]:
+      - /url: coach.html
+      - generic [ref=e52]: co_present
+      - generic [ref=e53]: 강사
+    - link "커뮤니티" [ref=e54] [cursor=pointer]:
+      - /url: community.html
+      - generic [ref=e55]: forum
+      - generic [ref=e56]: 커뮤니티
+    - link "마이" [ref=e57] [cursor=pointer]:
+      - /url: mypage.html
+      - generic [ref=e58]: person
+      - generic [ref=e59]: 마이
+  - generic [ref=e61]: check_circle

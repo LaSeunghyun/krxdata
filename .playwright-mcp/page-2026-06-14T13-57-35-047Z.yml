@@ -1,0 +1,265 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e3]:
+      - button "마이크" [ref=e4] [cursor=pointer]:
+        - generic [ref=e5]: mic_external_on
+      - heading "MIC VOCAL" [level=1] [ref=e6]
+      - button "한지원 로그아웃" [ref=e7] [cursor=pointer]:
+        - generic [ref=e8]: 한지원
+        - generic [ref=e10]: logout
+  - main [ref=e11]:
+    - generic [ref=e13]:
+      - generic [ref=e14]:
+        - generic [ref=e15]: location_on
+        - text: 강남 봉은사역 · since 2014
+      - heading "목소리를 무대 위에, 마이크보컬에서" [level=2] [ref=e16]:
+        - text: 목소리를 무대 위에,
+        - text: 마이크보컬에서
+      - paragraph [ref=e17]:
+        - text: 1:1 맞춤 레슨 · 수강권 · 보컬 콘텐츠.
+        - text: 첫 시작은 무료 보이스 진단으로.
+      - generic [ref=e18]:
+        - link "레슨 예약" [ref=e19] [cursor=pointer]:
+          - /url: booking.html
+          - generic [ref=e20]: event
+          - text: 레슨 예약
+        - link "클립 보기" [ref=e21] [cursor=pointer]:
+          - /url: "#clips"
+          - generic [ref=e22]: play_circle
+          - text: 클립 보기
+      - generic [ref=e23]:
+        - generic [ref=e24]:
+          - generic [ref=e25]: 12K+
+          - generic [ref=e26]: 누적 수강생
+        - generic [ref=e27]:
+          - generic [ref=e28]: "4.9"
+          - generic [ref=e29]: 평균 만족도
+        - generic [ref=e30]:
+          - generic [ref=e31]: 92%
+          - generic [ref=e32]: 입시 합격률
+    - generic [ref=e33]:
+      - link "예약" [ref=e34] [cursor=pointer]:
+        - /url: booking.html
+        - generic [ref=e35]: event_available
+        - generic [ref=e36]: 예약
+      - link "수강권" [ref=e37] [cursor=pointer]:
+        - /url: booking.html#passes
+        - generic [ref=e38]: confirmation_number
+        - generic [ref=e39]: 수강권
+      - link "Q&A" [ref=e40] [cursor=pointer]:
+        - /url: community.html
+        - generic [ref=e41]: help
+        - generic [ref=e42]: Q&A
+      - link "내역" [ref=e43] [cursor=pointer]:
+        - /url: mypage.html
+        - generic [ref=e44]: receipt_long
+        - generic [ref=e45]: 내역
+    - generic [ref=e46]:
+      - generic [ref=e47]:
+        - generic [ref=e48]:
+          - heading "인기 보컬 클립" [level=3] [ref=e49]
+          - paragraph [ref=e50]:
+            - generic [ref=e51]: verified
+            - text: "@vocalmic 공식 채널"
+        - link "전체" [ref=e52] [cursor=pointer]:
+          - /url: https://www.youtube.com/@vocalmic
+          - text: 전체
+          - generic [ref=e53]: chevron_right
+      - generic [ref=e54]:
+        - button "전체" [ref=e55] [cursor=pointer]
+        - button "발성" [ref=e56] [cursor=pointer]
+        - button "오디션" [ref=e57] [cursor=pointer]
+        - button "보컬분석" [ref=e58] [cursor=pointer]
+        - button "레슨후기" [ref=e59] [cursor=pointer]
+        - button "동기부여" [ref=e60] [cursor=pointer]
+      - generic [ref=e61]:
+        - article [ref=e62] [cursor=pointer]:
+          - generic [ref=e63]:
+            - img "조유리 보컬 분석 (관리자 추가)" [ref=e64]
+            - generic [ref=e68]: play_arrow
+            - generic [ref=e70]: 보컬분석
+          - generic [ref=e71]:
+            - generic [ref=e72]:
+              - heading "조유리 보컬 분석 (관리자 추가)" [level=4] [ref=e73]
+              - paragraph [ref=e74]:
+                - generic [ref=e75]: verified
+                - text: 마이크보컬스튜디오
+            - generic [ref=e76]: smart_display
+        - article [ref=e77] [cursor=pointer]:
+          - generic [ref=e78]:
+            - img "아이유노래 잘 부르는 법? 실제 보컬레슨영상 100% 공개합니다" [ref=e79]
+            - generic [ref=e83]: play_arrow
+            - generic [ref=e84]: 2:47
+            - generic [ref=e85]: 발성
+          - generic [ref=e86]:
+            - generic [ref=e87]:
+              - heading "아이유노래 잘 부르는 법? 실제 보컬레슨영상 100% 공개합니다" [level=4] [ref=e88]
+              - paragraph [ref=e89]:
+                - generic [ref=e90]: verified
+                - text: 마이크보컬스튜디오
+            - generic [ref=e91]: smart_display
+        - article [ref=e92] [cursor=pointer]:
+          - generic [ref=e93]:
+            - img "조유리가 아이즈원 메인보컬이었던 이유 (보컬분석)" [ref=e94]
+            - generic [ref=e98]: play_arrow
+            - generic [ref=e99]: 4:48
+            - generic [ref=e100]: 보컬분석
+          - generic [ref=e101]:
+            - generic [ref=e102]:
+              - heading "조유리가 아이즈원 메인보컬이었던 이유 (보컬분석)" [level=4] [ref=e103]
+              - paragraph [ref=e104]:
+                - generic [ref=e105]: verified
+                - text: 마이크보컬스튜디오
+            - generic [ref=e106]: smart_display
+        - article [ref=e107] [cursor=pointer]:
+          - generic [ref=e108]:
+            - img "오디션에서 진짜 중요한 건 바로 이겁니다" [ref=e109]
+            - generic [ref=e113]: play_arrow
+            - generic [ref=e114]: 3:09
+            - generic [ref=e115]: 오디션
+          - generic [ref=e116]:
+            - generic [ref=e117]:
+              - heading "오디션에서 진짜 중요한 건 바로 이겁니다" [level=4] [ref=e118]
+              - paragraph [ref=e119]:
+                - generic [ref=e120]: verified
+                - text: 마이크보컬스튜디오
+            - generic [ref=e121]: smart_display
+        - article [ref=e122] [cursor=pointer]:
+          - generic [ref=e123]:
+            - img "발성연습, 이것만 한다고 노래가 늘까?" [ref=e124]
+            - generic [ref=e128]: play_arrow
+            - generic [ref=e129]: 3:28
+            - generic [ref=e130]: 발성
+          - generic [ref=e131]:
+            - generic [ref=e132]:
+              - heading "발성연습, 이것만 한다고 노래가 늘까?" [level=4] [ref=e133]
+              - paragraph [ref=e134]:
+                - generic [ref=e135]: verified
+                - text: 마이크보컬스튜디오
+            - generic [ref=e136]: smart_display
+        - article [ref=e137] [cursor=pointer]:
+          - generic [ref=e138]:
+            - img "음색 미쳐버린 여학생의 '아이유 - Love poem' 커버" [ref=e139]
+            - generic [ref=e143]: play_arrow
+            - generic [ref=e144]: 1:36
+            - generic [ref=e145]: 레슨후기
+          - generic [ref=e146]:
+            - generic [ref=e147]:
+              - heading "음색 미쳐버린 여학생의 '아이유 - Love poem' 커버" [level=4] [ref=e148]
+              - paragraph [ref=e149]:
+                - generic [ref=e150]: verified
+                - text: 마이크보컬스튜디오
+            - generic [ref=e151]: smart_display
+        - article [ref=e152] [cursor=pointer]:
+          - generic [ref=e153]:
+            - img "뉴진스 의상이 별로라고? 신인개발팀 모셨습니다 (+오디션곡추천)" [ref=e154]
+            - generic [ref=e158]: play_arrow
+            - generic [ref=e159]: 4:05
+            - generic [ref=e160]: 오디션
+          - generic [ref=e161]:
+            - generic [ref=e162]:
+              - heading "뉴진스 의상이 별로라고? 신인개발팀 모셨습니다 (+오디션곡추천)" [level=4] [ref=e163]
+              - paragraph [ref=e164]:
+                - generic [ref=e165]: verified
+                - text: 마이크보컬스튜디오
+            - generic [ref=e166]: smart_display
+        - article [ref=e167] [cursor=pointer]:
+          - generic [ref=e168]:
+            - img "4세대 아이돌가수 메인보컬의 바이브레이션은 어떨까?" [ref=e169]
+            - generic [ref=e173]: play_arrow
+            - generic [ref=e174]: 3:23
+            - generic [ref=e175]: 보컬분석
+          - generic [ref=e176]:
+            - generic [ref=e177]:
+              - heading "4세대 아이돌가수 메인보컬의 바이브레이션은 어떨까?" [level=4] [ref=e178]
+              - paragraph [ref=e179]:
+                - generic [ref=e180]: verified
+                - text: 마이크보컬스튜디오
+            - generic [ref=e181]: smart_display
+        - article [ref=e182] [cursor=pointer]:
+          - generic [ref=e183]:
+            - img "벌써 135만명이 본 노래방 개꿀팁 '3가지'" [ref=e184]
+            - generic [ref=e188]: play_arrow
+            - generic [ref=e189]: 3:34
+            - generic [ref=e190]: 발성
+          - generic [ref=e191]:
+            - generic [ref=e192]:
+              - heading "벌써 135만명이 본 노래방 개꿀팁 '3가지'" [level=4] [ref=e193]
+              - paragraph [ref=e194]:
+                - generic [ref=e195]: verified
+                - text: 마이크보컬스튜디오
+            - generic [ref=e196]: smart_display
+        - article [ref=e197] [cursor=pointer]:
+          - generic [ref=e198]:
+            - img "'음색흙수저'가 태연 음색 장착하는 법 (중학생보컬레슨)" [ref=e199]
+            - generic [ref=e203]: play_arrow
+            - generic [ref=e204]: 3:47
+            - generic [ref=e205]: 레슨후기
+          - generic [ref=e206]:
+            - generic [ref=e207]:
+              - heading "'음색흙수저'가 태연 음색 장착하는 법 (중학생보컬레슨)" [level=4] [ref=e208]
+              - paragraph [ref=e209]:
+                - generic [ref=e210]: verified
+                - text: 마이크보컬스튜디오
+            - generic [ref=e211]: smart_display
+        - article [ref=e212] [cursor=pointer]:
+          - generic [ref=e213]:
+            - img "약점 극복에 성공한 사람들 TOP10" [ref=e214]
+            - generic [ref=e218]: play_arrow
+            - generic [ref=e219]: 6:42
+            - generic [ref=e220]: 동기부여
+          - generic [ref=e221]:
+            - generic [ref=e222]:
+              - heading "약점 극복에 성공한 사람들 TOP10" [level=4] [ref=e223]
+              - paragraph [ref=e224]:
+                - generic [ref=e225]: verified
+                - text: 마이크보컬스튜디오
+            - generic [ref=e226]: smart_display
+        - article [ref=e227] [cursor=pointer]:
+          - generic [ref=e228]:
+            - img "(녹음빨?) 상위1% 가수들이 고전하는 이유" [ref=e229]
+            - generic [ref=e233]: play_arrow
+            - generic [ref=e234]: 3:56
+            - generic [ref=e235]: 보컬분석
+          - generic [ref=e236]:
+            - generic [ref=e237]:
+              - heading "(녹음빨?) 상위1% 가수들이 고전하는 이유" [level=4] [ref=e238]
+              - paragraph [ref=e239]:
+                - generic [ref=e240]: verified
+                - text: 마이크보컬스튜디오
+            - generic [ref=e241]: smart_display
+        - article [ref=e242] [cursor=pointer]:
+          - generic [ref=e243]:
+            - img "보컬레슨에 돈 때려박는데 노래 안 느는 애들 특;" [ref=e244]
+            - generic [ref=e248]: play_arrow
+            - generic [ref=e249]: 2:44
+            - generic [ref=e250]: 동기부여
+          - generic [ref=e251]:
+            - generic [ref=e252]:
+              - heading "보컬레슨에 돈 때려박는데 노래 안 느는 애들 특;" [level=4] [ref=e253]
+              - paragraph [ref=e254]:
+                - generic [ref=e255]: verified
+                - text: 마이크보컬스튜디오
+            - generic [ref=e256]: smart_display
+  - navigation [ref=e257]:
+    - link "홈" [ref=e258] [cursor=pointer]:
+      - /url: index.html
+      - generic [ref=e259]: home
+      - generic [ref=e260]: 홈
+    - link "클래스" [ref=e261] [cursor=pointer]:
+      - /url: booking.html
+      - generic [ref=e262]: calendar_month
+      - generic [ref=e263]: 클래스
+    - link "원장" [ref=e264] [cursor=pointer]:
+      - /url: admin.html
+      - generic [ref=e265]: workspace_premium
+      - generic [ref=e266]: 원장
+    - link "커뮤니티" [ref=e267] [cursor=pointer]:
+      - /url: community.html
+      - generic [ref=e268]: forum
+      - generic [ref=e269]: 커뮤니티
+    - link "마이" [ref=e270] [cursor=pointer]:
+      - /url: mypage.html
+      - generic [ref=e271]: person
+      - generic [ref=e272]: 마이
+  - generic [ref=e274]: check_circle

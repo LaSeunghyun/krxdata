@@ -1,0 +1,1158 @@
+{
+  "docSize": {
+    "w": 1920,
+    "h": 1610
+  },
+  "header": {
+    "rect": {
+      "x": 0,
+      "y": 0,
+      "w": 1920,
+      "h": 50
+    },
+    "bg": "rgb(23, 105, 255)"
+  },
+  "headerBrand": {
+    "rect": {
+      "x": 20,
+      "y": 14,
+      "w": 128,
+      "h": 22
+    },
+    "text": ""
+  },
+  "headerUser": {
+    "rect": {
+      "x": 1722,
+      "y": 7,
+      "w": 182,
+      "h": 36
+    },
+    "text": "min.lee@wisebirds.com"
+  },
+  "headerBell": {
+    "rect": {
+      "x": 1678,
+      "y": 7,
+      "w": 36,
+      "h": 36
+    }
+  },
+  "headerBadge": {
+    "rect": {
+      "x": 1693,
+      "y": 13,
+      "w": 16,
+      "h": 16
+    },
+    "text": "3"
+  },
+  "lnb": {
+    "rect": {
+      "x": 0,
+      "y": 50,
+      "w": 230,
+      "h": 1560
+    }
+  },
+  "lnbMediaSelect": {
+    "rect": {
+      "x": 0,
+      "y": 50,
+      "w": 229,
+      "h": 60
+    }
+  },
+  "lnbNavItems": [
+    {
+      "tag": "A",
+      "cls": "na-lnb__group",
+      "text": "대시보드",
+      "rect": {
+        "x": 12,
+        "y": 114,
+        "w": 205,
+        "h": 38
+      },
+      "isActive": false,
+      "icon": "layout-dashboard"
+    },
+    {
+      "tag": "DIV",
+      "cls": "na-lnb__group",
+      "text": "인벤토리",
+      "rect": {
+        "x": 12,
+        "y": 152,
+        "w": 205,
+        "h": 38
+      },
+      "isActive": false,
+      "icon": "package"
+    },
+    {
+      "tag": "A",
+      "cls": "na-lnb__sub",
+      "text": "채널",
+      "rect": {
+        "x": 12,
+        "y": 190,
+        "w": 205,
+        "h": 34
+      },
+      "isActive": false,
+      "icon": null
+    },
+    {
+      "tag": "A",
+      "cls": "na-lnb__sub",
+      "text": "게재위치",
+      "rect": {
+        "x": 12,
+        "y": 224,
+        "w": 205,
+        "h": 34
+      },
+      "isActive": false,
+      "icon": null
+    },
+    {
+      "tag": "A",
+      "cls": "na-lnb__sub is-active",
+      "text": "광고상품",
+      "rect": {
+        "x": 12,
+        "y": 258,
+        "w": 205,
+        "h": 34
+      },
+      "isActive": true,
+      "icon": null
+    },
+    {
+      "tag": "A",
+      "cls": "na-lnb__sub",
+      "text": "판매 현황",
+      "rect": {
+        "x": 12,
+        "y": 292,
+        "w": 205,
+        "h": 34
+      },
+      "isActive": false,
+      "icon": null
+    },
+    {
+      "tag": "A",
+      "cls": "na-lnb__sub",
+      "text": "소재 스펙",
+      "rect": {
+        "x": 12,
+        "y": 326,
+        "w": 205,
+        "h": 34
+      },
+      "isActive": false,
+      "icon": null
+    },
+    {
+      "tag": "DIV",
+      "cls": "na-lnb__group",
+      "text": "광고 관리",
+      "rect": {
+        "x": 12,
+        "y": 360,
+        "w": 205,
+        "h": 38
+      },
+      "isActive": false,
+      "icon": "megaphone"
+    },
+    {
+      "tag": "A",
+      "cls": "na-lnb__sub",
+      "text": "광고 게재",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0
+      },
+      "isActive": false,
+      "icon": null
+    },
+    {
+      "tag": "A",
+      "cls": "na-lnb__sub",
+      "text": "광고주",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0
+      },
+      "isActive": false,
+      "icon": null
+    },
+    {
+      "tag": "A",
+      "cls": "na-lnb__sub",
+      "text": "광고 검수",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0
+      },
+      "isActive": false,
+      "icon": null
+    },
+    {
+      "tag": "DIV",
+      "cls": "na-lnb__group",
+      "text": "보고서",
+      "rect": {
+        "x": 12,
+        "y": 398,
+        "w": 205,
+        "h": 38
+      },
+      "isActive": false,
+      "icon": "file-text"
+    },
+    {
+      "tag": "A",
+      "cls": "na-lnb__sub",
+      "text": "캠페인 보고서",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0
+      },
+      "isActive": false,
+      "icon": null
+    },
+    {
+      "tag": "A",
+      "cls": "na-lnb__sub",
+      "text": "게재 보고서",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0
+      },
+      "isActive": false,
+      "icon": null
+    },
+    {
+      "tag": "DIV",
+      "cls": "na-lnb__group",
+      "text": "설정",
+      "rect": {
+        "x": 12,
+        "y": 436,
+        "w": 205,
+        "h": 38
+      },
+      "isActive": false,
+      "icon": "settings"
+    },
+    {
+      "tag": "A",
+      "cls": "na-lnb__sub",
+      "text": "매체 관리",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0
+      },
+      "isActive": false,
+      "icon": null
+    },
+    {
+      "tag": "A",
+      "cls": "na-lnb__sub",
+      "text": "멤버 관리",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0
+      },
+      "isActive": false,
+      "icon": null
+    }
+  ],
+  "pageHead": {
+    "rect": {
+      "x": 250,
+      "y": 70,
+      "w": 1650,
+      "h": 36
+    }
+  },
+  "pageHeadBack": {
+    "rect": {
+      "x": 250,
+      "y": 70,
+      "w": 36,
+      "h": 36
+    }
+  },
+  "pageHeadTitle": {
+    "rect": {
+      "x": 298,
+      "y": 74,
+      "w": 262,
+      "h": 29
+    },
+    "text": "메인 홈 상단 배너 – 스탠다드",
+    "style": {
+      "fontSize": "22px",
+      "fontWeight": "700",
+      "color": "rgb(0, 0, 0)",
+      "lineHeight": "28.6px"
+    }
+  },
+  "pageHeadBadge": {
+    "rect": {
+      "x": 572,
+      "y": 77,
+      "w": 63,
+      "h": 22
+    },
+    "text": "운영중",
+    "cls": "na-badge na-badge--success"
+  },
+  "pageHeadTip": {
+    "rect": {
+      "x": 1884,
+      "y": 80,
+      "w": 16,
+      "h": 16
+    }
+  },
+  "panel": {
+    "rect": {
+      "x": 250,
+      "y": 122,
+      "w": 1650,
+      "h": 1392
+    },
+    "style": {
+      "backgroundColor": "rgb(255, 255, 255)",
+      "borderColor": "rgb(229, 229, 229)",
+      "borderWidth": "1px"
+    }
+  },
+  "sectionHeads": [
+    {
+      "text": "기본 정보",
+      "rect": {
+        "x": 271,
+        "y": 143,
+        "w": 1608,
+        "h": 24
+      },
+      "style": {
+        "fontSize": "16px",
+        "fontWeight": "700",
+        "color": "rgb(0, 0, 0)"
+      }
+    },
+    {
+      "text": "노출 위치 및 형태",
+      "rect": {
+        "x": 271,
+        "y": 471,
+        "w": 1608,
+        "h": 24
+      },
+      "style": {
+        "fontSize": "16px",
+        "fontWeight": "700",
+        "color": "rgb(0, 0, 0)"
+      }
+    },
+    {
+      "text": "가격 및 과금",
+      "rect": {
+        "x": 271,
+        "y": 693,
+        "w": 1608,
+        "h": 24
+      },
+      "style": {
+        "fontSize": "16px",
+        "fontWeight": "700",
+        "color": "rgb(0, 0, 0)"
+      }
+    },
+    {
+      "text": "소재 스펙",
+      "rect": {
+        "x": 271,
+        "y": 968,
+        "w": 1608,
+        "h": 24
+      },
+      "style": {
+        "fontSize": "16px",
+        "fontWeight": "700",
+        "color": "rgb(0, 0, 0)"
+      }
+    },
+    {
+      "text": "집행 조건",
+      "rect": {
+        "x": 271,
+        "y": 1243,
+        "w": 1608,
+        "h": 24
+      },
+      "style": {
+        "fontSize": "16px",
+        "fontWeight": "700",
+        "color": "rgb(0, 0, 0)"
+      }
+    }
+  ],
+  "fieldRows": [
+    {
+      "case": "text",
+      "rect": {
+        "x": 272,
+        "y": 178,
+        "w": 1606,
+        "h": 53
+      },
+      "label": {
+        "text": "상품명",
+        "rect": {
+          "x": 272,
+          "y": 178,
+          "w": 140,
+          "h": 52
+        }
+      },
+      "valueWrapRect": {
+        "x": 412,
+        "y": 178,
+        "w": 1466,
+        "h": 52
+      },
+      "readBoxes": [
+        {
+          "text": "메인 홈 상단 배너 – 스탠다드",
+          "rect": {
+            "x": 424,
+            "y": 186,
+            "w": 193,
+            "h": 36
+          },
+          "cls": "read-box"
+        }
+      ],
+      "unit": null
+    },
+    {
+      "case": "static",
+      "rect": {
+        "x": 272,
+        "y": 231,
+        "w": 1606,
+        "h": 53
+      },
+      "label": {
+        "text": "상품코드",
+        "rect": {
+          "x": 272,
+          "y": 231,
+          "w": 140,
+          "h": 52
+        }
+      },
+      "valueWrapRect": {
+        "x": 412,
+        "y": 231,
+        "w": 1466,
+        "h": 52
+      },
+      "readBoxes": [
+        {
+          "text": "PRD-2026-00184",
+          "rect": {
+            "x": 424,
+            "y": 239,
+            "w": 131,
+            "h": 36
+          },
+          "cls": "read-box"
+        }
+      ],
+      "unit": null
+    },
+    {
+      "case": "select",
+      "rect": {
+        "x": 272,
+        "y": 284,
+        "w": 1606,
+        "h": 53
+      },
+      "label": {
+        "text": "카테고리",
+        "rect": {
+          "x": 272,
+          "y": 284,
+          "w": 140,
+          "h": 52
+        }
+      },
+      "valueWrapRect": {
+        "x": 412,
+        "y": 284,
+        "w": 1466,
+        "h": 52
+      },
+      "readBoxes": [
+        {
+          "text": "디스플레이 배너",
+          "rect": {
+            "x": 424,
+            "y": 292,
+            "w": 118,
+            "h": 36
+          },
+          "cls": "read-box"
+        }
+      ],
+      "unit": null
+    },
+    {
+      "case": "static",
+      "rect": {
+        "x": 272,
+        "y": 337,
+        "w": 1606,
+        "h": 53
+      },
+      "label": {
+        "text": "등록일",
+        "rect": {
+          "x": 272,
+          "y": 337,
+          "w": 140,
+          "h": 52
+        }
+      },
+      "valueWrapRect": {
+        "x": 412,
+        "y": 337,
+        "w": 1466,
+        "h": 52
+      },
+      "readBoxes": [
+        {
+          "text": "2025.11.03",
+          "rect": {
+            "x": 424,
+            "y": 345,
+            "w": 94,
+            "h": 36
+          },
+          "cls": "read-box"
+        }
+      ],
+      "unit": null
+    },
+    {
+      "case": "static",
+      "rect": {
+        "x": 272,
+        "y": 390,
+        "w": 1606,
+        "h": 52
+      },
+      "label": {
+        "text": "최종수정일",
+        "rect": {
+          "x": 272,
+          "y": 390,
+          "w": 140,
+          "h": 52
+        }
+      },
+      "valueWrapRect": {
+        "x": 412,
+        "y": 390,
+        "w": 1466,
+        "h": 52
+      },
+      "readBoxes": [
+        {
+          "text": "2026.06.18",
+          "rect": {
+            "x": 424,
+            "y": 398,
+            "w": 94,
+            "h": 36
+          },
+          "cls": "read-box"
+        }
+      ],
+      "unit": null
+    },
+    {
+      "case": "text",
+      "rect": {
+        "x": 272,
+        "y": 506,
+        "w": 1606,
+        "h": 53
+      },
+      "label": {
+        "text": "게재위치",
+        "rect": {
+          "x": 272,
+          "y": 506,
+          "w": 140,
+          "h": 52
+        }
+      },
+      "valueWrapRect": {
+        "x": 412,
+        "y": 506,
+        "w": 1466,
+        "h": 52
+      },
+      "readBoxes": [
+        {
+          "text": "홈 최상단 배너",
+          "rect": {
+            "x": 424,
+            "y": 514,
+            "w": 109,
+            "h": 36
+          },
+          "cls": "read-box"
+        }
+      ],
+      "unit": null
+    },
+    {
+      "case": "checkbox",
+      "rect": {
+        "x": 272,
+        "y": 559,
+        "w": 1606,
+        "h": 53
+      },
+      "label": {
+        "text": "노출 디바이스",
+        "rect": {
+          "x": 272,
+          "y": 559,
+          "w": 140,
+          "h": 52
+        }
+      },
+      "valueWrapRect": {
+        "x": 412,
+        "y": 559,
+        "w": 1466,
+        "h": 52
+      },
+      "readBoxes": [
+        {
+          "text": "PC, Mobile",
+          "rect": {
+            "x": 424,
+            "y": 567,
+            "w": 94,
+            "h": 36
+          },
+          "cls": "read-box"
+        }
+      ],
+      "unit": null
+    },
+    {
+      "case": "radio",
+      "rect": {
+        "x": 272,
+        "y": 612,
+        "w": 1606,
+        "h": 52
+      },
+      "label": {
+        "text": "노출 형태",
+        "rect": {
+          "x": 272,
+          "y": 612,
+          "w": 140,
+          "h": 52
+        }
+      },
+      "valueWrapRect": {
+        "x": 412,
+        "y": 612,
+        "w": 1466,
+        "h": 52
+      },
+      "readBoxes": [
+        {
+          "text": "고정형 (로테이션 없음)",
+          "rect": {
+            "x": 424,
+            "y": 620,
+            "w": 157,
+            "h": 36
+          },
+          "cls": "read-box"
+        }
+      ],
+      "unit": null
+    },
+    {
+      "case": "select",
+      "rect": {
+        "x": 272,
+        "y": 728,
+        "w": 1606,
+        "h": 53
+      },
+      "label": {
+        "text": "과금 방식",
+        "rect": {
+          "x": 272,
+          "y": 728,
+          "w": 140,
+          "h": 52
+        }
+      },
+      "valueWrapRect": {
+        "x": 412,
+        "y": 728,
+        "w": 1466,
+        "h": 52
+      },
+      "readBoxes": [
+        {
+          "text": "CPD — 기간당 과금",
+          "rect": {
+            "x": 424,
+            "y": 736,
+            "w": 140,
+            "h": 36
+          },
+          "cls": "read-box"
+        }
+      ],
+      "unit": null
+    },
+    {
+      "case": "text_unit",
+      "rect": {
+        "x": 272,
+        "y": 781,
+        "w": 1606,
+        "h": 53
+      },
+      "label": {
+        "text": "일 단가",
+        "rect": {
+          "x": 272,
+          "y": 781,
+          "w": 140,
+          "h": 52
+        }
+      },
+      "valueWrapRect": {
+        "x": 412,
+        "y": 781,
+        "w": 1466,
+        "h": 52
+      },
+      "readBoxes": [
+        {
+          "text": "3,000,000",
+          "rect": {
+            "x": 424,
+            "y": 789,
+            "w": 86,
+            "h": 36
+          },
+          "cls": "read-box read-box--num"
+        }
+      ],
+      "unit": "원"
+    },
+    {
+      "case": "text_unit",
+      "rect": {
+        "x": 272,
+        "y": 834,
+        "w": 1606,
+        "h": 53
+      },
+      "label": {
+        "text": "최소 집행기간",
+        "rect": {
+          "x": 272,
+          "y": 834,
+          "w": 140,
+          "h": 52
+        }
+      },
+      "valueWrapRect": {
+        "x": 412,
+        "y": 834,
+        "w": 1466,
+        "h": 52
+      },
+      "readBoxes": [
+        {
+          "text": "7",
+          "rect": {
+            "x": 424,
+            "y": 842,
+            "w": 32,
+            "h": 36
+          },
+          "cls": "read-box read-box--num"
+        }
+      ],
+      "unit": "일"
+    },
+    {
+      "case": "text_unit",
+      "rect": {
+        "x": 272,
+        "y": 887,
+        "w": 1606,
+        "h": 52
+      },
+      "label": {
+        "text": "최소 집행예산",
+        "rect": {
+          "x": 272,
+          "y": 887,
+          "w": 140,
+          "h": 52
+        }
+      },
+      "valueWrapRect": {
+        "x": 412,
+        "y": 887,
+        "w": 1466,
+        "h": 52
+      },
+      "readBoxes": [
+        {
+          "text": "21,000,000",
+          "rect": {
+            "x": 424,
+            "y": 895,
+            "w": 94,
+            "h": 36
+          },
+          "cls": "read-box read-box--num"
+        }
+      ],
+      "unit": "원"
+    },
+    {
+      "case": "text",
+      "rect": {
+        "x": 272,
+        "y": 1003,
+        "w": 1606,
+        "h": 53
+      },
+      "label": {
+        "text": "이미지 사이즈",
+        "rect": {
+          "x": 272,
+          "y": 1003,
+          "w": 140,
+          "h": 52
+        }
+      },
+      "valueWrapRect": {
+        "x": 412,
+        "y": 1003,
+        "w": 1466,
+        "h": 52
+      },
+      "readBoxes": [
+        {
+          "text": "1920 x 400 px",
+          "rect": {
+            "x": 424,
+            "y": 1011,
+            "w": 112,
+            "h": 36
+          },
+          "cls": "read-box read-box--num"
+        }
+      ],
+      "unit": null
+    },
+    {
+      "case": "checkbox",
+      "rect": {
+        "x": 272,
+        "y": 1056,
+        "w": 1606,
+        "h": 53
+      },
+      "label": {
+        "text": "파일 형식",
+        "rect": {
+          "x": 272,
+          "y": 1056,
+          "w": 140,
+          "h": 52
+        }
+      },
+      "valueWrapRect": {
+        "x": 412,
+        "y": 1056,
+        "w": 1466,
+        "h": 52
+      },
+      "readBoxes": [
+        {
+          "text": "JPG, PNG, GIF",
+          "rect": {
+            "x": 424,
+            "y": 1064,
+            "w": 116,
+            "h": 36
+          },
+          "cls": "read-box"
+        }
+      ],
+      "unit": null
+    },
+    {
+      "case": "text_unit",
+      "rect": {
+        "x": 272,
+        "y": 1109,
+        "w": 1606,
+        "h": 53
+      },
+      "label": {
+        "text": "최대 용량",
+        "rect": {
+          "x": 272,
+          "y": 1109,
+          "w": 140,
+          "h": 52
+        }
+      },
+      "valueWrapRect": {
+        "x": 412,
+        "y": 1109,
+        "w": 1466,
+        "h": 52
+      },
+      "readBoxes": [
+        {
+          "text": "500",
+          "rect": {
+            "x": 424,
+            "y": 1117,
+            "w": 47,
+            "h": 36
+          },
+          "cls": "read-box read-box--num"
+        }
+      ],
+      "unit": "KB"
+    },
+    {
+      "case": "radio",
+      "rect": {
+        "x": 272,
+        "y": 1162,
+        "w": 1606,
+        "h": 52
+      },
+      "label": {
+        "text": "랜딩 URL",
+        "rect": {
+          "x": 272,
+          "y": 1162,
+          "w": 140,
+          "h": 52
+        }
+      },
+      "valueWrapRect": {
+        "x": 412,
+        "y": 1162,
+        "w": 1466,
+        "h": 52
+      },
+      "readBoxes": [
+        {
+          "text": "필수",
+          "rect": {
+            "x": 424,
+            "y": 1170,
+            "w": 50,
+            "h": 36
+          },
+          "cls": "read-box"
+        }
+      ],
+      "unit": null
+    },
+    {
+      "case": "radio",
+      "rect": {
+        "x": 272,
+        "y": 1278,
+        "w": 1606,
+        "h": 53
+      },
+      "label": {
+        "text": "사전 검수",
+        "rect": {
+          "x": 272,
+          "y": 1278,
+          "w": 140,
+          "h": 52
+        }
+      },
+      "valueWrapRect": {
+        "x": 412,
+        "y": 1278,
+        "w": 1466,
+        "h": 52
+      },
+      "readBoxes": [
+        {
+          "text": "필요 (최대 1영업일 소요)",
+          "rect": {
+            "x": 424,
+            "y": 1286,
+            "w": 169,
+            "h": 36
+          },
+          "cls": "read-box"
+        }
+      ],
+      "unit": null
+    },
+    {
+      "case": "date_range",
+      "rect": {
+        "x": 272,
+        "y": 1331,
+        "w": 1606,
+        "h": 53
+      },
+      "label": {
+        "text": "집행 가능 기간",
+        "rect": {
+          "x": 272,
+          "y": 1331,
+          "w": 140,
+          "h": 52
+        }
+      },
+      "valueWrapRect": {
+        "x": 412,
+        "y": 1331,
+        "w": 1466,
+        "h": 52
+      },
+      "readBoxes": [
+        {
+          "text": "2026.01.01 ~ 2026.12.31",
+          "rect": {
+            "x": 424,
+            "y": 1339,
+            "w": 180,
+            "h": 36
+          },
+          "cls": "read-box read-box--num"
+        }
+      ],
+      "unit": null
+    },
+    {
+      "case": "textarea",
+      "rect": {
+        "x": 272,
+        "y": 1384,
+        "w": 1606,
+        "h": 108
+      },
+      "label": {
+        "text": "유의사항",
+        "rect": {
+          "x": 272,
+          "y": 1384,
+          "w": 140,
+          "h": 108
+        }
+      },
+      "valueWrapRect": {
+        "x": 412,
+        "y": 1384,
+        "w": 1466,
+        "h": 108
+      },
+      "readBoxes": [
+        {
+          "text": "소재 심사에 최대 1영업일이 소요됩니다. 정책 위반 소재는 게재가 거부될 수 있습니다. 집행 종료 3영업일 전까지 소재 교체를 요청해 주세요.",
+          "rect": {
+            "x": 734,
+            "y": 1394,
+            "w": 834,
+            "h": 88
+          },
+          "cls": "read-box read-box--textarea"
+        }
+      ],
+      "unit": null
+    }
+  ],
+  "footer": {
+    "rect": {
+      "x": 250,
+      "y": 1530,
+      "w": 1650,
+      "h": 48
+    }
+  },
+  "footerButtons": [
+    {
+      "text": "목록",
+      "cls": "na-btn na-btn--secondary",
+      "rect": {
+        "x": 1011,
+        "y": 1538,
+        "w": 60,
+        "h": 36
+      }
+    },
+    {
+      "text": "수정",
+      "cls": "na-btn na-btn--default",
+      "rect": {
+        "x": 1079,
+        "y": 1538,
+        "w": 60,
+        "h": 36
+      }
+    }
+  ]
+}

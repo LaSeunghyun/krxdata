@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html class="dark" lang="ko">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>레슨 예약 · 수강권 — MIC VOCAL</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script src="tw-config.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
+<link href="styles.css" rel="stylesheet"/>
+</head>
+<body class="bg-background text-on-background min-h-screen pb-28 pt-16">
+<main class="w-full max-w-[720px] mx-auto px-container-margin py-stack-md flex flex-col gap-stack-lg">
+
+  <div>
+    <h2 class="font-headline-lg-mobile text-headline-lg-mobile text-on-surface">레슨 예약</h2>
+    <p class="font-body-md text-body-md text-on-surface-variant mt-1">코치 · 날짜 · 시간을 고르면 끝나요.</p>
+  </div>
+
+  <!-- STEP 1: COACH -->
+  <section>
+    <h3 class="font-body-lg text-body-lg text-on-surface mb-3 flex items-center gap-2"><span class="w-6 h-6 rounded-full bg-primary text-on-primary text-[13px] font-bold flex items-center justify-center">1</span> 코치 선택</h3>
+    <div id="coaches" class="flex gap-3 overflow-x-auto no-scrollbar pb-1"></div>
+  </section>
+
+  <!-- STEP 2: DATE -->
+  <section>
+    <div class="flex items-end justify-between mb-3">
+      <h3 class="font-body-lg text-body-lg text-on-surface flex items-center gap-2"><span class="w-6 h-6 rounded-full bg-surface-variant text-on-surface-variant text-[13px] font-bold flex items-center justify-center" id="n2">2</span> 날짜 선택</h3>
+      <span class="font-label-sm text-label-sm text-on-surface-variant">월요일 휴무</span>
+    </div>
+    <div id="dates" class="flex gap-3 overflow-x-auto no-scrollbar pb-1"></div>
+  </section>
+
+  <!-- STEP 3: TIME -->
+  <section>
+    <h3 class="font-body-lg text-body-lg text-on-surface mb-3 flex items-center gap-2"><span class="w-6 h-6 rounded-full bg-surface-variant text-on-surface-variant text-[13px] font-bold flex items-center justify-center" id="n3">3</span> 시간 선택</h3>
+    <div id="times" class="grid grid-cols-3 gap-3"><p class="col-span-3 text-center py-8 font-body-md text-body-md text-on-surface-variant">날짜를 먼저 선택하세요</p></div>
+  </section>
+
+  <!-- LESSON SUMMARY + PAY -->
+  <div class="rounded-3xl bg-surface-container border border-outline-variant/10 p-5">
+    <div class="flex justify-between items-center mb-4">
+      <span id="bar-label" class="font-body-md text-body-md text-on-surface-variant">코치를 선택해주세요</span>
+      <span id="bar-amt" class="font-headline-md text-headline-md text-on-surface font-bold">—</span>
+    </div>
+    <button id="pay-lesson" disabled class="w-full h-14 rounded-full bg-primary text-on-primary font-headline-md text-[18px] flex items-center justify-center gap-2 active:scale-[.98] transition disabled:bg-surface-variant disabled:text-on-surface-variant">
+      예약 및 결제하기</button>
+  </div>
+
+  <hr class="border-outline-variant/15"/>
+
+  <!-- PASSES -->
+  <section id="passes" class="scroll-mt-20">
+    <h3 class="font-headline-md text-headline-md text-on-surface mb-1">수강권으로 더 저렴하게</h3>
+    <p class="font-body-md text-body-md text-on-surface-variant mb-4">회차권·정기권을 미리 결제하고 회당 단가를 낮추세요.</p>
+    <div id="pass-list" class="flex flex-col gap-3"></div>
+  </section>
+
+</main>
+
+<!-- PAY SHEET (pass / confirm) -->
+<div id="pay-sheet" class="modal-overlay fixed inset-0 z-[100] bg-black/85 backdrop-blur-sm flex items-end sm:items-center justify-center">
+  <div class="sheet w-full max-w-[480px] bg-surface-container rounded-t-3xl sm:rounded-3xl border border-outline-variant/15 max-h-[92vh] overflow-y-auto" role="dialog" aria-modal="true" aria-labelledby="ps-title">
+    <div class="flex items-center justify-between p-5 border-b border-outline-variant/10">
+      <h3 id="ps-title" class="font-headline-md text-headline-md text-on-surface">결제</h3>
+      <button data-close class="w-9 h-9 rounded-full text-on-surface-variant hover:bg-surface-variant flex items-center justify-center" aria-label="닫기"><span class="material-symbols-outlined">close</span></button>
+    </div>
+    <div id="ps-body" class="p-5"></div>
+  </div>
+</div>
+
+<script src="domain.js"></script>
+<script src="app.js"></script>
+<script src="auth.js"></script>
+<script>
+MIC.auth.requireRole('booking');
+const {COACHES,PASSES,KRW,$,$$,store,esc,toast,trapFocus}=MIC;
+const D=window.DOMAIN;
+const PASS_TOTAL={'4회권':4,'12회권':12,'정기권':Infinity};
+const coachState=()=>store.get('coachState',{});
+const activeCoaches=()=>COACHES.filter(c=>{const ov=coachState()[c.id]||{};return ov.active!==false && !ov.leaveDate;});
+const mergedCoach=c=>Object.assign({},c,coachState()[c.id]||{},{id:c.id});
+const state={coach:null,date:null,time:null,pay:'toss'};
+const TODAY=new Date(2026,5,14);
+const DOW=['일','월','화','수','목','금','토'];
+const SLOTS=['13:00','14:00','15:00','16:00','17:00','18:00','19:00','20:00','21:00'];
+const ymd=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+
+/* coaches */
+function renderCoaches(){
+  $('#coaches').innerHTML=activeCoaches().map(c=>{
+    const on=state.coach===c.id;
+    return `<button data-coach="${c.id}" class="shrink-0 w-[150px] rounded-2xl p-4 border text-left transition active:scale-95 ${on?'glow-active bg-surface-container-high border-primary':'bg-surface-container border-outline-variant/20'}">
+      <div class="w-12 h-12 rounded-full flex items-center justify-center text-[26px] mb-3" style="background:${c.tint}22;border:1px solid ${c.tint}55">${c.emoji}</div>
+      <div class="font-label-md text-label-md text-on-surface">${c.name}</div>
+      <div class="font-label-sm text-label-sm text-on-surface-variant mt-0.5">${c.role}</div>
+      <div class="font-label-md text-label-md text-primary mt-2">${KRW(c.price)}<span class="text-on-surface-variant font-normal">/회</span></div>
+    </button>`;
+  }).join('');
+}
+/* dates: 14 days from today, Mondays closed */
+function renderDates(){
+  let h='';
+  for(let i=0;i<14;i++){
+    const d=new Date(TODAY); d.setDate(d.getDate()+i);
+    const ds=ymd(d), mon=d.getDay()===1, on=state.date===ds, sun=d.getDay()===0;
+    h+=`<button ${mon?'disabled':`data-date="${ds}"`} class="shrink-0 w-[58px] h-[74px] rounded-2xl flex flex-col items-center justify-center gap-1 border transition active:scale-95 ${
+      mon?'opacity-30 cursor-not-allowed bg-surface-container border-transparent':
+      on?'glow-active bg-primary-container border-primary/40 text-on-primary-container':'bg-surface-container border-outline-variant/20 hover:border-outline-variant/40'}">
+      <span class="font-label-sm text-label-sm ${sun?'text-error':on?'':'text-on-surface-variant'}">${DOW[d.getDay()]}</span>
+      <span class="font-body-lg text-body-lg ${on?'font-bold':''}">${d.getDate()}</span></button>`;
+  }
+  $('#dates').innerHTML=h;
+}
+function bookedTimes(ds){
+  const mine=store.get('bookings',[]).filter(b=>b.date===ds).map(b=>b.time);
+  const seed=ds.split('-').reduce((a,c)=>a+ +c,0);
+  const occ=SLOTS.filter((_,i)=>((seed*7+i*13)%10)<3);
+  return new Set([...mine,...occ]);
+}
+function renderTimes(){
+  const c=$('#times');
+  if(!state.date){c.innerHTML=`<p class="col-span-3 text-center py-8 font-body-md text-body-md text-on-surface-variant">날짜를 먼저 선택하세요</p>`;return;}
+  if(state.coach){
+    const mc=mergedCoach(COACHES.find(x=>x.id===state.coach));
+    if(!D.isCoachBookable(mc,state.date,store.get('leaves',[]))){
+      c.innerHTML=`<p class="col-span-3 text-center py-8 font-body-md text-body-md text-on-surface-variant">🏖️ 선택한 코치는 이 날짜에 휴무입니다</p>`;
+      state.time=null; return;
+    }
+  }
+  const taken=bookedTimes(state.date);
+  c.innerHTML=SLOTS.map(t=>{
+    const full=taken.has(t), on=state.time===t;
+    return `<button ${full?'disabled':`data-time="${t}"`} class="py-4 rounded-xl border font-body-md text-body-md transition active:scale-95 relative ${
+      full?'opacity-40 cursor-not-allowed bg-surface-container border-outline-variant/20':
+      on?'glow-active bg-primary-container border-primary/40 text-on-primary-container font-bold':'bg-surface-container border-outline-variant/30 text-on-surface hover:bg-surface-bright'}">${t}${full?'<span class="block font-label-sm text-[10px] text-on-surface-variant mt-0.5">마감</span>':''}</button>`;
+  }).join('');
+}
+function coachById(id){return COACHES.find(c=>c.id===id);}
+function updateBar(){
+  const n2=$('#n2'),n3=$('#n3');
+  n2.className=`w-6 h-6 rounded-full text-[13px] font-bold flex items-center justify-center ${state.coach?'bg-primary text-on-primary':'bg-surface-variant text-on-surface-variant'}`;
+  n3.className=`w-6 h-6 rounded-full text-[13px] font-bold flex items-center justify-center ${state.date?'bg-primary text-on-primary':'bg-surface-variant text-on-surface-variant'}`;
+  const c=coachById(state.coach);
+  const ready=state.coach&&state.date&&state.time;
+  $('#bar-label').textContent = !state.coach?'코치를 선택해주세요':!state.date?'날짜를 선택해주세요':!state.time?'시간을 선택해주세요':`${c.name} · ${state.date} ${state.time}`;
+  $('#bar-amt').textContent = c?KRW(c.price):'—';
+  $('#pay-lesson').disabled=!ready;
+}
+
+/* passes */
+function renderPasses(){
+  $('#pass-list').innerHTML=PASSES.map(p=>`
+    <div class="rounded-2xl p-5 border ${p.feat?'border-primary bg-primary-container/10 glow-active':'border-outline-variant/20 bg-surface-container'}">
+      <div class="flex items-start justify-between">
+        <div>
+          <div class="flex items-center gap-2">
+            <span class="font-headline-md text-headline-md text-on-surface">${p.name}</span>
+            ${p.feat?'<span class="px-2 py-0.5 rounded-full bg-primary text-on-primary font-label-sm text-[11px] font-bold">BEST</span>':''}
+          </div>
+          <p class="font-label-sm text-label-sm text-on-surface-variant mt-1">${p.desc}</p>
+        </div>
+        <div class="text-right">
+          <div class="font-headline-md text-headline-md text-primary">${KRW(p.price)}</div>
+          ${p.old?`<div class="font-label-sm text-label-sm text-on-surface-variant line-through">${KRW(p.old)}</div>`:`<div class="font-label-sm text-label-sm text-on-surface-variant">${p.per}</div>`}
+        </div>
+      </div>
+      <ul class="mt-4 mb-4 flex flex-col gap-2">${p.perks.map(t=>`<li class="flex items-center gap-2 font-body-md text-body-md text-on-surface-variant"><span class="material-symbols-outlined text-[18px] text-success">check_circle</span>${t}</li>`).join('')}</ul>
+      <button data-buy="${p.id}" class="w-full h-12 rounded-full font-label-md text-label-md active:scale-95 transition ${p.feat?'bg-primary text-on-primary':'bg-surface-variant text-on-surface'}">결제하기</button>
+    </div>`).join('');
+}
+
+/* payment sheet */
+let payCtx=null, lastFocus=null, sheetRelease=null;
+function payMethods(){return `
+  <div class="flex flex-col gap-3 mb-5">
+    <label class="flex items-center justify-between p-4 rounded-2xl border cursor-pointer transition pm-opt" data-pm="toss">
+      <span class="flex items-center gap-3"><span class="material-symbols-outlined text-[24px]" style="font-variation-settings:'FILL' 1">account_balance_wallet</span><span class="font-body-md text-body-md font-medium">토스페이</span></span>
+      <span class="pm-radio w-5 h-5 rounded-full border-2 flex items-center justify-center"></span></label>
+    <label class="flex items-center justify-between p-4 rounded-2xl border cursor-pointer transition pm-opt" data-pm="card">
+      <span class="flex items-center gap-3"><span class="material-symbols-outlined text-[24px]">credit_card</span><span class="font-body-md text-body-md">신용/체크카드</span></span>
+      <span class="pm-radio w-5 h-5 rounded-full border-2 flex items-center justify-center"></span></label>
+  </div>`;
+}
+function passInfo(p){
+  const total=PASS_TOTAL[p.name];
+  if(total===Infinity)return '정기권 · 무제한 이용';
+  const r=D.passRemaining({total}, store.get('passUsed',{})[p.id]||0);
+  return `잔여 ${r.remaining}/${total}회`;
+}
+function openPay(ctx){
+  payCtx=ctx; state.pay='toss'; lastFocus=document.activeElement;
+  $('#ps-title').textContent = ctx.kind==='pass'?'수강권 결제':'예약 결제';
+  const usable = ctx.kind==='lesson' ? D.usablePass(store.get('passes',[]), store.get('passUsed',{}), PASS_TOTAL) : null;
+  const passBanner = usable ? `
+    <button id="use-pass" data-pass="${usable.id}" class="w-full mb-4 p-4 rounded-2xl bg-primary-container/20 border border-primary/40 text-left active:scale-[.99] transition">
+      <div class="flex items-center justify-between"><span class="font-label-md text-label-md text-primary">🎟️ ${esc(usable.name)} 사용</span><span class="font-label-sm text-label-sm text-on-surface">무료 예약 →</span></div>
+      <div class="font-label-sm text-label-sm text-on-surface-variant mt-1">${passInfo(usable)} · 1회 차감</div>
+    </button>
+    <div class="text-center font-label-sm text-label-sm text-on-surface-variant mb-4">또는 단건 결제</div>` : '';
+  $('#ps-body').innerHTML=`
+    <div class="rounded-2xl bg-surface-container-high p-4 mb-5 border border-outline-variant/10">
+      <div class="font-label-sm text-label-sm text-on-surface-variant">${esc(ctx.sub)}</div>
+      <div class="font-headline-md text-headline-md text-on-surface mt-1">${esc(ctx.name)}</div>
+      <div class="font-headline-lg-mobile text-headline-lg-mobile text-primary mt-2">${KRW(ctx.amount)}</div>
+    </div>
+    ${passBanner}
+    <div class="font-label-md text-label-md text-on-surface-variant mb-2">결제 수단</div>
+    ${payMethods()}
+    <button id="ps-pay" class="w-full h-14 rounded-full bg-primary text-on-primary font-headline-md text-[18px] active:scale-[.98] transition">${KRW(ctx.amount)} 결제하기</button>
+    <p class="text-center font-label-sm text-label-sm text-on-surface-variant mt-3">🔒 데모 결제 — 실제 청구되지 않습니다</p>`;
+  syncPM(); $('#ps-pay').addEventListener('click',processPay);
+  $('#pay-sheet').classList.add('show'); document.body.style.overflow='hidden';
+  sheetRelease=trapFocus($('#pay-sheet'));
+}
+function useThenBook(passId){
+  const used=store.get('passUsed',{}); const pass=store.get('passes',[]).find(p=>p.id===passId);
+  if(pass && PASS_TOTAL[pass.name]!==Infinity){ used[passId]=(used[passId]||0)+1; store.set('passUsed',used); }
+  const bk=store.get('bookings',[]);
+  bk.push({id:'BK'+Date.now().toString().slice(-7),date:state.date,time:state.time,start:Date.parse(`${state.date}T${state.time}:00`),coach:payCtx.coachName,coachId:state.coach,price:0,usedPass:passId,createdAt:Date.now()});
+  store.set('bookings',bk);
+  $('#ps-body').innerHTML=`<div class="text-center py-2">
+    <div class="check-ring w-20 h-20 mx-auto mb-5 rounded-full bg-success-container border-2 flex items-center justify-center" style="border-color:#5bd49a">
+      <svg viewBox="0 0 24 24" class="w-10 h-10"><path d="M4 12.5 L10 18.5 L20 6.5" fill="none" stroke="#5bd49a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+    <h3 class="font-headline-md text-headline-md text-on-surface mb-2">예약이 확정되었어요</h3>
+    <p class="font-body-md text-body-md text-on-surface-variant">${esc(pass?pass.name:'수강권')}에서 1회 차감되었습니다.</p>
+    <a href="mypage.html" class="block w-full h-14 leading-[56px] mt-5 rounded-full bg-primary text-on-primary font-headline-md text-[18px] active:scale-[.98] transition">마이페이지에서 확인</a></div>`;
+  toast('예약 완료','수강권 1회 차감되었어요','success');
+  state.time=null; renderTimes(); updateBar();
+}
+function syncPM(){
+  $$('#ps-body .pm-opt').forEach(o=>{
+    const on=o.dataset.pm===state.pay;
+    o.className=`flex items-center justify-between p-4 rounded-2xl border cursor-pointer transition pm-opt ${on?'border-primary bg-primary-container/10 glow-active':'border-outline-variant/30'}`;
+    const r=o.querySelector('.pm-radio');
+    r.className=`pm-radio w-5 h-5 rounded-full border-2 flex items-center justify-center ${on?'border-primary bg-primary':'border-outline-variant'}`;
+    r.innerHTML=on?'<span class="w-2 h-2 rounded-full bg-background"></span>':'';
+  });
+}
+function closePay(){const s=$('#pay-sheet');s.classList.remove('show');document.body.style.overflow='';if(sheetRelease){sheetRelease();sheetRelease=null;}if(lastFocus&&lastFocus.focus)lastFocus.focus();}
+function processPay(){
+  const b=$('#ps-pay'); b.disabled=true; b.textContent='결제 처리 중…';
+  setTimeout(()=>{
+    const id='PAY'+Date.now().toString().slice(-7);
+    const pays=store.get('payments',[]);
+    pays.push({id,name:payCtx.name,amount:payCtx.amount,kind:payCtx.kind,coachId:payCtx.kind==='lesson'?state.coach:null,refundedAmount:0,method:state.pay==='toss'?'토스페이':'카드',createdAt:Date.now()});
+    store.set('payments',pays);
+    if(payCtx.kind==='lesson'){
+      const bk=store.get('bookings',[]);
+      bk.push({id:'BK'+Date.now().toString().slice(-7),date:state.date,time:state.time,start:Date.parse(`${state.date}T${state.time}:00`),coach:payCtx.coachName,coachId:state.coach,price:payCtx.amount,payId:id,createdAt:Date.now()});
+      store.set('bookings',bk);
+    } else {
+      const ps=store.get('passes',[]); ps.push({id,name:payCtx.name,boughtAt:Date.now()}); store.set('passes',ps);
+    }
+    $('#ps-body').innerHTML=`<div class="text-center py-2">
+      <div class="check-ring w-20 h-20 mx-auto mb-5 rounded-full bg-success-container border-2 flex items-center justify-center" style="border-color:#5bd49a">
+        <svg viewBox="0 0 24 24" class="w-10 h-10"><path d="M4 12.5 L10 18.5 L20 6.5" fill="none" stroke="#5bd49a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <h3 class="font-headline-md text-headline-md text-on-surface mb-2">결제가 완료되었어요</h3>
+      <p class="font-body-md text-body-md text-on-surface-variant">${esc(payCtx.name)} 결제가 정상 처리되었습니다.</p>
+      <div class="text-left rounded-2xl bg-surface-container-high p-4 mt-5 mb-5 flex flex-col gap-2">
+        <div class="flex justify-between font-body-md text-body-md"><span class="text-on-surface-variant">결제 금액</span><span class="text-on-surface">${KRW(payCtx.amount)}</span></div>
+        <div class="flex justify-between font-body-md text-body-md"><span class="text-on-surface-variant">결제 수단</span><span class="text-on-surface">${state.pay==='toss'?'토스페이':'카드'}</span></div>
+        <div class="flex justify-between font-body-md text-body-md"><span class="text-on-surface-variant">주문번호</span><span class="text-on-surface">${id}</span></div>
+      </div>
+      <a href="mypage.html" class="block w-full h-14 leading-[56px] rounded-full bg-primary text-on-primary font-headline-md text-[18px] active:scale-[.98] transition">마이페이지에서 확인</a></div>`;
+    toast('결제 완료','마이페이지에서 확인하세요','success');
+    // reset lesson selection
+    if(payCtx.kind==='lesson'){state.time=null;renderTimes();updateBar();}
+  },1200);
+}
+
+/* events */
+document.addEventListener('click',e=>{
+  const c=e.target.closest('[data-coach]'); if(c){state.coach=c.dataset.coach;renderCoaches();updateBar();}
+  const d=e.target.closest('[data-date]'); if(d){state.date=d.dataset.date;state.time=null;renderDates();renderTimes();updateBar();}
+  const t=e.target.closest('[data-time]'); if(t){state.time=t.dataset.time;renderTimes();updateBar();}
+  const buy=e.target.closest('[data-buy]'); if(buy){const p=PASSES.find(x=>x.id===buy.dataset.buy);openPay({kind:'pass',name:p.name,sub:'수강권',amount:p.price});}
+  if(e.target.closest('[data-close]')|| e.target.id==='pay-sheet') closePay();
+  const up=e.target.closest('[data-pass]'); if(up){useThenBook(up.dataset.pass);return;}
+  if(e.target.closest('.pm-opt')){state.pay=e.target.closest('.pm-opt').dataset.pm;syncPM();}
+  if(e.target.id==='pay-lesson'&&!e.target.disabled){
+    if(bookedTimes(state.date).has(state.time)){
+      toast('이미 마감된 시간입니다','다른 시간을 선택해주세요','error');
+      state.time=null; renderTimes(); updateBar(); return;
+    }
+    const c2=coachById(state.coach);
+    openPay({kind:'lesson',name:`${c2.name} 코치 · ${c2.fee}`,sub:`${state.date} ${state.time}`,amount:c2.price,coachName:c2.name});
+  }
+});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closePay();});
+
+renderCoaches();renderDates();renderTimes();renderPasses();updateBar();
+if(location.hash==='#passes')setTimeout(()=>$('#passes').scrollIntoView({behavior:'smooth'}),200);
+MIC.chrome({active:'class'});
+</script>
+</body>
+</html>

@@ -1,0 +1,60 @@
+/* Pretendard (한글 본문) */
+@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css');
+
+body{
+  background-color:#121317;color:#e3e2e7;
+  font-family:'Pretendard','Plus Jakarta Sans',system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;
+  min-height:max(884px,100dvh);
+}
+::selection{background:#2e5bff;color:#efefff}
+
+/* hide scrollbar */
+.no-scrollbar::-webkit-scrollbar{display:none}
+.no-scrollbar{-ms-overflow-style:none;scrollbar-width:none}
+
+.pb-safe{padding-bottom:env(safe-area-inset-bottom,20px)}
+
+/* selected glow */
+.glow-active{box-shadow:0 0 12px rgba(184,195,255,.15);border-color:#b8c3ff}
+
+/* button pulse */
+@keyframes subtle-pulse{0%,100%{box-shadow:0 0 0 0 rgba(184,195,255,0)}50%{box-shadow:0 0 15px 0 rgba(184,195,255,.2)}}
+.btn-glow{animation:subtle-pulse 3s infinite}
+
+/* accordion */
+.accordion-content{max-height:0;overflow:hidden;transition:max-height .3s ease-out,padding .3s ease}
+.accordion-item.active .accordion-content{max-height:1200px}
+.accordion-item.active .chevron{transform:rotate(180deg)}
+
+/* glass card — surface-container 토큰 정렬 */
+.glass-card{background-color:#1e1f23;border:1px solid rgba(67,70,86,.4)}
+
+/* reveal */
+.reveal{opacity:0;transform:translateY(20px);transition:opacity .6s cubic-bezier(0,0,.2,1),transform .6s cubic-bezier(0,0,.2,1)}
+.reveal.in{opacity:1;transform:none}
+
+/* modal */
+.modal-overlay{opacity:0;visibility:hidden;transition:opacity .25s ease,visibility 0s .25s}
+.modal-overlay.show{opacity:1;visibility:visible;transition:opacity .25s ease,visibility 0s 0s}
+.modal-overlay .sheet{transform:translateY(24px);transition:transform .3s cubic-bezier(0,0,.2,1)}
+.modal-overlay.show .sheet{transform:none}
+
+/* toast */
+#mic-toast{transform:translateY(140px);transition:transform .4s cubic-bezier(.34,1.56,.64,1)}
+#mic-toast.show{transform:none}
+
+/* check draw */
+.check-ring path{stroke-dasharray:48;stroke-dashoffset:48;animation:draw .6s .15s cubic-bezier(0,0,.2,1) forwards}
+@keyframes draw{to{stroke-dashoffset:0}}
+
+/* equalizer */
+@keyframes eq{0%,100%{transform:scaleY(.25)}50%{transform:scaleY(1)}}
+
+@media (prefers-reduced-motion:reduce){
+  *{animation-duration:.01ms!important;transition-duration:.01ms!important}
+  .reveal{transform:none}
+}
+
+:focus-visible{outline:2px solid #b8c3ff;outline-offset:2px}
+:focus:not(:focus-visible){outline:none}

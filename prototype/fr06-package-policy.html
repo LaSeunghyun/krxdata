@@ -1,0 +1,1004 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FR-06 로드블록(패키지) 광고 운영 정책 프로토타입</title>
+<style>
+  /* ── Reset & Base ── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', sans-serif; font-size: 13px; color: #1a1a2e; background: #F5F6F7; line-height: 1.5; }
+
+  /* ── Color Variables ── */
+  :root {
+    --primary: #1769FF;
+    --primary-light: #E8F0FF;
+    --destructive: #F74A4A;
+    --destructive-light: #FFF0F0;
+    --success: #54CB84;
+    --success-light: #EDFBF3;
+    --warning: #F5A623;
+    --warning-light: #FFF8ED;
+    --bg: #F5F6F7;
+    --card: #FFFFFF;
+    --border: #E5E7EB;
+    --text-primary: #1a1a2e;
+    --text-secondary: #6B7280;
+    --text-disabled: #B0B7C3;
+    --disabled-bg: #F3F4F6;
+  }
+
+  /* ── GNB ── */
+  .gnb {
+    height: 50px; background: var(--primary); display: flex; align-items: center;
+    padding: 0 24px; position: sticky; top: 0; z-index: 100;
+    box-shadow: 0 2px 8px rgba(23,105,255,0.25);
+  }
+  .gnb-logo { color: #fff; font-size: 15px; font-weight: 700; letter-spacing: -0.3px; }
+  .gnb-sub { color: rgba(255,255,255,0.65); font-size: 12px; margin-left: 8px; font-weight: 400; }
+
+  /* ── Layout ── */
+  .main-layout { display: flex; min-height: calc(100vh - 50px); }
+  .content-area { flex: 1; padding: 20px; max-width: 1200px; margin: 0 auto; width: 100%; }
+
+  /* ── Control Panel ── */
+  .control-panel {
+    background: var(--card); border: 1.5px solid var(--primary); border-radius: 10px;
+    padding: 16px 20px; margin-bottom: 16px;
+    box-shadow: 0 2px 12px rgba(23,105,255,0.10);
+  }
+  .control-panel-title {
+    font-size: 12px; font-weight: 700; color: var(--primary); text-transform: uppercase;
+    letter-spacing: 0.8px; margin-bottom: 14px; display: flex; align-items: center; gap: 6px;
+  }
+  .control-panel-title::before { content: '⚙'; font-size: 14px; }
+  .control-row { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; }
+  .control-group { display: flex; flex-direction: column; gap: 6px; min-width: 160px; }
+  .control-label { font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; }
+  .radio-group { display: flex; flex-direction: column; gap: 5px; }
+  .radio-item { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  .radio-item input[type="radio"] { accent-color: var(--primary); width: 14px; height: 14px; cursor: pointer; }
+  .radio-item label { font-size: 12px; cursor: pointer; color: var(--text-primary); }
+  .checkbox-item { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  .checkbox-item input[type="checkbox"] { accent-color: var(--primary); width: 14px; height: 14px; cursor: pointer; }
+  .checkbox-item label { font-size: 12px; cursor: pointer; color: var(--text-primary); }
+  .checkbox-item.disabled { opacity: 0.4; pointer-events: none; }
+  select.ctrl-select {
+    padding: 5px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px;
+    background: #fff; color: var(--text-primary); cursor: pointer; outline: none;
+  }
+  select.ctrl-select:focus { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary-light); }
+
+  /* ── Warning Banner ── */
+  .warning-banner {
+    background: var(--destructive-light); border: 1px solid #FFCDD2; border-radius: 7px;
+    padding: 10px 14px; margin-top: 12px; font-size: 12px; color: var(--destructive);
+    font-weight: 500; display: none;
+  }
+  .warning-banner.show { display: block; }
+
+  /* ── Tabs ── */
+  .segment-tabs { display: flex; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 3px; gap: 2px; margin-bottom: 16px; width: fit-content; }
+  .tab-btn {
+    padding: 7px 18px; border-radius: 6px; border: none; background: transparent;
+    font-size: 13px; font-weight: 500; color: var(--text-secondary); cursor: pointer; transition: all 0.15s;
+    white-space: nowrap;
+  }
+  .tab-btn.active { background: var(--primary); color: #fff; font-weight: 600; }
+  .tab-btn:hover:not(.active) { background: var(--primary-light); color: var(--primary); }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+
+  /* ── Card ── */
+  .card { background: var(--card); border-radius: 10px; border: 1px solid var(--border); overflow: hidden; }
+  .card-header { padding: 14px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+  .card-title { font-size: 14px; font-weight: 700; }
+  .card-body { padding: 20px; }
+  .card-section { margin-bottom: 20px; }
+  .section-title { font-size: 12px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; }
+
+  /* ── Badge ── */
+  .badge {
+    display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px;
+    border-radius: 100px; font-size: 11px; font-weight: 600;
+  }
+  .badge-primary { background: var(--primary-light); color: var(--primary); }
+  .badge-success { background: var(--success-light); color: #1a8a4a; }
+  .badge-destructive { background: var(--destructive-light); color: var(--destructive); }
+  .badge-warning { background: var(--warning-light); color: #9a6300; }
+  .badge-gray { background: #F3F4F6; color: var(--text-secondary); }
+  .badge-outline-gray { background: transparent; border: 1px solid var(--border); color: var(--text-secondary); }
+  .badge-package { background: #F3E8FF; color: #7C3AED; }
+
+  /* ── Placement Group List ── */
+  .group-list { display: flex; flex-direction: column; gap: 8px; }
+  .group-item {
+    display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+    background: var(--bg); border-radius: 8px; border: 1px solid var(--border);
+  }
+  .group-icon { width: 28px; height: 28px; border-radius: 6px; background: var(--primary-light); display: flex; align-items: center; justify-content: center; font-size: 12px; color: var(--primary); font-weight: 700; flex-shrink: 0; }
+  .group-name { font-size: 13px; font-weight: 600; flex: 1; }
+  .group-meta { font-size: 11px; color: var(--text-secondary); }
+
+  /* ── Action Buttons ── */
+  .action-bar { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+  .btn {
+    padding: 7px 16px; border-radius: 7px; border: 1px solid transparent;
+    font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.15s;
+    display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
+    position: relative;
+  }
+  .btn-primary { background: var(--primary); color: #fff; border-color: var(--primary); }
+  .btn-primary:hover:not(:disabled) { background: #0f55e0; }
+  .btn-outline { background: #fff; color: var(--text-primary); border-color: var(--border); }
+  .btn-outline:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); background: var(--primary-light); }
+  .btn-destructive-outline { background: #fff; color: var(--destructive); border-color: var(--destructive); }
+  .btn:disabled, .btn.disabled {
+    background: var(--disabled-bg) !important; color: var(--text-disabled) !important;
+    border-color: var(--border) !important; cursor: not-allowed !important; pointer-events: auto !important;
+  }
+  /* Tooltip on disabled */
+  .btn:disabled:hover::after, .btn.disabled:hover::after {
+    content: attr(data-tooltip);
+    position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%);
+    background: #1a1a2e; color: #fff; padding: 6px 10px; border-radius: 6px;
+    font-size: 11px; font-weight: 400; white-space: nowrap; z-index: 200;
+    max-width: 260px; text-align: center; white-space: pre-wrap;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2); pointer-events: none;
+  }
+  .btn:disabled:hover::before, .btn.disabled:hover::before {
+    content: '';
+    position: absolute; bottom: calc(100% + 0px); left: 50%; transform: translateX(-50%);
+    border: 5px solid transparent; border-top-color: #1a1a2e; z-index: 200;
+  }
+
+  /* ── Verdict Box ── */
+  .verdict-box {
+    background: linear-gradient(135deg, #F0F4FF 0%, #EEF2FF 100%);
+    border: 1px solid #C7D7FF; border-radius: 8px; padding: 14px 16px; margin-top: 16px;
+  }
+  .verdict-title { font-size: 11px; font-weight: 700; color: var(--primary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+  .verdict-line { font-size: 12px; color: var(--text-primary); margin-bottom: 3px; }
+  .verdict-result { font-size: 13px; font-weight: 700; margin-top: 8px; padding: 6px 10px; border-radius: 6px; }
+  .verdict-result.locked { background: var(--destructive-light); color: var(--destructive); }
+  .verdict-result.unlocked { background: var(--success-light); color: #1a8a4a; }
+  .scenario-hint {
+    background: #FFFBEB; border: 1px solid #FDE68A; border-radius: 7px;
+    padding: 10px 14px; margin-top: 12px; font-size: 11px; color: #92400E;
+  }
+  .scenario-hint strong { display: block; margin-bottom: 3px; }
+
+  /* ── L2 Modal Area ── */
+  .modal-wrapper {
+    display: flex; justify-content: center; padding: 10px 0;
+  }
+  .modal-box {
+    background: var(--card); border-radius: 12px; border: 1px solid var(--border);
+    width: 100%; max-width: 600px; box-shadow: 0 8px 32px rgba(0,0,0,0.12);
+  }
+  .modal-header {
+    padding: 18px 22px 14px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .modal-title { font-size: 16px; font-weight: 700; }
+  .modal-body { padding: 20px 22px; }
+  .modal-footer { padding: 14px 22px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 8px; }
+  .form-field { margin-bottom: 16px; }
+  .form-label { font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 5px; display: block; }
+  .form-select {
+    width: 100%; padding: 8px 12px; border: 1px solid var(--border); border-radius: 7px;
+    font-size: 13px; color: var(--text-primary); background: #fff; outline: none;
+  }
+  .form-select:focus { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary-light); }
+
+  /* ── Group Checkbox Area ── */
+  .group-select-area { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .group-select-area-header {
+    background: var(--bg); padding: 10px 14px; font-size: 11px; font-weight: 600;
+    color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.4px;
+    border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between;
+  }
+  .group-check-item {
+    display: flex; align-items: center; gap: 10px; padding: 11px 14px;
+    border-bottom: 1px solid var(--border); transition: background 0.1s;
+  }
+  .group-check-item:last-child { border-bottom: none; }
+  .group-check-item:hover:not(.registered) { background: var(--primary-light); }
+  .group-check-item.registered { background: #FAFAFA; }
+  .group-check-item input[type="checkbox"] { accent-color: var(--primary); width: 15px; height: 15px; flex-shrink: 0; }
+  .group-check-name { flex: 1; font-size: 13px; font-weight: 500; }
+  .group-check-name.dim { color: var(--text-secondary); }
+  .no-missing-msg {
+    padding: 24px; text-align: center; color: var(--text-secondary); font-size: 13px;
+  }
+  .group-tooltip-hint {
+    background: #F0F9FF; border: 1px solid #BAE6FD; border-radius: 7px;
+    padding: 9px 13px; margin-top: 12px; font-size: 11px; color: #0369A1;
+  }
+
+  /* ── L3 Table ── */
+  .table-wrapper { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  thead tr { background: var(--bg); }
+  th { padding: 9px 14px; text-align: left; font-size: 11px; font-weight: 700; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.4px; border-bottom: 2px solid var(--border); white-space: nowrap; }
+  td { padding: 11px 14px; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: middle; }
+  tr:last-child td { border-bottom: none; }
+
+  /* ── Package Group Row ── */
+  .pkg-group-header {
+    background: #F8F5FF; padding: 10px 14px; display: flex; align-items: center; gap: 10px;
+    border-top: 2px solid #7C3AED; border-bottom: 1px solid #E9D9FF;
+  }
+  .pkg-group-cells { }
+  .individual-row { }
+  .individual-row td { background: #fff; }
+  .package-row td { background: #FDFBFF; }
+
+  /* ── Toggle Switch ── */
+  .toggle-wrap { display: flex; align-items: center; gap: 6px; }
+  .toggle { position: relative; width: 36px; height: 20px; flex-shrink: 0; }
+  .toggle input { opacity: 0; width: 0; height: 0; }
+  .toggle-slider {
+    position: absolute; cursor: pointer; inset: 0; background: #CBD5E0;
+    border-radius: 20px; transition: 0.2s;
+  }
+  .toggle-slider::before {
+    content: ''; position: absolute; height: 14px; width: 14px; left: 3px; bottom: 3px;
+    background: #fff; border-radius: 50%; transition: 0.2s;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  }
+  .toggle input:checked + .toggle-slider { background: var(--primary); }
+  .toggle input:checked + .toggle-slider::before { transform: translateX(16px); }
+  .toggle input:disabled + .toggle-slider { background: #E5E7EB; cursor: not-allowed; }
+  .toggle.disabled-toggle { position: relative; }
+  .toggle.disabled-toggle::after {
+    content: attr(data-tip);
+    display: none; position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%);
+    background: #1a1a2e; color: #fff; padding: 6px 10px; border-radius: 6px;
+    font-size: 11px; white-space: pre-wrap; max-width: 220px; text-align: center;
+    z-index: 200; box-shadow: 0 4px 12px rgba(0,0,0,0.2); pointer-events: none;
+  }
+  .toggle.disabled-toggle:hover::after { display: block; }
+
+  /* ── Status cell ── */
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 5px; }
+  .status-dot.on { background: var(--success); }
+  .status-dot.off { background: #CBD5E0; }
+
+  /* ── Package warning in L3 ── */
+  .pkg-warn-badge {
+    display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px;
+    border-radius: 100px; font-size: 11px; font-weight: 700;
+    background: var(--destructive-light); color: var(--destructive); border: 1px solid #FFCDD2;
+  }
+
+  /* ── Divider ── */
+  .divider { height: 1px; background: var(--border); margin: 16px 0; }
+
+  /* Utility */
+  .flex { display: flex; }
+  .items-center { align-items: center; }
+  .gap-2 { gap: 8px; }
+  .gap-3 { gap: 12px; }
+  .ml-auto { margin-left: auto; }
+  .text-sm { font-size: 12px; }
+  .text-xs { font-size: 11px; }
+  .text-secondary { color: var(--text-secondary); }
+  .font-bold { font-weight: 700; }
+  .mt-2 { margin-top: 8px; }
+  .mt-3 { margin-top: 12px; }
+
+  /* Animations */
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  .tab-content.active { animation: fadeIn 0.15s ease; }
+</style>
+</head>
+<body>
+
+<!-- GNB -->
+<div class="gnb">
+  <span class="gnb-logo">NEST ADS</span>
+  <span class="gnb-sub">for Publisher</span>
+  <span class="gnb-sub" style="margin-left:16px; font-size:11px; background:rgba(255,255,255,0.15); padding:2px 8px; border-radius:100px;">FR-06 운영정책 프로토타입</span>
+</div>
+
+<div class="main-layout">
+<div class="content-area">
+
+  <!-- ══ 시뮬레이터 컨트롤 패널 ══ -->
+  <div class="control-panel">
+    <div class="control-panel-title">시뮬레이터 컨트롤 패널</div>
+    <div class="control-row">
+
+      <!-- L1 잠금 기준 -->
+      <div class="control-group" style="min-width:220px;">
+        <div class="control-label">L1 잠금 기준</div>
+        <div class="radio-group">
+          <div class="radio-item">
+            <input type="radio" name="lockBasis" id="lb-ad" value="ad" checked>
+            <label for="lb-ad">광고 생성 기준 <span style="color:var(--success);font-size:10px;font-weight:700;">(추천)</span></label>
+          </div>
+          <div class="radio-item">
+            <input type="radio" name="lockBasis" id="lb-campaign" value="campaign">
+            <label for="lb-campaign">캠페인/그룹 생성 기준</label>
+          </div>
+          <div class="radio-item">
+            <input type="radio" name="lockBasis" id="lb-status" value="status">
+            <label for="lb-status">게재상태 기준 <span style="color:var(--destructive);font-size:10px;font-weight:700;">(현행·폐기 시연)</span></label>
+          </div>
+        </div>
+      </div>
+
+      <!-- 캠페인/광고 존재 -->
+      <div class="control-group">
+        <div class="control-label">광고 존재 여부</div>
+        <div class="checkbox-item" id="chk-campaign-wrap">
+          <input type="checkbox" id="chk-campaign">
+          <label for="chk-campaign">캠페인/그룹 생성됨</label>
+        </div>
+        <div class="checkbox-item" id="chk-ad-wrap">
+          <input type="checkbox" id="chk-ad">
+          <label for="chk-ad">광고(소재) 1건 이상 생성됨</label>
+        </div>
+      </div>
+
+      <!-- 게재상태 -->
+      <div class="control-group">
+        <div class="control-label">게재상태</div>
+        <select id="sel-delivery" class="ctrl-select">
+          <option value="none">없음</option>
+          <option value="off">OFF (일시정지)</option>
+          <option value="partial">일부 노출</option>
+          <option value="normal">정상</option>
+        </select>
+      </div>
+
+      <!-- 누락 그룹 토글 (L2용) -->
+      <div class="control-group">
+        <div class="control-label">L2 누락 그룹 설정</div>
+        <div class="checkbox-item">
+          <input type="checkbox" id="chk-missing-c" checked>
+          <label for="chk-missing-c">그룹C = 누락</label>
+        </div>
+        <div class="checkbox-item">
+          <input type="checkbox" id="chk-missing-d" checked>
+          <label for="chk-missing-d">게재위치D = 누락</label>
+        </div>
+        <div class="text-xs text-secondary mt-2">둘 다 해제 = 전부 등록됨 케이스</div>
+      </div>
+
+    </div>
+
+    <!-- 게재상태 기준 경고 배너 -->
+    <div class="warning-banner" id="status-warning">
+      ⚠ 현행안: OFF로 내렸다가 추가 후 ON 전환하는 우회창이 생깁니다. 광고가 없어도 게재상태만 OFF·없음이면 구성 변경 가능 → 패키지 불변식 위반 가능성.
+    </div>
+  </div>
+
+  <!-- ══ 세그먼트 탭 ══ -->
+  <div class="segment-tabs">
+    <button class="tab-btn active" data-tab="l1">L1 상품 조회</button>
+    <button class="tab-btn" data-tab="l2">L2 광고 추가 모달</button>
+    <button class="tab-btn" data-tab="l3">L3 광고 리스트</button>
+  </div>
+
+  <!-- ══════════════════════════════════════ -->
+  <!-- 탭 L1 — 상품 조회 -->
+  <!-- ══════════════════════════════════════ -->
+  <div class="tab-content active" id="tab-l1">
+    <div class="card">
+      <div class="card-header">
+        <div class="flex items-center gap-2">
+          <span class="card-title">패키지 상품 상세</span>
+          <span class="badge badge-package">패키지</span>
+          <span class="badge badge-primary">로드블록</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <span style="font-size:11px;color:var(--text-secondary);">게재상태</span>
+          <span id="l1-delivery-badge" class="badge badge-gray">없음</span>
+          <span id="l1-delivery-note" class="text-xs text-secondary" style="font-style:italic;">(표시용 — 잠금기준 아님)</span>
+        </div>
+      </div>
+      <div class="card-body">
+
+        <!-- 상품 정보 -->
+        <div class="card-section">
+          <div class="section-title">상품 정보</div>
+          <div class="flex gap-3" style="flex-wrap:wrap;">
+            <div style="flex:1;min-width:200px;">
+              <div class="text-xs text-secondary">상품명</div>
+              <div style="font-size:14px;font-weight:700;margin-top:2px;">홈 화면 풀패키지 A</div>
+            </div>
+            <div style="min-width:120px;">
+              <div class="text-xs text-secondary">상품 유형</div>
+              <div style="font-size:13px;font-weight:600;margin-top:2px;">로드블록 패키지</div>
+            </div>
+            <div style="min-width:120px;">
+              <div class="text-xs text-secondary">패키지 정책</div>
+              <div style="font-size:13px;font-weight:600;margin-top:2px;color:var(--primary);">전부 또는 전무</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 게재위치 그룹 -->
+        <div class="card-section">
+          <div class="section-title">묶인 게재위치 그룹</div>
+          <div class="group-list">
+            <div class="group-item">
+              <div class="group-icon">A</div>
+              <div>
+                <div class="group-name">그룹A — 메인 홈 상단 배너</div>
+                <div class="group-meta">게재위치 2개 포함</div>
+              </div>
+              <span class="badge badge-success">운영중</span>
+            </div>
+            <div class="group-item">
+              <div class="group-icon">B</div>
+              <div>
+                <div class="group-name">그룹B — 피드 인터스티셜</div>
+                <div class="group-meta">게재위치 1개 포함</div>
+              </div>
+              <span class="badge badge-success">운영중</span>
+            </div>
+            <div class="group-item">
+              <div class="group-icon">C</div>
+              <div>
+                <div class="group-name">그룹C — 마이페이지 배너</div>
+                <div class="group-meta">게재위치 1개 포함</div>
+              </div>
+              <span class="badge badge-warning">신규</span>
+            </div>
+            <div class="group-item" style="background:#F9F0FF;border-color:#E9D9FF;">
+              <div class="group-icon" style="background:#F3E8FF;color:#7C3AED;">D</div>
+              <div>
+                <div class="group-name">게재위치D — 스플래시 전면</div>
+                <div class="group-meta">단일 게재위치</div>
+              </div>
+              <span class="badge badge-gray">대기중</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 액션 버튼 -->
+        <div class="action-bar" id="l1-action-bar">
+          <button class="btn btn-outline" id="btn-add-spec" data-tooltip="">소재 스펙 추가</button>
+          <button class="btn btn-outline" id="btn-add-group" data-tooltip="">그룹 추가</button>
+          <button class="btn btn-outline" id="btn-add-placement" data-tooltip="">게재위치 추가</button>
+          <button class="btn btn-destructive-outline disabled"
+            data-tooltip="게재위치 제거는 운영 상태와 무관하게 항상 불가합니다.">
+            게재위치 제거
+          </button>
+        </div>
+
+        <!-- 시나리오 힌트 -->
+        <div class="scenario-hint" id="l1-scenario-hint">
+          <strong>비교 시나리오 힌트</strong>
+          컨트롤에서 <b>캠페인=ON, 광고=OFF</b> 상태를 만들고 잠금 기준을 <b>광고 생성 기준 ↔ 캠페인/그룹 생성 기준</b>으로 토글해 보세요. 버튼 활성/비활성이 바뀌는 것을 확인할 수 있습니다.
+        </div>
+
+        <!-- 판정 근거 박스 -->
+        <div class="verdict-box" style="margin-top:16px;">
+          <div class="verdict-title">현재 판정 근거 (실시간)</div>
+          <div id="verdict-lines"></div>
+          <div id="verdict-result" class="verdict-result"></div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════ -->
+  <!-- 탭 L2 — 광고 추가 모달 -->
+  <!-- ══════════════════════════════════════ -->
+  <div class="tab-content" id="tab-l2">
+    <div class="modal-wrapper">
+      <div class="modal-box">
+        <div class="modal-header">
+          <div class="modal-title">광고 추가</div>
+          <div class="flex items-center gap-2">
+            <span class="badge badge-package">패키지 상품</span>
+            <span class="badge badge-primary">홈 화면 풀패키지 A</span>
+          </div>
+        </div>
+        <div class="modal-body">
+
+          <!-- 캠페인/그룹 선택 -->
+          <div class="form-field">
+            <label class="form-label">캠페인</label>
+            <select class="form-select">
+              <option>캠페인_01 — 브랜드 인지도</option>
+              <option>캠페인_02 — 퍼포먼스</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label class="form-label">광고그룹</label>
+            <select class="form-select">
+              <option>광고그룹_A — 타겟 20–35세</option>
+              <option>광고그룹_B — 전체 타겟</option>
+            </select>
+          </div>
+
+          <!-- 게재위치 그룹 선택 -->
+          <div class="form-field">
+            <label class="form-label">게재위치 그룹 선택</label>
+            <div id="l2-group-area">
+              <!-- JS로 렌더링 -->
+            </div>
+            <div class="group-tooltip-hint">
+              패키지 상품은 묶인 게재위치 그룹 전체로만 운영됩니다. 광고가 누락된 그룹만 보정 추가할 수 있습니다.
+            </div>
+          </div>
+
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-outline">취소</button>
+          <button class="btn btn-primary" id="l2-submit-btn">광고 추가</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════ -->
+  <!-- 탭 L3 — 광고 리스트 -->
+  <!-- ══════════════════════════════════════ -->
+  <div class="tab-content" id="tab-l3">
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">광고 리스트</div>
+        <div class="flex items-center gap-2">
+          <span class="badge badge-gray">총 <span id="l3-total-count">5</span>건</span>
+        </div>
+      </div>
+      <div class="table-wrapper">
+        <div id="l3-table-area"></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════════
+// STATE
+// ══════════════════════════════════════════════════════════
+const state = {
+  lockBasis: 'ad',       // 'ad' | 'campaign' | 'status'
+  hasCampaign: false,
+  hasAd: false,
+  deliveryStatus: 'none', // 'none' | 'off' | 'partial' | 'normal'
+  missingC: true,
+  missingD: true,
+  pkgBundleOn: true,      // L3 묶음 토글
+  indAd1On: true,         // L3 개별광고 1
+  indAd2On: false,        // L3 개별광고 2
+};
+
+// ══════════════════════════════════════════════════════════
+// LOCK LOGIC
+// ══════════════════════════════════════════════════════════
+function isLocked() {
+  const { lockBasis, hasCampaign, hasAd, deliveryStatus } = state;
+  if (lockBasis === 'ad') return hasAd;
+  if (lockBasis === 'campaign') return hasCampaign;
+  if (lockBasis === 'status') return deliveryStatus === 'normal' || deliveryStatus === 'partial';
+  return false;
+}
+
+function getLockTooltip() {
+  const { lockBasis, hasCampaign, hasAd, deliveryStatus } = state;
+  if (lockBasis === 'ad') {
+    if (hasAd) return '운영 중인 광고가 있어 패키지 구성을 변경할 수 없습니다.';
+  }
+  if (lockBasis === 'campaign') {
+    if (hasCampaign) return '캠페인/광고그룹이 생성되어 패키지 구성을 변경할 수 없습니다.';
+  }
+  if (lockBasis === 'status') {
+    if (deliveryStatus === 'normal' || deliveryStatus === 'partial') {
+      return '게재 중인 상태(정상/일부노출)에서는 패키지 구성을 변경할 수 없습니다.';
+    }
+  }
+  return '';
+}
+
+function getDeliveryLabel(val) {
+  const map = { none: '없음', off: 'OFF', partial: '일부 노출', normal: '정상' };
+  return map[val] || val;
+}
+
+function getDeliveryBadgeClass(val) {
+  if (val === 'normal') return 'badge-success';
+  if (val === 'partial') return 'badge-warning';
+  if (val === 'off') return 'badge-gray';
+  return 'badge-outline-gray';
+}
+
+// ══════════════════════════════════════════════════════════
+// RENDER L1
+// ══════════════════════════════════════════════════════════
+function renderL1() {
+  const locked = isLocked();
+  const tooltip = getLockTooltip();
+  const btns = ['btn-add-spec', 'btn-add-group', 'btn-add-placement'];
+  btns.forEach(id => {
+    const btn = document.getElementById(id);
+    if (locked) {
+      btn.classList.add('disabled');
+      btn.setAttribute('data-tooltip', tooltip);
+      // disabled 속성은 pointer-events를 막으므로 클래스만 사용
+      btn.removeAttribute('disabled');
+    } else {
+      btn.classList.remove('disabled');
+      btn.setAttribute('data-tooltip', '');
+      btn.removeAttribute('disabled');
+    }
+  });
+
+  // Delivery badge
+  const badge = document.getElementById('l1-delivery-badge');
+  badge.textContent = getDeliveryLabel(state.deliveryStatus);
+  badge.className = 'badge ' + getDeliveryBadgeClass(state.deliveryStatus);
+
+  // Note: 게재상태 기준일 때만 잠금에 관여
+  const note = document.getElementById('l1-delivery-note');
+  if (state.lockBasis === 'status') {
+    note.textContent = '(이 모드에서는 잠금 기준으로 사용됨)';
+    note.style.color = 'var(--primary)';
+    note.style.fontWeight = '600';
+  } else {
+    note.textContent = '(표시용 — 잠금기준 아님)';
+    note.style.color = 'var(--text-secondary)';
+    note.style.fontWeight = '400';
+  }
+
+  // Verdict
+  renderVerdict(locked);
+}
+
+function renderVerdict(locked) {
+  const { lockBasis, hasCampaign, hasAd, deliveryStatus } = state;
+  const lines = document.getElementById('verdict-lines');
+  const result = document.getElementById('verdict-result');
+
+  const basisLabel = { ad: '광고 생성', campaign: '캠페인/그룹 생성', status: '게재상태' }[lockBasis];
+  let html = `
+    <div class="verdict-line">잠금 기준 = <strong>${basisLabel}</strong></div>
+    <div class="verdict-line">캠페인/그룹 존재 = <strong>${hasCampaign ? 'true ✓' : 'false'}</strong></div>
+    <div class="verdict-line">광고 존재 = <strong>${hasAd ? 'true ✓' : 'false'}</strong></div>
+    <div class="verdict-line">게재상태 = <strong>${getDeliveryLabel(deliveryStatus)}</strong></div>
+  `;
+
+  if (lockBasis === 'ad') {
+    html += `<div class="verdict-line" style="margin-top:6px;color:var(--text-secondary);">→ 판정 조건: 광고 존재 = true 이면 잠금</div>`;
+  } else if (lockBasis === 'campaign') {
+    html += `<div class="verdict-line" style="margin-top:6px;color:var(--text-secondary);">→ 판정 조건: 캠페인/그룹 존재 = true 이면 잠금</div>`;
+  } else {
+    html += `<div class="verdict-line" style="margin-top:6px;color:var(--text-secondary);">→ 판정 조건: 게재상태 = 정상 또는 일부노출 이면 잠금</div>`;
+  }
+  lines.innerHTML = html;
+
+  if (locked) {
+    result.textContent = '🔒 추가 버튼 비활성 (잠금)';
+    result.className = 'verdict-result locked';
+  } else {
+    result.textContent = '🔓 추가 버튼 활성 (잠금 해제)';
+    result.className = 'verdict-result unlocked';
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+// RENDER L2
+// ══════════════════════════════════════════════════════════
+function renderL2() {
+  const area = document.getElementById('l2-group-area');
+  const submitBtn = document.getElementById('l2-submit-btn');
+
+  const groups = [
+    { id: 'grpA', name: '그룹A — 메인 홈 상단 배너', registered: true },
+    { id: 'grpB', name: '그룹B — 피드 인터스티셜', registered: true },
+    { id: 'grpC', name: '그룹C — 마이페이지 배너', registered: !state.missingC },
+    { id: 'grpD', name: '게재위치D — 스플래시 전면', registered: !state.missingD },
+  ];
+
+  const hasMissing = groups.some(g => !g.registered);
+
+  if (!hasMissing) {
+    area.innerHTML = `
+      <div class="group-select-area">
+        <div class="no-missing-msg">
+          모든 게재위치 그룹에 광고가 등록되어 추가할 항목이 없습니다.
+        </div>
+      </div>`;
+    submitBtn.removeAttribute('disabled');
+    submitBtn.classList.add('disabled');
+    submitBtn.setAttribute('data-tooltip', '추가할 누락 그룹이 없습니다.');
+    return;
+  }
+
+  let html = `<div class="group-select-area">
+    <div class="group-select-area-header">
+      <span>게재위치 그룹</span>
+      <span>${groups.filter(g => !g.registered).length}개 누락</span>
+    </div>`;
+
+  groups.forEach(g => {
+    if (g.registered) {
+      html += `
+        <div class="group-check-item registered">
+          <input type="checkbox" checked disabled style="accent-color:#CBD5E0;">
+          <span class="group-check-name dim">${g.name}</span>
+          <span class="badge badge-success" style="font-size:10px;">등록됨</span>
+        </div>`;
+    } else {
+      html += `
+        <div class="group-check-item">
+          <input type="checkbox" class="l2-group-check" data-id="${g.id}" id="l2-${g.id}">
+          <label class="group-check-name" for="l2-${g.id}">${g.name}</label>
+          <span class="badge badge-warning" style="font-size:10px;">누락</span>
+        </div>`;
+    }
+  });
+  html += `</div>`;
+  area.innerHTML = html;
+
+  // 체크박스 이벤트
+  area.querySelectorAll('.l2-group-check').forEach(cb => {
+    cb.addEventListener('change', updateL2SubmitBtn);
+  });
+  updateL2SubmitBtn();
+}
+
+function updateL2SubmitBtn() {
+  const submitBtn = document.getElementById('l2-submit-btn');
+  const checks = document.querySelectorAll('.l2-group-check:checked');
+  if (checks.length > 0) {
+    submitBtn.removeAttribute('disabled');
+    submitBtn.classList.remove('disabled');
+    submitBtn.setAttribute('data-tooltip', '');
+  } else {
+    submitBtn.removeAttribute('disabled');
+    submitBtn.classList.add('disabled');
+    submitBtn.setAttribute('data-tooltip', '누락된 그룹을 1개 이상 선택해야 합니다.');
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+// RENDER L3
+// ══════════════════════════════════════════════════════════
+function renderL3() {
+  const area = document.getElementById('l3-table-area');
+  const { pkgBundleOn, indAd1On, indAd2On, missingC, missingD } = state;
+  const hasIncomplete = missingC || missingD;
+
+  // 패키지 광고들의 표시 상태
+  // 묶음 ON이어도 누락 있으면 미노출
+  const pkgEffectiveOn = pkgBundleOn && !hasIncomplete;
+
+  let html = `<table>
+  <thead>
+    <tr>
+      <th style="width:36px;"></th>
+      <th>광고명</th>
+      <th>유형</th>
+      <th>게재위치 그룹</th>
+      <th>노출 상태</th>
+      <th>ON / OFF</th>
+    </tr>
+  </thead>
+  <tbody>`;
+
+  // 패키지 묶음 헤더 행
+  html += `
+  <tr>
+    <td colspan="6" style="padding:0;">
+      <div class="pkg-group-header">
+        <span class="badge badge-package" style="font-size:12px;">패키지 묶음</span>
+        <span style="font-size:13px;font-weight:700;color:#7C3AED;">홈 화면 풀패키지 A</span>
+        ${hasIncomplete ? `<span class="pkg-warn-badge">⚠ 미완성 — 누락 그룹이 있어 패키지 전체 미노출</span>` : ''}
+        <div class="ml-auto flex items-center gap-2">
+          <span style="font-size:11px;color:#7C3AED;font-weight:600;">묶음 단위 제어</span>
+          <label class="toggle" id="l3-pkg-toggle">
+            <input type="checkbox" id="l3-pkg-checkbox" ${pkgBundleOn ? 'checked' : ''}>
+            <span class="toggle-slider"></span>
+          </label>
+          <span style="font-size:12px;font-weight:600;color:${pkgBundleOn ? 'var(--primary)' : 'var(--text-secondary)'};">${pkgBundleOn ? 'ON' : 'OFF'}</span>
+        </div>
+      </div>
+    </td>
+  </tr>`;
+
+  // 패키지 광고 3건
+  const pkgAds = [
+    { name: '그룹A 광고 — 배너 소재 1', group: '그룹A' },
+    { name: '그룹B 광고 — 인터스티셜 소재 1', group: '그룹B' },
+    { name: '그룹C 광고 — 마이페이지 소재 1', group: '그룹C' },
+  ];
+  pkgAds.forEach(ad => {
+    html += `
+    <tr class="package-row">
+      <td style="padding-left:24px;"><span style="color:#E9D9FF;font-size:14px;">└</span></td>
+      <td style="font-weight:500;">${ad.name}</td>
+      <td><span class="badge badge-package" style="font-size:10px;">패키지</span></td>
+      <td><span class="text-sm text-secondary">${ad.group}</span></td>
+      <td>
+        ${pkgEffectiveOn
+          ? `<span><span class="status-dot on"></span><span style="color:#1a8a4a;font-weight:600;">노출</span></span>`
+          : `<span><span class="status-dot off"></span><span style="color:var(--text-secondary);">미노출</span></span>`
+        }
+      </td>
+      <td>
+        <div class="toggle disabled-toggle" data-tip="패키지 광고는 개별 상태를 변경할 수 없습니다.&#10;묶음 단위로 변경하세요.">
+          <label class="toggle">
+            <input type="checkbox" ${pkgEffectiveOn ? 'checked' : ''} disabled>
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </td>
+    </tr>`;
+  });
+
+  // 구분선
+  html += `
+  <tr>
+    <td colspan="6" style="padding:0;background:var(--bg);height:4px;border-bottom:2px solid var(--border);"></td>
+  </tr>`;
+
+  // 일반 단일 광고 1
+  html += `
+  <tr class="individual-row">
+    <td></td>
+    <td style="font-weight:500;">개별광고_01 — 검색 결과 배너</td>
+    <td><span class="badge badge-gray" style="font-size:10px;">일반</span></td>
+    <td><span class="text-sm text-secondary">검색지면 A</span></td>
+    <td>
+      ${indAd1On
+        ? `<span><span class="status-dot on"></span><span style="color:#1a8a4a;font-weight:600;">노출</span></span>`
+        : `<span><span class="status-dot off"></span><span style="color:var(--text-secondary);">미노출</span></span>`
+      }
+    </td>
+    <td>
+      <div class="toggle-wrap">
+        <label class="toggle">
+          <input type="checkbox" id="l3-ind1" ${indAd1On ? 'checked' : ''}>
+          <span class="toggle-slider"></span>
+        </label>
+        <span style="font-size:12px;font-weight:600;color:${indAd1On ? 'var(--primary)' : 'var(--text-secondary)'};">${indAd1On ? 'ON' : 'OFF'}</span>
+      </div>
+    </td>
+  </tr>`;
+
+  // 일반 단일 광고 2
+  html += `
+  <tr class="individual-row">
+    <td></td>
+    <td style="font-weight:500;">개별광고_02 — 카테고리 페이지 MPU</td>
+    <td><span class="badge badge-gray" style="font-size:10px;">일반</span></td>
+    <td><span class="text-sm text-secondary">카테고리 B</span></td>
+    <td>
+      ${indAd2On
+        ? `<span><span class="status-dot on"></span><span style="color:#1a8a4a;font-weight:600;">노출</span></span>`
+        : `<span><span class="status-dot off"></span><span style="color:var(--text-secondary);">미노출</span></span>`
+      }
+    </td>
+    <td>
+      <div class="toggle-wrap">
+        <label class="toggle">
+          <input type="checkbox" id="l3-ind2" ${indAd2On ? 'checked' : ''}>
+          <span class="toggle-slider"></span>
+        </label>
+        <span style="font-size:12px;font-weight:600;color:${indAd2On ? 'var(--primary)' : 'var(--text-secondary)'};">${indAd2On ? 'ON' : 'OFF'}</span>
+      </div>
+    </td>
+  </tr>`;
+
+  html += `</tbody></table>`;
+  area.innerHTML = html;
+
+  // L3 이벤트 바인딩
+  const pkgCb = document.getElementById('l3-pkg-checkbox');
+  if (pkgCb) {
+    pkgCb.addEventListener('change', function() {
+      state.pkgBundleOn = this.checked;
+      renderL3();
+    });
+  }
+  const ind1 = document.getElementById('l3-ind1');
+  if (ind1) {
+    ind1.addEventListener('change', function() {
+      state.indAd1On = this.checked;
+      renderL3();
+    });
+  }
+  const ind2 = document.getElementById('l3-ind2');
+  if (ind2) {
+    ind2.addEventListener('change', function() {
+      state.indAd2On = this.checked;
+      renderL3();
+    });
+  }
+
+  // Count
+  document.getElementById('l3-total-count').textContent = 5;
+}
+
+// ══════════════════════════════════════════════════════════
+// RENDER ALL
+// ══════════════════════════════════════════════════════════
+function renderAll() {
+  renderL1();
+  renderL2();
+  renderL3();
+}
+
+// ══════════════════════════════════════════════════════════
+// CONTROL PANEL EVENT BINDING
+// ══════════════════════════════════════════════════════════
+// Lock basis radios
+document.querySelectorAll('input[name="lockBasis"]').forEach(r => {
+  r.addEventListener('change', function() {
+    state.lockBasis = this.value;
+    const warn = document.getElementById('status-warning');
+    warn.classList.toggle('show', this.value === 'status');
+    renderAll();
+  });
+});
+
+// Campaign checkbox
+const chkCampaign = document.getElementById('chk-campaign');
+chkCampaign.addEventListener('change', function() {
+  state.hasCampaign = this.checked;
+  // 광고 존재는 캠페인 있어야만 가능
+  const adWrap = document.getElementById('chk-ad-wrap');
+  if (!this.checked) {
+    state.hasAd = false;
+    document.getElementById('chk-ad').checked = false;
+    adWrap.classList.add('disabled');
+  } else {
+    adWrap.classList.remove('disabled');
+  }
+  renderAll();
+});
+
+// Ad checkbox
+document.getElementById('chk-ad').addEventListener('change', function() {
+  state.hasAd = this.checked;
+  renderAll();
+});
+
+// Delivery status select
+document.getElementById('sel-delivery').addEventListener('change', function() {
+  state.deliveryStatus = this.value;
+  renderAll();
+});
+
+// Missing group toggles
+document.getElementById('chk-missing-c').addEventListener('change', function() {
+  state.missingC = this.checked;
+  renderAll();
+});
+document.getElementById('chk-missing-d').addEventListener('change', function() {
+  state.missingD = this.checked;
+  renderAll();
+});
+
+// ══════════════════════════════════════════════════════════
+// TAB SWITCHING
+// ══════════════════════════════════════════════════════════
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', function() {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    this.classList.add('active');
+    document.getElementById('tab-' + this.dataset.tab).classList.add('active');
+  });
+});
+
+// ══════════════════════════════════════════════════════════
+// INIT
+// ══════════════════════════════════════════════════════════
+// chk-ad disabled initially (no campaign)
+document.getElementById('chk-ad-wrap').classList.add('disabled');
+renderAll();
+</script>
+</body>
+</html>

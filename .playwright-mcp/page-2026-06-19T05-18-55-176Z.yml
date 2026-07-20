@@ -1,0 +1,1170 @@
+- generic [ref=e1]:
+  - banner [ref=e2]:
+    - navigation "breadcrumb" [ref=e3]:
+      - list [ref=e4]:
+        - listitem [ref=e5]:
+          - link "NestAds" [ref=e6] [cursor=pointer]:
+            - /url: /
+        - listitem [ref=e7]:
+          - img [ref=e8]
+        - listitem [ref=e10]:
+          - link "Ads" [ref=e11] [cursor=pointer]:
+            - /url: /ads
+        - listitem [ref=e12]:
+          - img [ref=e13]
+        - listitem [ref=e15]:
+          - link "Premium - PreviewVideo" [disabled] [ref=e16]
+    - generic [ref=e17]:
+      - button "Logger" [ref=e18] [cursor=pointer]:
+        - img
+        - paragraph [ref=e19]: Logger
+      - button [expanded] [ref=e20]:
+        - img [ref=e21]
+  - generic [ref=e24]: "1"
+  - generic [ref=e28]:
+    - banner [ref=e29]:
+      - generic [ref=e30]:
+        - heading "맛있는 발견" [level=1] [ref=e32]:
+          - img [ref=e33]
+          - text: 맛있는 발견
+        - generic [ref=e38]:
+          - button [ref=e39] [cursor=pointer]:
+            - img
+          - button "3" [ref=e40] [cursor=pointer]:
+            - img
+            - generic [ref=e41]: "3"
+    - generic [ref=e46]:
+      - iframe [ref=e47]:
+        - generic [ref=f3e4]:
+          - generic [ref=f3e5]: AD
+          - img [ref=f3e6] [cursor=pointer]
+          - generic [ref=f3e7] [cursor=pointer]:
+            - generic [ref=f3e8]:
+              - generic [ref=f3e9]: PLAY
+              - img [ref=f3e11]
+            - img [ref=f3e14]
+      - generic:
+        - generic:
+          - generic [ref=e1292]:
+            - img
+            - button "다시보기" [ref=e1314] [cursor=pointer]:
+              - generic [ref=e1315]:
+                - img [ref=e1316]
+                - generic [ref=e1319]: 다시보기
+            - button [ref=e1298] [cursor=pointer]:
+              - img [ref=e1299]
+            - button [ref=e1303] [cursor=pointer]:
+              - img [ref=e1304]
+            - generic [ref=e1307]: We Know the way and Ready to Fly with you
+          - generic:
+            - generic [ref=e1309] [cursor=pointer]:
+              - img [ref=e1310]
+              - generic [ref=e1311]: Wisebirds
+            - generic [ref=e1313] [cursor=pointer]: 더 알아보기
+    - region [ref=e50]:
+      - generic [ref=e52]:
+        - group [ref=e53]:
+          - generic [ref=e54] [cursor=pointer]:
+            - img "송편 빚는 법" [ref=e55]
+            - generic [ref=e57]:
+              - generic [ref=e58]:
+                - img
+                - text: HOT
+              - heading "송편 빚는 법" [level=2] [ref=e59]
+              - paragraph [ref=e60]: 무더운 여름을 이겨내기 위한 보양식 레시피를 소개합니다.
+        - group [ref=e61]:
+          - generic [ref=e62] [cursor=pointer]:
+            - img "베이킹 초보 도전기" [ref=e63]
+            - generic [ref=e65]:
+              - generic [ref=e66]:
+                - img
+                - text: HOT
+              - heading "베이킹 초보 도전기" [level=2] [ref=e67]
+              - paragraph [ref=e68]: 베이킹을 처음 시작하는 분들을 위한 쉬운 레시피입니다.
+        - group [ref=e69]:
+          - generic [ref=e70] [cursor=pointer]:
+            - img "아이스크림 브랜드 비교" [ref=e71]
+            - generic [ref=e73]:
+              - generic [ref=e74]:
+                - img
+                - text: HOT
+              - heading "아이스크림 브랜드 비교" [level=2] [ref=e75]
+              - paragraph [ref=e76]: 일주일간 채식만으로 식단을 구성해본 경험을 공유합니다.
+        - group [ref=e77]:
+          - generic [ref=e78] [cursor=pointer]:
+            - img "김치찌개 맛있게 끓이는 법" [ref=e79]
+            - generic [ref=e81]:
+              - generic [ref=e82]:
+                - img
+                - text: HOT
+              - heading "김치찌개 맛있게 끓이는 법" [level=2] [ref=e83]
+              - paragraph [ref=e84]: 편의점 재료로 만들 수 있는 간단하지만 맛있는 레시피입니다.
+      - button "Previous slide" [ref=e85] [cursor=pointer]:
+        - img
+        - generic [ref=e86]: Previous slide
+      - button "Next slide" [ref=e87] [cursor=pointer]:
+        - img
+        - generic [ref=e88]: Next slide
+    - generic [ref=e90]:
+      - generic [ref=e91]:
+        - img [ref=e92]
+        - generic [ref=e97]: 200+
+        - generic [ref=e98]: 전체 레시피
+      - generic [ref=e99]:
+        - img [ref=e100]
+        - generic [ref=e105]: 15.2K
+        - generic [ref=e106]: 활성 회원
+      - generic [ref=e107]:
+        - img [ref=e108]
+        - generic [ref=e110]: 48명
+        - generic [ref=e111]: 전문 셰프
+      - generic [ref=e112]:
+        - img [ref=e113]
+        - generic [ref=e115]: 12개
+        - generic [ref=e116]: 오늘의 신규
+    - generic [ref=e117]:
+      - generic [ref=e118]:
+        - generic [ref=e119]:
+          - heading "지금 인기 있는 레시피" [level=2] [ref=e120]:
+            - img [ref=e121]
+            - text: 지금 인기 있는 레시피
+          - paragraph [ref=e123]: 실시간 인기 순위를 확인해보세요
+        - button "전체보기" [ref=e124] [cursor=pointer]:
+          - text: 전체보기
+          - img
+      - generic [ref=e128]:
+        - generic [ref=e129] [cursor=pointer]:
+          - img "베이킹 초보 도전기" [ref=e131]
+          - heading "베이킹 초보 도전기" [level=3] [ref=e132]
+          - generic [ref=e133]:
+            - generic [ref=e134]:
+              - img [ref=e135]
+              - text: "4.1"
+            - generic [ref=e137]:
+              - img [ref=e138]
+              - text: 20분
+        - generic [ref=e141] [cursor=pointer]:
+          - img "아이스크림 브랜드 비교" [ref=e143]
+          - heading "아이스크림 브랜드 비교" [level=3] [ref=e144]
+          - generic [ref=e145]:
+            - generic [ref=e146]:
+              - img [ref=e147]
+              - text: "4.8"
+            - generic [ref=e149]:
+              - img [ref=e150]
+              - text: 1시간
+        - generic [ref=e153] [cursor=pointer]:
+          - img "김치찌개 맛있게 끓이는 법" [ref=e155]
+          - heading "김치찌개 맛있게 끓이는 법" [level=3] [ref=e156]
+          - generic [ref=e157]:
+            - generic [ref=e158]:
+              - img [ref=e159]
+              - text: "4.9"
+            - generic [ref=e161]:
+              - img [ref=e162]
+              - text: 15분
+        - generic [ref=e165] [cursor=pointer]:
+          - img "보쌈 만들기" [ref=e167]
+          - heading "보쌈 만들기" [level=3] [ref=e168]
+          - generic [ref=e169]:
+            - generic [ref=e170]:
+              - img [ref=e171]
+              - text: "5"
+            - generic [ref=e173]:
+              - img [ref=e174]
+              - text: 20분
+        - generic [ref=e177] [cursor=pointer]:
+          - img "삼겹살 맛있게 굽는 법" [ref=e179]
+          - heading "삼겹살 맛있게 굽는 법" [level=3] [ref=e180]
+          - generic [ref=e181]:
+            - generic [ref=e182]:
+              - img [ref=e183]
+              - text: "4.5"
+            - generic [ref=e185]:
+              - img [ref=e186]
+              - text: 40분
+        - generic [ref=e189] [cursor=pointer]:
+          - img "맥주 안주 추천" [ref=e191]
+          - heading "맥주 안주 추천" [level=3] [ref=e192]
+          - generic [ref=e193]:
+            - generic [ref=e194]:
+              - img [ref=e195]
+              - text: "4.4"
+            - generic [ref=e197]:
+              - img [ref=e198]
+              - text: 25분
+        - generic [ref=e201] [cursor=pointer]:
+          - img "팥빙수 맛집 추천" [ref=e203]
+          - heading "팥빙수 맛집 추천" [level=3] [ref=e204]
+          - generic [ref=e205]:
+            - generic [ref=e206]:
+              - img [ref=e207]
+              - text: "4.3"
+            - generic [ref=e209]:
+              - img [ref=e210]
+              - text: 25분
+        - generic [ref=e213] [cursor=pointer]:
+          - img "약과 레시피" [ref=e215]
+          - heading "약과 레시피" [level=3] [ref=e216]
+          - generic [ref=e217]:
+            - generic [ref=e218]:
+              - img [ref=e219]
+              - text: "4.1"
+            - generic [ref=e221]:
+              - img [ref=e222]
+              - text: 20분
+        - generic [ref=e225] [cursor=pointer]:
+          - img "건강한 한 끼 식사" [ref=e227]
+          - heading "건강한 한 끼 식사" [level=3] [ref=e228]
+          - generic [ref=e229]:
+            - generic [ref=e230]:
+              - img [ref=e231]
+              - text: "4.5"
+            - generic [ref=e233]:
+              - img [ref=e234]
+              - text: 40분
+        - generic [ref=e237] [cursor=pointer]:
+          - img "떡국 끓이는 법" [ref=e239]
+          - heading "떡국 끓이는 법" [level=3] [ref=e240]
+          - generic [ref=e241]:
+            - generic [ref=e242]:
+              - img [ref=e243]
+              - text: "4.8"
+            - generic [ref=e245]:
+              - img [ref=e246]
+              - text: 1시간
+    - generic [ref=e251]:
+      - generic [ref=e252]:
+        - heading "주간 랭킹 TOP 10" [level=2] [ref=e255]:
+          - img [ref=e256]
+          - text: 주간 랭킹 TOP 10
+        - generic [ref=e260]:
+          - generic [ref=e261] [cursor=pointer]:
+            - generic [ref=e262]: "1"
+            - img "캠핑 요리 추천" [ref=e264]
+            - generic [ref=e265]:
+              - heading "캠핑 요리 추천" [level=4] [ref=e266]
+              - generic [ref=e267]:
+                - generic [ref=e268]:
+                  - img [ref=e269]
+                  - text: 3.4k
+                - generic [ref=e272]:
+                  - img [ref=e273]
+                  - text: "189"
+            - generic [ref=e275]:
+              - img
+          - generic [ref=e276] [cursor=pointer]:
+            - generic [ref=e277]: "2"
+            - img "엄마표 집밥 레시피" [ref=e279]
+            - generic [ref=e280]:
+              - heading "엄마표 집밥 레시피" [level=4] [ref=e281]
+              - generic [ref=e282]:
+                - generic [ref=e283]:
+                  - img [ref=e284]
+                  - text: 4.8k
+                - generic [ref=e287]:
+                  - img [ref=e288]
+                  - text: "98"
+            - generic [ref=e290]:
+              - img
+          - generic [ref=e291] [cursor=pointer]:
+            - generic [ref=e292]: "3"
+            - img "밑반찬 만들기" [ref=e294]
+            - generic [ref=e295]:
+              - heading "밑반찬 만들기" [level=4] [ref=e296]
+              - generic [ref=e297]:
+                - generic [ref=e298]:
+                  - img [ref=e299]
+                  - text: 2.3k
+                - generic [ref=e302]:
+                  - img [ref=e303]
+                  - text: "256"
+            - generic [ref=e305]:
+              - img
+          - generic [ref=e306] [cursor=pointer]:
+            - generic [ref=e307]: "4"
+            - img "장아찌 만들기" [ref=e309]
+            - generic [ref=e310]:
+              - heading "장아찌 만들기" [level=4] [ref=e311]
+              - generic [ref=e312]:
+                - generic [ref=e313]:
+                  - img [ref=e314]
+                  - text: 6.2k
+                - generic [ref=e317]:
+                  - img [ref=e318]
+                  - text: "67"
+          - generic [ref=e320] [cursor=pointer]:
+            - generic [ref=e321]: "5"
+            - img "해물파전 만들기" [ref=e323]
+            - generic [ref=e324]:
+              - heading "해물파전 만들기" [level=4] [ref=e325]
+              - generic [ref=e326]:
+                - generic [ref=e327]:
+                  - img [ref=e328]
+                  - text: "892"
+                - generic [ref=e331]:
+                  - img [ref=e332]
+                  - text: "301"
+          - generic [ref=e334] [cursor=pointer]:
+            - generic [ref=e335]: "6"
+            - img "올리브오일 고르는 법" [ref=e337]
+            - generic [ref=e338]:
+              - heading "올리브오일 고르는 법" [level=4] [ref=e339]
+              - generic [ref=e340]:
+                - generic [ref=e341]:
+                  - img [ref=e342]
+                  - text: 1.2k
+                - generic [ref=e345]:
+                  - img [ref=e346]
+                  - text: "445"
+          - generic [ref=e348] [cursor=pointer]:
+            - generic [ref=e349]: "7"
+            - img "와인 페어링 추천" [ref=e351]
+            - generic [ref=e352]:
+              - heading "와인 페어링 추천" [level=4] [ref=e353]
+              - generic [ref=e354]:
+                - generic [ref=e355]:
+                  - img [ref=e356]
+                  - text: 3.4k
+                - generic [ref=e359]:
+                  - img [ref=e360]
+                  - text: "189"
+          - generic [ref=e362] [cursor=pointer]:
+            - generic [ref=e363]: "8"
+            - img "명절 음식 준비하기" [ref=e365]
+            - generic [ref=e366]:
+              - heading "명절 음식 준비하기" [level=4] [ref=e367]
+              - generic [ref=e368]:
+                - generic [ref=e369]:
+                  - img [ref=e370]
+                  - text: 1.9k
+                - generic [ref=e373]:
+                  - img [ref=e374]
+                  - text: "512"
+          - generic [ref=e376] [cursor=pointer]:
+            - generic [ref=e377]: "9"
+            - img "간장 종류별 용도" [ref=e379]
+            - generic [ref=e380]:
+              - heading "간장 종류별 용도" [level=4] [ref=e381]
+              - generic [ref=e382]:
+                - generic [ref=e383]:
+                  - img [ref=e384]
+                  - text: 4.8k
+                - generic [ref=e387]:
+                  - img [ref=e388]
+                  - text: "98"
+          - generic [ref=e390] [cursor=pointer]:
+            - generic [ref=e391]: "10"
+            - img "샐러드 드레싱 추천" [ref=e393]
+            - generic [ref=e394]:
+              - heading "샐러드 드레싱 추천" [level=4] [ref=e395]
+              - generic [ref=e396]:
+                - generic [ref=e397]:
+                  - img [ref=e398]
+                  - text: 1.9k
+                - generic [ref=e401]:
+                  - img [ref=e402]
+                  - text: "512"
+      - generic [ref=e404]:
+        - generic [ref=e405]:
+          - generic [ref=e406]:
+            - heading "밀키트 스토어" [level=2] [ref=e407]:
+              - img [ref=e408]
+              - text: 밀키트 스토어
+            - paragraph [ref=e412]: 셰프의 레시피를 집에서 간편하게
+          - button "스토어 가기" [ref=e413] [cursor=pointer]:
+            - text: 스토어 가기
+            - img
+        - region [ref=e414]:
+          - generic [ref=e416]:
+            - group [ref=e417]:
+              - generic [ref=e418] [cursor=pointer]:
+                - generic [ref=e419]:
+                  - img "스테이크 굽기 팁" [ref=e420]
+                  - generic [ref=e422]: 5% OFF
+                - generic [ref=e423]:
+                  - heading "스테이크 굽기 팁" [level=3] [ref=e424]
+                  - generic [ref=e425]:
+                    - generic [ref=e426]: 5%
+                    - generic [ref=e427]: 22,000원
+                  - generic [ref=e428]:
+                    - img [ref=e429]
+                    - generic [ref=e431]: "4.5"
+                    - generic [ref=e432]: (512)
+                  - generic [ref=e433]:
+                    - img [ref=e434]
+                    - generic [ref=e437]: 오늘 주문 시 내일 도착
+            - group [ref=e438]:
+              - generic [ref=e439] [cursor=pointer]:
+                - generic [ref=e440]:
+                  - img "호떡 만들기" [ref=e441]
+                  - generic [ref=e443]: 20% OFF
+                - generic [ref=e444]:
+                  - heading "호떡 만들기" [level=3] [ref=e445]
+                  - generic [ref=e446]:
+                    - generic [ref=e447]: 20%
+                    - generic [ref=e448]: 14,500원
+                  - generic [ref=e449]:
+                    - img [ref=e450]
+                    - generic [ref=e452]: "4.6"
+                    - generic [ref=e453]: (128)
+                  - generic [ref=e454]:
+                    - img [ref=e455]
+                    - generic [ref=e458]: 오늘 주문 시 내일 도착
+            - group [ref=e459]:
+              - generic [ref=e460] [cursor=pointer]:
+                - generic [ref=e461]:
+                  - img "샌드위치 꿀조합" [ref=e462]
+                  - generic [ref=e464]: 10% OFF
+                - generic [ref=e465]:
+                  - heading "샌드위치 꿀조합" [level=3] [ref=e466]
+                  - generic [ref=e467]:
+                    - generic [ref=e468]: 10%
+                    - generic [ref=e469]: 11,900원
+                  - generic [ref=e470]:
+                    - img [ref=e471]
+                    - generic [ref=e473]: "5"
+                    - generic [ref=e474]: (189)
+                  - generic [ref=e475]:
+                    - img [ref=e476]
+                    - generic [ref=e479]: 오늘 주문 시 내일 도착
+            - group [ref=e480]:
+              - generic [ref=e481] [cursor=pointer]:
+                - img "오늘의 점심 추천 메뉴" [ref=e483]
+                - generic [ref=e484]:
+                  - heading "오늘의 점심 추천 메뉴" [level=3] [ref=e485]
+                  - generic [ref=e487]: 9,900원
+                  - generic [ref=e488]:
+                    - img [ref=e489]
+                    - generic [ref=e491]: "4.2"
+                    - generic [ref=e492]: (98)
+                  - generic [ref=e493]:
+                    - img [ref=e494]
+                    - generic [ref=e497]: 오늘 주문 시 내일 도착
+            - group [ref=e498]:
+              - generic [ref=e499] [cursor=pointer]:
+                - generic [ref=e500]:
+                  - img "편의점 꿀조합 레시피" [ref=e501]
+                  - generic [ref=e503]: 40% OFF
+                - generic [ref=e504]:
+                  - heading "편의점 꿀조합 레시피" [level=3] [ref=e505]
+                  - generic [ref=e506]:
+                    - generic [ref=e507]: 40%
+                    - generic [ref=e508]: 25,000원
+                  - generic [ref=e509]:
+                    - img [ref=e510]
+                    - generic [ref=e512]: "4.9"
+                    - generic [ref=e513]: (445)
+                  - generic [ref=e514]:
+                    - img [ref=e515]
+                    - generic [ref=e518]: 오늘 주문 시 내일 도착
+            - group [ref=e519]:
+              - generic [ref=e520] [cursor=pointer]:
+                - generic [ref=e521]:
+                  - img "족발 맛집 추천" [ref=e522]
+                  - generic [ref=e524]: 25% OFF
+                - generic [ref=e525]:
+                  - heading "족발 맛집 추천" [level=3] [ref=e526]
+                  - generic [ref=e527]:
+                    - generic [ref=e528]: 25%
+                    - generic [ref=e529]: 12,900원
+                  - generic [ref=e530]:
+                    - img [ref=e531]
+                    - generic [ref=e533]: "4.1"
+                    - generic [ref=e534]: (256)
+                  - generic [ref=e535]:
+                    - img [ref=e536]
+                    - generic [ref=e539]: 오늘 주문 시 내일 도착
+            - group [ref=e540]:
+              - generic [ref=e541] [cursor=pointer]:
+                - generic [ref=e542]:
+                  - img "특별한 날 코스 요리" [ref=e543]
+                  - generic [ref=e545]: 20% OFF
+                - generic [ref=e546]:
+                  - heading "특별한 날 코스 요리" [level=3] [ref=e547]
+                  - generic [ref=e548]:
+                    - generic [ref=e549]: 20%
+                    - generic [ref=e550]: 14,500원
+                  - generic [ref=e551]:
+                    - img [ref=e552]
+                    - generic [ref=e554]: "4.6"
+                    - generic [ref=e555]: (128)
+                  - generic [ref=e556]:
+                    - img [ref=e557]
+                    - generic [ref=e560]: 오늘 주문 시 내일 도착
+            - group [ref=e561]:
+              - generic [ref=e562] [cursor=pointer]:
+                - generic [ref=e563]:
+                  - img "칼국수 레시피" [ref=e564]
+                  - generic [ref=e566]: 30% OFF
+                - generic [ref=e567]:
+                  - heading "칼국수 레시피" [level=3] [ref=e568]
+                  - generic [ref=e569]:
+                    - generic [ref=e570]: 30%
+                    - generic [ref=e571]: 15,500원
+                  - generic [ref=e572]:
+                    - img [ref=e573]
+                    - generic [ref=e575]: "4.4"
+                    - generic [ref=e576]: (342)
+                  - generic [ref=e577]:
+                    - img [ref=e578]
+                    - generic [ref=e581]: 오늘 주문 시 내일 도착
+            - group [ref=e582]:
+              - generic [ref=e583] [cursor=pointer]:
+                - generic [ref=e584]:
+                  - img "수정과 레시피" [ref=e585]
+                  - generic [ref=e587]: 30% OFF
+                - generic [ref=e588]:
+                  - heading "수정과 레시피" [level=3] [ref=e589]
+                  - generic [ref=e590]:
+                    - generic [ref=e591]: 30%
+                    - generic [ref=e592]: 15,500원
+                  - generic [ref=e593]:
+                    - img [ref=e594]
+                    - generic [ref=e596]: "4.4"
+                    - generic [ref=e597]: (342)
+                  - generic [ref=e598]:
+                    - img [ref=e599]
+                    - generic [ref=e602]: 오늘 주문 시 내일 도착
+            - group [ref=e603]:
+              - generic [ref=e604] [cursor=pointer]:
+                - generic [ref=e605]:
+                  - img "된장찌개 비법" [ref=e606]
+                  - generic [ref=e608]: 20% OFF
+                - generic [ref=e609]:
+                  - heading "된장찌개 비법" [level=3] [ref=e610]
+                  - generic [ref=e611]:
+                    - generic [ref=e612]: 20%
+                    - generic [ref=e613]: 14,500원
+                  - generic [ref=e614]:
+                    - img [ref=e615]
+                    - generic [ref=e617]: "4.6"
+                    - generic [ref=e618]: (128)
+                  - generic [ref=e619]:
+                    - img [ref=e620]
+                    - generic [ref=e623]: 오늘 주문 시 내일 도착
+            - group [ref=e624]:
+              - generic [ref=e625] [cursor=pointer]:
+                - generic [ref=e626]:
+                  - img "해외 음식 따라 만들기" [ref=e627]
+                  - generic [ref=e629]: 30% OFF
+                - generic [ref=e630]:
+                  - heading "해외 음식 따라 만들기" [level=3] [ref=e631]
+                  - generic [ref=e632]:
+                    - generic [ref=e633]: 30%
+                    - generic [ref=e634]: 15,500원
+                  - generic [ref=e635]:
+                    - img [ref=e636]
+                    - generic [ref=e638]: "4.4"
+                    - generic [ref=e639]: (342)
+                  - generic [ref=e640]:
+                    - img [ref=e641]
+                    - generic [ref=e644]: 오늘 주문 시 내일 도착
+            - group [ref=e645]:
+              - generic [ref=e646] [cursor=pointer]:
+                - img "여름 보양식 추천" [ref=e648]
+                - generic [ref=e649]:
+                  - heading "여름 보양식 추천" [level=3] [ref=e650]
+                  - generic [ref=e652]: 9,900원
+                  - generic [ref=e653]:
+                    - img [ref=e654]
+                    - generic [ref=e656]: "4.2"
+                    - generic [ref=e657]: (98)
+                  - generic [ref=e658]:
+                    - img [ref=e659]
+                    - generic [ref=e662]: 오늘 주문 시 내일 도착
+          - button "Previous slide" [disabled]:
+            - img
+            - generic: Previous slide
+          - button "Next slide" [ref=e663] [cursor=pointer]:
+            - img
+            - generic [ref=e664]: Next slide
+    - generic [ref=e666]:
+      - generic [ref=e667]:
+        - generic [ref=e668]:
+          - heading "푸드 매거진" [level=2] [ref=e669]:
+            - img [ref=e670]
+            - text: 푸드 매거진
+          - paragraph [ref=e673]: 전문가가 전하는 음식 이야기
+        - button "전체 기사" [ref=e674] [cursor=pointer]:
+          - text: 전체 기사
+          - img
+      - generic [ref=e675]:
+        - generic [ref=e677] [cursor=pointer]:
+          - img "커피 원두 추천" [ref=e679]
+          - generic [ref=e680]:
+            - generic [ref=e681]:
+              - generic [ref=e682]:
+                - img
+                - text: 매거진
+              - heading "커피 원두 추천" [level=3] [ref=e683]
+              - paragraph [ref=e684]: 다양한 면 요리의 레시피를 한 곳에 정리했습니다.
+            - generic [ref=e685]:
+              - generic [ref=e686]: 2026. 2. 4.
+              - generic [ref=e687]:
+                - generic [ref=e688]:
+                  - img [ref=e689]
+                  - text: 4.8k
+                - generic [ref=e692]:
+                  - img [ref=e693]
+                  - text: "98"
+        - generic [ref=e696] [cursor=pointer]:
+          - img "건강 주스 레시피" [ref=e698]
+          - generic [ref=e699]:
+            - generic [ref=e700]:
+              - generic [ref=e701]:
+                - img
+                - text: 매거진
+              - heading "건강 주스 레시피" [level=3] [ref=e702]
+              - paragraph [ref=e703]: 신선한 과일과 채소로 만드는 건강 주스 레시피입니다.
+            - generic [ref=e704]:
+              - generic [ref=e705]: 2026. 2. 4.
+              - generic [ref=e706]:
+                - generic [ref=e707]:
+                  - img [ref=e708]
+                  - text: "756"
+                - generic [ref=e711]:
+                  - img [ref=e712]
+                  - text: "342"
+        - generic [ref=e715] [cursor=pointer]:
+          - img "서울 맛집 탐방기" [ref=e717]
+          - generic [ref=e718]:
+            - generic [ref=e719]:
+              - generic [ref=e720]:
+                - img
+                - text: 매거진
+              - heading "서울 맛집 탐방기" [level=3] [ref=e721]
+              - paragraph [ref=e722]: 서울 곳곳에 숨겨진 맛집들을 직접 방문하고 솔직한 후기를 남깁니다.
+            - generic [ref=e723]:
+              - generic [ref=e724]: 2026. 2. 4.
+              - generic [ref=e725]:
+                - generic [ref=e726]:
+                  - img [ref=e727]
+                  - text: 5.1k
+                - generic [ref=e730]:
+                  - img [ref=e731]
+                  - text: "128"
+        - generic [ref=e734] [cursor=pointer]:
+          - img "식초 활용법" [ref=e736]
+          - generic [ref=e737]:
+            - generic [ref=e738]:
+              - generic [ref=e739]:
+                - img
+                - text: 매거진
+              - heading "식초 활용법" [level=3] [ref=e740]
+              - paragraph [ref=e741]: 토마토, 크림, 오일 파스타 소스를 비교해봤습니다.
+            - generic [ref=e742]:
+              - generic [ref=e743]: 2026. 2. 4.
+              - generic [ref=e744]:
+                - generic [ref=e745]:
+                  - img [ref=e746]
+                  - text: 5.1k
+                - generic [ref=e749]:
+                  - img [ref=e750]
+                  - text: "128"
+    - iframe [ref=e757]:
+      - generic [ref=f2e4]:
+        - generic [ref=f2e5]: AD
+        - img [ref=f2e6] [cursor=pointer]
+        - generic [ref=f2e7] [cursor=pointer]:
+          - generic [ref=f2e8]:
+            - generic [ref=f2e9]: PLAY
+            - img [ref=f2e11]
+          - img [ref=f2e14]
+    - generic [ref=e761]:
+      - generic [ref=e762]:
+        - heading "요리 클래스에 참여해보세요!" [level=2] [ref=e763]
+        - paragraph [ref=e764]: 전문 셰프와 함께하는 온라인 쿠킹 클래스, 첫 수강 50% 할인
+      - button "클래스 보러가기" [ref=e765] [cursor=pointer]:
+        - img
+        - text: 클래스 보러가기
+    - generic [ref=e767]:
+      - tablist [ref=e768]:
+        - tab "전체 레시피" [selected] [ref=e769]:
+          - img
+          - text: 전체 레시피
+        - tab "커뮤니티" [ref=e770]:
+          - img
+          - text: 커뮤니티
+      - tabpanel "전체 레시피" [ref=e771]:
+        - generic [ref=e775]:
+          - button "전체" [ref=e776] [cursor=pointer]
+          - button "한식" [ref=e777] [cursor=pointer]
+          - button "양식" [ref=e778] [cursor=pointer]
+          - button "일식" [ref=e779] [cursor=pointer]
+          - button "중식" [ref=e780] [cursor=pointer]
+          - button "디저트" [ref=e781] [cursor=pointer]
+          - button "건강식" [ref=e782] [cursor=pointer]
+          - button "간편식" [ref=e783] [cursor=pointer]
+        - paragraph [ref=e784]: 총 100개의 레시피
+        - generic [ref=e785]:
+          - iframe [ref=e790]:
+            - generic [ref=f4e4]:
+              - generic [ref=f4e5]: AD
+              - img [ref=f4e6] [cursor=pointer]
+              - generic [ref=f4e7] [cursor=pointer]:
+                - generic [ref=f4e8]:
+                  - generic [ref=f4e13]: PLAY
+                  - img [ref=f4e10]
+                - img [ref=f4e14]
+          - generic [ref=e792] [cursor=pointer]:
+            - generic [ref=e793]:
+              - img "송편 빚는 법" [ref=e794]
+              - generic [ref=e796]: 한식
+              - button [ref=e797]:
+                - img [ref=e798]
+            - generic [ref=e800]:
+              - generic [ref=e801]: 송편 빚는 법
+              - generic [ref=e802]: 무더운 여름을 이겨내기 위한 보양식 레시피를 소개합니다.
+            - generic [ref=e803]:
+              - generic [ref=e804]:
+                - generic [ref=e805]:
+                  - img [ref=e806]
+                  - text: "4.2"
+                - generic [ref=e808]:
+                  - img [ref=e809]
+                  - text: 30분
+              - generic [ref=e812]:
+                - img [ref=e813]
+                - text: "203"
+          - generic [ref=e815] [cursor=pointer]:
+            - generic [ref=e816]:
+              - img "베이킹 초보 도전기" [ref=e817]
+              - generic [ref=e819]: 건강식
+              - button [ref=e820]:
+                - img [ref=e821]
+            - generic [ref=e823]:
+              - generic [ref=e824]: 베이킹 초보 도전기
+              - generic [ref=e825]: 베이킹을 처음 시작하는 분들을 위한 쉬운 레시피입니다.
+            - generic [ref=e826]:
+              - generic [ref=e827]:
+                - generic [ref=e828]:
+                  - img [ref=e829]
+                  - text: "4.1"
+                - generic [ref=e831]:
+                  - img [ref=e832]
+                  - text: 20분
+              - generic [ref=e835]:
+                - img [ref=e836]
+                - text: "512"
+          - generic [ref=e838] [cursor=pointer]:
+            - generic [ref=e839]:
+              - img "아이스크림 브랜드 비교" [ref=e840]
+              - generic [ref=e842]: 한식
+              - button [ref=e843]:
+                - img [ref=e844]
+            - generic [ref=e846]:
+              - generic [ref=e847]: 아이스크림 브랜드 비교
+              - generic [ref=e848]: 일주일간 채식만으로 식단을 구성해본 경험을 공유합니다.
+            - generic [ref=e849]:
+              - generic [ref=e850]:
+                - generic [ref=e851]:
+                  - img [ref=e852]
+                  - text: "4.8"
+                - generic [ref=e854]:
+                  - img [ref=e855]
+                  - text: 1시간
+              - generic [ref=e858]:
+                - img [ref=e859]
+                - text: "301"
+          - generic [ref=e861] [cursor=pointer]:
+            - generic [ref=e862]:
+              - img "김치찌개 맛있게 끓이는 법" [ref=e863]
+              - generic [ref=e865]: 양식
+              - button [ref=e866]:
+                - img [ref=e867]
+            - generic [ref=e869]:
+              - generic [ref=e870]: 김치찌개 맛있게 끓이는 법
+              - generic [ref=e871]: 편의점 재료로 만들 수 있는 간단하지만 맛있는 레시피입니다.
+            - generic [ref=e872]:
+              - generic [ref=e873]:
+                - generic [ref=e874]:
+                  - img [ref=e875]
+                  - text: "4.9"
+                - generic [ref=e877]:
+                  - img [ref=e878]
+                  - text: 15분
+              - generic [ref=e881]:
+                - img [ref=e882]
+                - text: "128"
+          - generic [ref=e884] [cursor=pointer]:
+            - generic [ref=e885]:
+              - img "보쌈 만들기" [ref=e886]
+              - generic [ref=e888]: 일식
+              - button [ref=e889]:
+                - img [ref=e890]
+            - generic [ref=e892]:
+              - generic [ref=e893]: 보쌈 만들기
+              - generic [ref=e894]: 아이들의 입맛에 딱 맞는 건강한 간식을 만들어보세요.
+            - generic [ref=e895]:
+              - generic [ref=e896]:
+                - generic [ref=e897]:
+                  - img [ref=e898]
+                  - text: "5"
+                - generic [ref=e900]:
+                  - img [ref=e901]
+                  - text: 20분
+              - generic [ref=e904]:
+                - img [ref=e905]
+                - text: "256"
+          - generic [ref=e907] [cursor=pointer]:
+            - generic [ref=e908]:
+              - img "삼겹살 맛있게 굽는 법" [ref=e909]
+              - generic [ref=e911]: 양식
+              - button [ref=e912]:
+                - img [ref=e913]
+            - generic [ref=e915]:
+              - generic [ref=e916]: 삼겹살 맛있게 굽는 법
+              - generic [ref=e917]: 자취생도 쉽게 따라 할 수 있는 초간단 요리법을 공유합니다.
+            - generic [ref=e918]:
+              - generic [ref=e919]:
+                - generic [ref=e920]:
+                  - img [ref=e921]
+                  - text: "4.5"
+                - generic [ref=e923]:
+                  - img [ref=e924]
+                  - text: 40분
+              - generic [ref=e927]:
+                - img [ref=e928]
+                - text: "445"
+          - generic [ref=e930] [cursor=pointer]:
+            - generic [ref=e931]:
+              - img "맥주 안주 추천" [ref=e932]
+              - generic [ref=e934]: 간편식
+              - button [ref=e935]:
+                - img [ref=e936]
+            - generic [ref=e938]:
+              - generic [ref=e939]: 맥주 안주 추천
+              - generic [ref=e940]: 일본식, 인도식, 한국식 카레를 비교해봤습니다.
+            - generic [ref=e941]:
+              - generic [ref=e942]:
+                - generic [ref=e943]:
+                  - img [ref=e944]
+                  - text: "4.4"
+                - generic [ref=e946]:
+                  - img [ref=e947]
+                  - text: 25분
+              - generic [ref=e950]:
+                - img [ref=e951]
+                - text: "67"
+          - generic [ref=e953] [cursor=pointer]:
+            - generic [ref=e954]:
+              - img "팥빙수 맛집 추천" [ref=e955]
+              - generic [ref=e957]: 중식
+              - button [ref=e958]:
+                - img [ref=e959]
+            - generic [ref=e961]:
+              - generic [ref=e962]: 팥빙수 맛집 추천
+              - generic [ref=e963]: 신선한 과일과 채소로 만드는 건강 주스 레시피입니다.
+            - generic [ref=e964]:
+              - generic [ref=e965]:
+                - generic [ref=e966]:
+                  - img [ref=e967]
+                  - text: "4.3"
+                - generic [ref=e969]:
+                  - img [ref=e970]
+                  - text: 25분
+              - generic [ref=e973]:
+                - img [ref=e974]
+                - text: "342"
+          - generic [ref=e976] [cursor=pointer]:
+            - generic [ref=e977]:
+              - img "약과 레시피" [ref=e978]
+              - generic [ref=e980]: 건강식
+              - button [ref=e981]:
+                - img [ref=e982]
+            - generic [ref=e984]:
+              - generic [ref=e985]: 약과 레시피
+              - generic [ref=e986]: 베이킹을 처음 시작하는 분들을 위한 쉬운 레시피입니다.
+            - generic [ref=e987]:
+              - generic [ref=e988]:
+                - generic [ref=e989]:
+                  - img [ref=e990]
+                  - text: "4.1"
+                - generic [ref=e992]:
+                  - img [ref=e993]
+                  - text: 20분
+              - generic [ref=e996]:
+                - img [ref=e997]
+                - text: "512"
+          - generic [ref=e999] [cursor=pointer]:
+            - generic [ref=e1000]:
+              - img "건강한 한 끼 식사" [ref=e1001]
+              - generic [ref=e1003]: 양식
+              - button [ref=e1004]:
+                - img [ref=e1005]
+            - generic [ref=e1007]:
+              - generic [ref=e1008]: 건강한 한 끼 식사
+              - generic [ref=e1009]: 건강을 생각하면서도 맛있게 먹을 수 있는 메뉴를 소개합니다.
+            - generic [ref=e1010]:
+              - generic [ref=e1011]:
+                - generic [ref=e1012]:
+                  - img [ref=e1013]
+                  - text: "4.5"
+                - generic [ref=e1015]:
+                  - img [ref=e1016]
+                  - text: 40분
+              - generic [ref=e1019]:
+                - img [ref=e1020]
+                - text: "445"
+          - generic [ref=e1022] [cursor=pointer]:
+            - generic [ref=e1023]:
+              - img "떡국 끓이는 법" [ref=e1024]
+              - generic [ref=e1026]: 한식
+              - button [ref=e1027]:
+                - img [ref=e1028]
+            - generic [ref=e1030]:
+              - generic [ref=e1031]: 떡국 끓이는 법
+              - generic [ref=e1032]: 추운 겨울, 몸과 마음을 녹여줄 따뜻한 국물 요리입니다.
+            - generic [ref=e1033]:
+              - generic [ref=e1034]:
+                - generic [ref=e1035]:
+                  - img [ref=e1036]
+                  - text: "4.8"
+                - generic [ref=e1038]:
+                  - img [ref=e1039]
+                  - text: 1시간
+              - generic [ref=e1042]:
+                - img [ref=e1043]
+                - text: "301"
+          - generic [ref=e1045] [cursor=pointer]:
+            - generic [ref=e1046]:
+              - img "캠핑 요리 추천" [ref=e1047]
+              - generic [ref=e1049]: 일식
+              - button [ref=e1050]:
+                - img [ref=e1051]
+            - generic [ref=e1053]:
+              - generic [ref=e1054]: 캠핑 요리 추천
+              - generic [ref=e1055]: 자연 속에서 즐기는 캠핑 요리, 간단하지만 특별한 맛입니다.
+            - generic [ref=e1056]:
+              - generic [ref=e1057]:
+                - generic [ref=e1058]:
+                  - img [ref=e1059]
+                  - text: "4.7"
+                - generic [ref=e1061]:
+                  - img [ref=e1062]
+                  - text: 50분
+              - generic [ref=e1065]:
+                - img [ref=e1066]
+                - text: "189"
+          - generic [ref=e1068] [cursor=pointer]:
+            - generic [ref=e1069]:
+              - img "엄마표 집밥 레시피" [ref=e1070]
+              - generic [ref=e1072]: 디저트
+              - button [ref=e1073]:
+                - img [ref=e1074]
+            - generic [ref=e1076]:
+              - generic [ref=e1077]: 엄마표 집밥 레시피
+              - generic [ref=e1078]: 어머니께서 해주시던 그 맛을 재현해봤습니다. 정성 가득한 집밥의 매력을 느껴보세요.
+            - generic [ref=e1079]:
+              - generic [ref=e1080]:
+                - generic [ref=e1081]:
+                  - img [ref=e1082]
+                  - text: "4.6"
+                - generic [ref=e1084]:
+                  - img [ref=e1085]
+                  - text: 15분
+              - generic [ref=e1088]:
+                - img [ref=e1089]
+                - text: "98"
+          - generic [ref=e1091] [cursor=pointer]:
+            - generic [ref=e1092]:
+              - img "밑반찬 만들기" [ref=e1093]
+              - generic [ref=e1095]: 일식
+              - button [ref=e1096]:
+                - img [ref=e1097]
+            - generic [ref=e1099]:
+              - generic [ref=e1100]: 밑반찬 만들기
+              - generic [ref=e1101]: 일주일 치 밑반찬을 한 번에 만드는 방법입니다.
+            - generic [ref=e1102]:
+              - generic [ref=e1103]:
+                - generic [ref=e1104]:
+                  - img [ref=e1105]
+                  - text: "5"
+                - generic [ref=e1107]:
+                  - img [ref=e1108]
+                  - text: 20분
+              - generic [ref=e1111]:
+                - img [ref=e1112]
+                - text: "256"
+          - generic [ref=e1114] [cursor=pointer]:
+            - generic [ref=e1115]:
+              - img "장아찌 만들기" [ref=e1116]
+              - generic [ref=e1118]: 간편식
+              - button [ref=e1119]:
+                - img [ref=e1120]
+            - generic [ref=e1122]:
+              - generic [ref=e1123]: 장아찌 만들기
+              - generic [ref=e1124]: 전국 떡볶이 맛집을 직접 방문하고 순위를 매겨봤습니다.
+            - generic [ref=e1125]:
+              - generic [ref=e1126]:
+                - generic [ref=e1127]:
+                  - img [ref=e1128]
+                  - text: "4.4"
+                - generic [ref=e1130]:
+                  - img [ref=e1131]
+                  - text: 25분
+              - generic [ref=e1134]:
+                - img [ref=e1135]
+                - text: "67"
+          - generic [ref=e1137] [cursor=pointer]:
+            - generic [ref=e1138]:
+              - img "해물파전 만들기" [ref=e1139]
+              - generic [ref=e1141]: 한식
+              - button [ref=e1142]:
+                - img [ref=e1143]
+            - generic [ref=e1145]:
+              - generic [ref=e1146]: 해물파전 만들기
+              - generic [ref=e1147]: 연인과 함께 방문하기 좋은 분위기 맛집을 소개합니다.
+            - generic [ref=e1148]:
+              - generic [ref=e1149]:
+                - generic [ref=e1150]:
+                  - img [ref=e1151]
+                  - text: "4.8"
+                - generic [ref=e1153]:
+                  - img [ref=e1154]
+                  - text: 1시간
+              - generic [ref=e1157]:
+                - img [ref=e1158]
+                - text: "301"
+          - generic [ref=e1160] [cursor=pointer]:
+            - generic [ref=e1161]:
+              - img "올리브오일 고르는 법" [ref=e1162]
+              - generic [ref=e1164]: 양식
+              - button [ref=e1165]:
+                - img [ref=e1166]
+            - generic [ref=e1168]:
+              - generic [ref=e1169]: 올리브오일 고르는 법
+              - generic [ref=e1170]: 완벽한 스테이크를 굽기 위한 팁을 알려드립니다.
+            - generic [ref=e1171]:
+              - generic [ref=e1172]:
+                - generic [ref=e1173]:
+                  - img [ref=e1174]
+                  - text: "4.5"
+                - generic [ref=e1176]:
+                  - img [ref=e1177]
+                  - text: 40분
+              - generic [ref=e1180]:
+                - img [ref=e1181]
+                - text: "445"
+          - generic [ref=e1183] [cursor=pointer]:
+            - generic [ref=e1184]:
+              - img "와인 페어링 추천" [ref=e1185]
+              - generic [ref=e1187]: 일식
+              - button [ref=e1188]:
+                - img [ref=e1189]
+            - generic [ref=e1191]:
+              - generic [ref=e1192]: 와인 페어링 추천
+              - generic [ref=e1193]: 멕시코 정통 타코를 집에서 만들어봤습니다.
+            - generic [ref=e1194]:
+              - generic [ref=e1195]:
+                - generic [ref=e1196]:
+                  - img [ref=e1197]
+                  - text: "4.7"
+                - generic [ref=e1199]:
+                  - img [ref=e1200]
+                  - text: 50분
+              - generic [ref=e1203]:
+                - img [ref=e1204]
+                - text: "189"
+          - generic [ref=e1206] [cursor=pointer]:
+            - generic [ref=e1207]:
+              - img "명절 음식 준비하기" [ref=e1208]
+              - generic [ref=e1210]: 건강식
+              - button [ref=e1211]:
+                - img [ref=e1212]
+            - generic [ref=e1214]:
+              - generic [ref=e1215]: 명절 음식 준비하기
+              - generic [ref=e1216]: 명절에 가족과 함께 준비하면 좋은 전통 음식 레시피입니다.
+            - generic [ref=e1217]:
+              - generic [ref=e1218]:
+                - generic [ref=e1219]:
+                  - img [ref=e1220]
+                  - text: "4.1"
+                - generic [ref=e1222]:
+                  - img [ref=e1223]
+                  - text: 20분
+              - generic [ref=e1226]:
+                - img [ref=e1227]
+                - text: "512"
+          - generic [ref=e1229] [cursor=pointer]:
+            - generic [ref=e1230]:
+              - img "간장 종류별 용도" [ref=e1231]
+              - generic [ref=e1233]: 디저트
+              - button [ref=e1234]:
+                - img [ref=e1235]
+            - generic [ref=e1237]:
+              - generic [ref=e1238]: 간장 종류별 용도
+              - generic [ref=e1239]: 일본 현지 느낌의 라멘을 국내에서 즐길 수 있는 곳입니다.
+            - generic [ref=e1240]:
+              - generic [ref=e1241]:
+                - generic [ref=e1242]:
+                  - img [ref=e1243]
+                  - text: "4.6"
+                - generic [ref=e1245]:
+                  - img [ref=e1246]
+                  - text: 15분
+              - generic [ref=e1249]:
+                - img [ref=e1250]
+                - text: "98"
+    - contentinfo [ref=e1252]:
+      - generic [ref=e1253]:
+        - generic [ref=e1254]:
+          - generic [ref=e1255]:
+            - heading "서비스" [level=3] [ref=e1256]
+            - list [ref=e1257]:
+              - listitem [ref=e1258]: 레시피 검색
+              - listitem [ref=e1259]: 맛집 지도
+              - listitem [ref=e1260]: 밀키트 주문
+              - listitem [ref=e1261]: 요리 클래스
+          - generic [ref=e1262]:
+            - heading "고객지원" [level=3] [ref=e1263]
+            - list [ref=e1264]:
+              - listitem [ref=e1265]: 자주 묻는 질문
+              - listitem [ref=e1266]: 1:1 문의
+              - listitem [ref=e1267]: 공지사항
+              - listitem [ref=e1268]: 이용약관
+          - generic [ref=e1269]:
+            - heading "회사" [level=3] [ref=e1270]
+            - list [ref=e1271]:
+              - listitem [ref=e1272]: 회사 소개
+              - listitem [ref=e1273]: 채용 정보
+              - listitem [ref=e1274]: 블로그
+              - listitem [ref=e1275]: 제휴 문의
+          - generic [ref=e1276]:
+            - heading "SNS" [level=3] [ref=e1277]
+            - list [ref=e1278]:
+              - listitem [ref=e1279]: Instagram
+              - listitem [ref=e1280]: YouTube
+              - listitem [ref=e1281]: Facebook
+              - listitem [ref=e1282]: X (Twitter)
+        - generic [ref=e1283]:
+          - generic [ref=e1284]: © 2026 맛있는 발견. All rights reserved.
+          - generic [ref=e1285]:
+            - generic [ref=e1286]: 개인정보처리방침
+            - generic [ref=e1287]: 이용약관
+            - generic [ref=e1288]: 쿠키 설정
+  - region "Notifications alt+T"
+  - dialog [ref=e1321]:
+    - generic [ref=e1322]:
+      - button "로그인" [active] [ref=e1323] [cursor=pointer]:
+        - img
+        - text: 로그인
+      - generic [ref=e1324]:
+        - paragraph [ref=e1325]: Theme
+        - generic [ref=e1326]:
+          - img [ref=e1327]
+          - switch [ref=e1333]
+          - img [ref=e1334]
+      - group [ref=e1336]:
+        - generic [ref=e1337]:
+          - generic [ref=e1338]: Proxy Host
+          - button [ref=e1339] [cursor=pointer]:
+            - img
+        - textbox "https://proxy.example.com" [ref=e1340]
+        - generic [ref=e1341]:
+          - button "적용" [ref=e1342] [cursor=pointer]
+          - button "해제" [ref=e1343] [cursor=pointer]
+      - button "광고 Config 설정 변경 가이드" [ref=e1344] [cursor=pointer]:
+        - img
+        - text: 광고 Config 설정 변경 가이드

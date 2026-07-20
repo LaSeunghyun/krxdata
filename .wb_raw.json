@@ -1,0 +1,767 @@
+{
+  "2023": {
+    "empStatus": {
+      "status": "000",
+      "rows": [
+        {
+          "부문": "연구직",
+          "성별": "남",
+          "정규직": "9",
+          "합계": "9",
+          "평균근속": "1.3",
+          "연간급여총액": "492,829,000",
+          "1인평균급여액": "54,759,000",
+          "비고": "-"
+        },
+        {
+          "부문": "연구직",
+          "성별": "여",
+          "정규직": "6",
+          "합계": "6",
+          "평균근속": "2.9",
+          "연간급여총액": "417,373,000",
+          "1인평균급여액": "69,562,000",
+          "비고": "-"
+        },
+        {
+          "부문": "영업직",
+          "성별": "남",
+          "정규직": "19",
+          "합계": "19",
+          "평균근속": "2.4",
+          "연간급여총액": "1,235,214,000",
+          "1인평균급여액": "65,011,000",
+          "비고": "-"
+        },
+        {
+          "부문": "영업직",
+          "성별": "여",
+          "정규직": "46",
+          "합계": "46",
+          "평균근속": "2.4",
+          "연간급여총액": "1,911,545,000",
+          "1인평균급여액": "41,555,000",
+          "비고": "-"
+        },
+        {
+          "부문": "관리직",
+          "성별": "남",
+          "정규직": "8",
+          "합계": "10",
+          "평균근속": "1.7",
+          "연간급여총액": "560,321,000",
+          "1인평균급여액": "56,032,000",
+          "비고": "-"
+        },
+        {
+          "부문": "관리직",
+          "성별": "여",
+          "정규직": "25",
+          "합계": "27",
+          "평균근속": "3.0",
+          "연간급여총액": "1,356,920,000",
+          "1인평균급여액": "50,256,000",
+          "비고": "-"
+        }
+      ]
+    },
+    "execStatus": {
+      "status": "000",
+      "count": 10,
+      "sample": [
+        {
+          "성명": "김종원",
+          "직위": "대표이사",
+          "등기여부": "사내이사",
+          "상근여부": "상근"
+        },
+        {
+          "성명": "정회창",
+          "직위": "이사",
+          "등기여부": "미등기",
+          "상근여부": "상근"
+        },
+        {
+          "성명": "신준열",
+          "직위": "사내이사",
+          "등기여부": "사내이사",
+          "상근여부": "상근"
+        },
+        {
+          "성명": "정균태",
+          "직위": "기타\n비상무이사",
+          "등기여부": "기타비상무이사",
+          "상근여부": "비상근"
+        },
+        {
+          "성명": "김재철",
+          "직위": "사외이사",
+          "등기여부": "사외이사",
+          "상근여부": "비상근"
+        }
+      ]
+    },
+    "hmvAuditAllSttus": [
+      {
+        "rcept_no": "20240313001665",
+        "corp_cls": "K",
+        "corp_code": "01236532",
+        "corp_name": "와이즈버즈",
+        "nmpr": "7",
+        "jan_avrg_mendng_am": "70,000,000",
+        "mendng_totamt": "490,000,000",
+        "rm": "-",
+        "stlm_dt": "2023-12-31",
+        "fscl_year": "-",
+        "stk_bsd_pd_mendng_totamt": "-",
+        "stk_opt_exrcsbl_qty": "-",
+        "stk_opt_unexrcsbl_qty": "-",
+        "stk_opt_rmn_blce": "-",
+        "othr_stk_bsd_cmpn_unpyd_qty": "-",
+        "othr_stk_bsd_cmpn_mkt_vl": "-"
+      }
+    ],
+    "drctrAdtAllMendngSttusGmtsckConfmAmount": [
+      {
+        "rcept_no": "20240313001665",
+        "corp_cls": "K",
+        "corp_code": "01236532",
+        "corp_name": "와이즈버즈",
+        "se": "이사",
+        "nmpr": "4",
+        "gmtsck_confm_amount": "1,000,000,000",
+        "rm": "-",
+        "stlm_dt": "2023-12-31",
+        "fscl_year": "-"
+      },
+      {
+        "rcept_no": "20240313001665",
+        "corp_cls": "K",
+        "corp_code": "01236532",
+        "corp_name": "와이즈버즈",
+        "se": "감사",
+        "nmpr": "1",
+        "gmtsck_confm_amount": "50,000,000",
+        "rm": "-",
+        "stlm_dt": "2023-12-31",
+        "fscl_year": "-"
+      }
+    ],
+    "drctrAdtAllMendngSttusMendngPymntamtTyCl": [
+      {
+        "rcept_no": "20240313001665",
+        "corp_cls": "K",
+        "corp_code": "01236532",
+        "corp_name": "와이즈버즈",
+        "se": "등기이사(사외이사, 감사위원회 위원 제외)",
+        "nmpr": "3",
+        "pymnt_totamt": "432,000,000",
+        "psn1_avrg_pymntamt": "144,000,000",
+        "rm": "-",
+        "stlm_dt": "2023-12-31",
+        "fscl_year": "-",
+        "stk_bsd_pd_mendng_totamt": "-",
+        "stk_opt_exrcsbl_qty": "-",
+        "stk_opt_unexrcsbl_qty": "-",
+        "stk_opt_rmn_blce": "-",
+        "othr_stk_bsd_cmpn_unpyd_qty": "-",
+        "othr_stk_bsd_cmpn_mkt_vl": "-"
+      },
+      {
+        "rcept_no": "20240313001665",
+        "corp_cls": "K",
+        "corp_code": "01236532",
+        "corp_name": "와이즈버즈",
+        "se": "사외이사(감사위원회 위원 제외)",
+        "nmpr": "2",
+        "pymnt_totamt": "29,000,000",
+        "psn1_avrg_pymntamt": "15,000,000",
+        "rm": "-",
+        "stlm_dt": "2023-12-31",
+        "fscl_year": "-",
+        "stk_bsd_pd_mendng_totamt": "-",
+        "stk_opt_exrcsbl_qty": "-",
+        "stk_opt_unexrcsbl_qty": "-",
+        "stk_opt_rmn_blce": "-",
+        "othr_stk_bsd_cmpn_unpyd_qty": "-",
+        "othr_stk_bsd_cmpn_mkt_vl": "-"
+      },
+      {
+        "rcept_no": "20240313001665",
+        "corp_cls": "K",
+        "corp_code": "01236532",
+        "corp_name": "와이즈버즈",
+        "se": "감사위원회 위원",
+        "nmpr": "-",
+        "pymnt_totamt": "-",
+        "psn1_avrg_pymntamt": "-",
+        "rm": "-",
+        "stlm_dt": "2023-12-31",
+        "fscl_year": "-",
+        "stk_bsd_pd_mendng_totamt": "-",
+        "stk_opt_exrcsbl_qty": "-",
+        "stk_opt_unexrcsbl_qty": "-",
+        "stk_opt_rmn_blce": "-",
+        "othr_stk_bsd_cmpn_unpyd_qty": "-",
+        "othr_stk_bsd_cmpn_mkt_vl": "-"
+      },
+      {
+        "rcept_no": "20240313001665",
+        "corp_cls": "K",
+        "corp_code": "01236532",
+        "corp_name": "와이즈버즈",
+        "se": "감사",
+        "nmpr": "2",
+        "pymnt_totamt": "29,000,000",
+        "psn1_avrg_pymntamt": "15,000,000",
+        "rm": "-",
+        "stlm_dt": "2023-12-31",
+        "fscl_year": "-",
+        "stk_bsd_pd_mendng_totamt": "-",
+        "stk_opt_exrcsbl_qty": "-",
+        "stk_opt_unexrcsbl_qty": "-",
+        "stk_opt_rmn_blce": "-",
+        "othr_stk_bsd_cmpn_unpyd_qty": "-",
+        "othr_stk_bsd_cmpn_mkt_vl": "-"
+      }
+    ],
+    "financials": {
+      "fs_div": "CFS",
+      "status": "000",
+      "매출액": {
+        "당기": "13858493766",
+        "전기": "15773791755"
+      },
+      "영업이익": {
+        "당기": "218773844",
+        "전기": "2566135736"
+      },
+      "당기순이익": {
+        "당기": "842932802",
+        "전기": "2238845063"
+      },
+      "자산총계": {
+        "당기": "97204153602",
+        "전기": "75328601022"
+      },
+      "자본총계": {
+        "당기": "45636461171",
+        "전기": "45753210404"
+      },
+      "부채총계": {
+        "당기": "51567692431",
+        "전기": "29575390618"
+      }
+    }
+  },
+  "2024": {
+    "empStatus": {
+      "status": "000",
+      "rows": [
+        {
+          "부문": "연구직",
+          "성별": "남",
+          "정규직": "11",
+          "합계": "11",
+          "평균근속": "1.9",
+          "연간급여총액": "722,625,000",
+          "1인평균급여액": "65,693,000",
+          "비고": "-"
+        },
+        {
+          "부문": "연구직",
+          "성별": "여",
+          "정규직": "8",
+          "합계": "8",
+          "평균근속": "2.0",
+          "연간급여총액": "379,984,000",
+          "1인평균급여액": "47,498,000",
+          "비고": "-"
+        },
+        {
+          "부문": "영업직",
+          "성별": "남",
+          "정규직": "25",
+          "합계": "25",
+          "평균근속": "1.8",
+          "연간급여총액": "1,420,277,000",
+          "1인평균급여액": "56,811,000",
+          "비고": "-"
+        },
+        {
+          "부문": "영업직",
+          "성별": "여",
+          "정규직": "54",
+          "합계": "54",
+          "평균근속": "2.7",
+          "연간급여총액": "2,501,685,000",
+          "1인평균급여액": "46,327,000",
+          "비고": "-"
+        },
+        {
+          "부문": "관리직",
+          "성별": "남",
+          "정규직": "12",
+          "합계": "13",
+          "평균근속": "3.6",
+          "연간급여총액": "947,020,000",
+          "1인평균급여액": "72,848,000",
+          "비고": "-"
+        },
+        {
+          "부문": "관리직",
+          "성별": "여",
+          "정규직": "27",
+          "합계": "29",
+          "평균근속": "3.6",
+          "연간급여총액": "1,533,645,000",
+          "1인평균급여액": "52,884,000",
+          "비고": "-"
+        }
+      ]
+    },
+    "execStatus": {
+      "status": "000",
+      "count": 10,
+      "sample": [
+        {
+          "성명": "김종원",
+          "직위": "대표이사",
+          "등기여부": "사내이사",
+          "상근여부": "상근"
+        },
+        {
+          "성명": "이재용",
+          "직위": "이사",
+          "등기여부": "미등기",
+          "상근여부": "상근"
+        },
+        {
+          "성명": "정회창",
+          "직위": "이사",
+          "등기여부": "사내이사",
+          "상근여부": "상근"
+        },
+        {
+          "성명": "정균태",
+          "직위": "기타\n비상무이사",
+          "등기여부": "기타비상무이사",
+          "상근여부": "비상근"
+        },
+        {
+          "성명": "김재철",
+          "직위": "사외이사",
+          "등기여부": "사외이사",
+          "상근여부": "비상근"
+        }
+      ]
+    },
+    "hmvAuditAllSttus": [
+      {
+        "rcept_no": "20250312001001",
+        "corp_cls": "K",
+        "corp_code": "01236532",
+        "corp_name": "와이즈버즈",
+        "nmpr": "5",
+        "jan_avrg_mendng_am": "102,000,000",
+        "mendng_totamt": "508,000,000",
+        "rm": "-",
+        "stlm_dt": "2024-12-31",
+        "fscl_year": "-",
+        "stk_bsd_pd_mendng_totamt": "-",
+        "stk_opt_exrcsbl_qty": "-",
+        "stk_opt_unexrcsbl_qty": "-",
+        "stk_opt_rmn_blce": "-",
+        "othr_stk_bsd_cmpn_unpyd_qty": "-",
+        "othr_stk_bsd_cmpn_mkt_vl": "-"
+      }
+    ],
+    "drctrAdtAllMendngSttusGmtsckConfmAmount": [
+      {
+        "rcept_no": "20250312001001",
+        "corp_cls": "K",
+        "corp_code": "01236532",
+        "corp_name": "와이즈버즈",
+        "se": "이사",
+        "nmpr": "4",
+        "gmtsck_confm_amount": "1,000,000,000",
+        "rm": "-",
+        "stlm_dt": "2024-12-31",
+        "fscl_year": "-"
+      },
+      {
+        "rcept_no": "20250312001001",
+        "corp_cls": "K",
+        "corp_code": "01236532",
+        "corp_name": "와이즈버즈",
+        "se": "감사",
+        "nmpr": "1",
+        "gmtsck_confm_amount": "100,000,000",
+        "rm": "-",
+        "stlm_dt": "2024-12-31",
+        "fscl_year": "-"
+      }
+    ],
+    "drctrAdtAllMendngSttusMendngPymntamtTyCl": [
+      {
+        "rcept_no": "20250312001001",
+        "corp_cls": "K",
+        "corp_code": "01236532",
+        "corp_name": "와이즈버즈",
+        "se": "등기이사(사외이사, 감사위원회 위원 제외)",
+        "nmpr": "3",
+        "pymnt_totamt": "403,000,000",
+        "psn1_avrg_pymntamt": "143,000,000",
+        "rm": "-",
+        "stlm_dt": "2024-12-31",
+        "fscl_year": "-",
+        "stk_bsd_pd_mendng_totamt": "-",
+        "stk_opt_exrcsbl_qty": "-",
+        "stk_opt_unexrcsbl_qty": "-",
+        "stk_opt_rmn_blce": "-",
+        "othr_stk_bsd_cmpn_unpyd_qty": "-",
+        "othr_stk_bsd_cmpn_mkt_vl": "-"
+      },
+      {
+        "rcept_no": "20250312001001",
+        "corp_cls": "K",
+        "corp_code": "01236532",
+        "corp_name": "와이즈버즈",
+        "se": "사외이사(감사위원회 위원 제외)",
+        "nmpr": "1",
+        "pymnt_totamt": "39,000,000",
+        "psn1_avrg_pymntamt": "39,000,000",
+        "rm": "-",
+        "stlm_dt": "2024-12-31",
+        "fscl_year": "-",
+        "stk_bsd_pd_mendng_totamt": "-",
+        "stk_opt_exrcsbl_qty": "-",
+        "stk_opt_unexrcsbl_qty": "-",
+        "stk_opt_rmn_blce": "-",
+        "othr_stk_bsd_cmpn_unpyd_qty": "-",
+        "othr_stk_bsd_cmpn_mkt_vl": "-"
+      },
+      {
+        "rcept_no": "20250312001001",
+        "corp_cls": "K",
+        "corp_code": "01236532",
+        "corp_name": "와이즈버즈",
+        "se": "감사위원회 위원",
+        "nmpr": "-",
+        "pymnt_totamt": "-",
+        "psn1_avrg_pymntamt": "-",
+        "rm": "-",
+        "stlm_dt": "2024-12-31",
+        "fscl_year": "-",
+        "stk_bsd_pd_mendng_totamt": "-",
+        "stk_opt_exrcsbl_qty": "-",
+        "stk_opt_unexrcsbl_qty": "-",
+        "stk_opt_rmn_blce": "-",
+        "othr_stk_bsd_cmpn_unpyd_qty": "-",
+        "othr_stk_bsd_cmpn_mkt_vl": "-"
+      },
+      {
+        "rcept_no": "20250312001001",
+        "corp_cls": "K",
+        "corp_code": "01236532",
+        "corp_name": "와이즈버즈",
+        "se": "감사",
+        "nmpr": "1",
+        "pymnt_totamt": "39,000,000",
+        "psn1_avrg_pymntamt": "39,000,000",
+        "rm": "-",
+        "stlm_dt": "2024-12-31",
+        "fscl_year": "-",
+        "stk_bsd_pd_mendng_totamt": "-",
+        "stk_opt_exrcsbl_qty": "-",
+        "stk_opt_unexrcsbl_qty": "-",
+        "stk_opt_rmn_blce": "-",
+        "othr_stk_bsd_cmpn_unpyd_qty": "-",
+        "othr_stk_bsd_cmpn_mkt_vl": "-"
+      }
+    ],
+    "financials": {
+      "fs_div": "CFS",
+      "status": "000",
+      "매출액": {
+        "당기": "30787809743",
+        "전기": "13858493766"
+      },
+      "영업이익": {
+        "당기": "2305243307",
+        "전기": "218773844"
+      },
+      "당기순이익": {
+        "당기": "2129498624",
+        "전기": "842932802"
+      },
+      "자산총계": {
+        "당기": "181909424688",
+        "전기": "97204153602"
+      },
+      "자본총계": {
+        "당기": "47697384478",
+        "전기": "45636461171"
+      },
+      "부채총계": {
+        "당기": "134212040210",
+        "전기": "51567692431"
+      }
+    }
+  },
+  "2025": {
+    "empStatus": {
+      "status": "000",
+      "rows": [
+        {
+          "부문": "연구직",
+          "성별": "남",
+          "정규직": "11",
+          "합계": "11",
+          "평균근속": "1.5",
+          "연간급여총액": "688,222,000",
+          "1인평균급여액": "62,566,000",
+          "비고": "-"
+        },
+        {
+          "부문": "연구직",
+          "성별": "여",
+          "정규직": "5",
+          "합계": "5",
+          "평균근속": "2.9",
+          "연간급여총액": "446,790,000",
+          "1인평균급여액": "89,358,000",
+          "비고": "-"
+        },
+        {
+          "부문": "영업직",
+          "성별": "남",
+          "정규직": "25",
+          "합계": "25",
+          "평균근속": "2.4",
+          "연간급여총액": "1,610,270,000",
+          "1인평균급여액": "64,411,000",
+          "비고": "-"
+        },
+        {
+          "부문": "영업직",
+          "성별": "여",
+          "정규직": "68",
+          "합계": "68",
+          "평균근속": "4.1",
+          "연간급여총액": "2,577,127,000",
+          "1인평균급여액": "37,899,000",
+          "비고": "-"
+        },
+        {
+          "부문": "관리직",
+          "성별": "남",
+          "정규직": "12",
+          "합계": "14",
+          "평균근속": "3.3",
+          "연간급여총액": "1,216,458,000",
+          "1인평균급여액": "86,890,000",
+          "비고": "-"
+        },
+        {
+          "부문": "관리직",
+          "성별": "여",
+          "정규직": "37",
+          "합계": "37",
+          "평균근속": "3.5",
+          "연간급여총액": "1,666,465,000",
+          "1인평균급여액": "45,040,000",
+          "비고": "-"
+        }
+      ]
+    },
+    "execStatus": {
+      "status": "000",
+      "count": 11,
+      "sample": [
+        {
+          "성명": "김종원",
+          "직위": "대표이사",
+          "등기여부": "사내이사",
+          "상근여부": "상근"
+        },
+        {
+          "성명": "정회창",
+          "직위": "이사",
+          "등기여부": "미등기",
+          "상근여부": "상근"
+        },
+        {
+          "성명": "강범석",
+          "직위": "이사",
+          "등기여부": "미등기",
+          "상근여부": "상근"
+        },
+        {
+          "성명": "최호준",
+          "직위": "대표이사",
+          "등기여부": "사내이사",
+          "상근여부": "상근"
+        },
+        {
+          "성명": "정균태",
+          "직위": "기타\n비상무이사",
+          "등기여부": "기타비상무이사",
+          "상근여부": "비상근"
+        }
+      ]
+    },
+    "hmvAuditAllSttus": [
+      {
+        "rcept_no": "20260313001171",
+        "corp_cls": "K",
+        "corp_code": "01236532",
+        "corp_name": "와이즈버즈",
+        "nmpr": "7",
+        "jan_avrg_mendng_am": "111,000,000",
+        "mendng_totamt": "774,000,000",
+        "rm": "-",
+        "stlm_dt": "2025-12-31",
+        "fscl_year": "-",
+        "stk_bsd_pd_mendng_totamt": "-",
+        "stk_opt_exrcsbl_qty": "-",
+        "stk_opt_unexrcsbl_qty": "-",
+        "stk_opt_rmn_blce": "-",
+        "othr_stk_bsd_cmpn_unpyd_qty": "-",
+        "othr_stk_bsd_cmpn_mkt_vl": "-"
+      }
+    ],
+    "drctrAdtAllMendngSttusGmtsckConfmAmount": [
+      {
+        "rcept_no": "20260313001171",
+        "corp_cls": "K",
+        "corp_code": "01236532",
+        "corp_name": "와이즈버즈",
+        "se": "이사",
+        "nmpr": "4",
+        "gmtsck_confm_amount": "1,500,000,000",
+        "rm": "-",
+        "stlm_dt": "2025-12-31",
+        "fscl_year": "-"
+      },
+      {
+        "rcept_no": "20260313001171",
+        "corp_cls": "K",
+        "corp_code": "01236532",
+        "corp_name": "와이즈버즈",
+        "se": "감사",
+        "nmpr": "1",
+        "gmtsck_confm_amount": "100,000,000",
+        "rm": "-",
+        "stlm_dt": "2025-12-31",
+        "fscl_year": "-"
+      }
+    ],
+    "drctrAdtAllMendngSttusMendngPymntamtTyCl": [
+      {
+        "rcept_no": "20260313001171",
+        "corp_cls": "K",
+        "corp_code": "01236532",
+        "corp_name": "와이즈버즈",
+        "se": "등기이사(사외이사, 감사위원회 위원 제외)",
+        "nmpr": "4",
+        "pymnt_totamt": "690,000,000",
+        "psn1_avrg_pymntamt": "173,000,000",
+        "rm": "-",
+        "stlm_dt": "2025-12-31",
+        "fscl_year": "-",
+        "stk_bsd_pd_mendng_totamt": "-",
+        "stk_opt_exrcsbl_qty": "-",
+        "stk_opt_unexrcsbl_qty": "-",
+        "stk_opt_rmn_blce": "-",
+        "othr_stk_bsd_cmpn_unpyd_qty": "-",
+        "othr_stk_bsd_cmpn_mkt_vl": "-"
+      },
+      {
+        "rcept_no": "20260313001171",
+        "corp_cls": "K",
+        "corp_code": "01236532",
+        "corp_name": "와이즈버즈",
+        "se": "사외이사(감사위원회 위원 제외)",
+        "nmpr": "1",
+        "pymnt_totamt": "42,000,000",
+        "psn1_avrg_pymntamt": "42,000,000",
+        "rm": "-",
+        "stlm_dt": "2025-12-31",
+        "fscl_year": "-",
+        "stk_bsd_pd_mendng_totamt": "-",
+        "stk_opt_exrcsbl_qty": "-",
+        "stk_opt_unexrcsbl_qty": "-",
+        "stk_opt_rmn_blce": "-",
+        "othr_stk_bsd_cmpn_unpyd_qty": "-",
+        "othr_stk_bsd_cmpn_mkt_vl": "-"
+      },
+      {
+        "rcept_no": "20260313001171",
+        "corp_cls": "K",
+        "corp_code": "01236532",
+        "corp_name": "와이즈버즈",
+        "se": "감사위원회 위원",
+        "nmpr": "-",
+        "pymnt_totamt": "-",
+        "psn1_avrg_pymntamt": "-",
+        "rm": "-",
+        "stlm_dt": "2025-12-31",
+        "fscl_year": "-",
+        "stk_bsd_pd_mendng_totamt": "-",
+        "stk_opt_exrcsbl_qty": "-",
+        "stk_opt_unexrcsbl_qty": "-",
+        "stk_opt_rmn_blce": "-",
+        "othr_stk_bsd_cmpn_unpyd_qty": "-",
+        "othr_stk_bsd_cmpn_mkt_vl": "-"
+      },
+      {
+        "rcept_no": "20260313001171",
+        "corp_cls": "K",
+        "corp_code": "01236532",
+        "corp_name": "와이즈버즈",
+        "se": "감사",
+        "nmpr": "2",
+        "pymnt_totamt": "42,000,000",
+        "psn1_avrg_pymntamt": "21,000,000",
+        "rm": "-",
+        "stlm_dt": "2025-12-31",
+        "fscl_year": "-",
+        "stk_bsd_pd_mendng_totamt": "-",
+        "stk_opt_exrcsbl_qty": "-",
+        "stk_opt_unexrcsbl_qty": "-",
+        "stk_opt_rmn_blce": "-",
+        "othr_stk_bsd_cmpn_unpyd_qty": "-",
+        "othr_stk_bsd_cmpn_mkt_vl": "-"
+      }
+    ],
+    "financials": {
+      "fs_div": "CFS",
+      "status": "000",
+      "매출액": {
+        "당기": "45521333566",
+        "전기": "30787809743"
+      },
+      "영업이익": {
+        "당기": "7575499963",
+        "전기": "2305243307"
+      },
+      "당기순이익": {
+        "당기": "1861695079",
+        "전기": "2129498624"
+      },
+      "자산총계": {
+        "당기": "189729510295",
+        "전기": "181909424688"
+      },
+      "자본총계": {
+        "당기": "49914239292",
+        "전기": "47697384478"
+      },
+      "부채총계": {
+        "당기": "139815271003",
+        "전기": "134212040210"
+      }
+    }
+  }
+}

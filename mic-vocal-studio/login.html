@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html class="dark" lang="ko">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>로그인 — MIC VOCAL</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script src="tw-config.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
+<link href="styles.css" rel="stylesheet"/>
+</head>
+<body class="bg-background text-on-background min-h-screen">
+<main class="w-full max-w-[440px] mx-auto px-container-margin pt-stack-lg pb-12 flex flex-col min-h-screen">
+  <a href="index.html" class="inline-flex items-center gap-1 text-on-surface-variant font-label-sm text-label-sm mb-stack-lg"><span class="material-symbols-outlined text-[18px]" aria-hidden="true">arrow_back</span> 홈으로</a>
+
+  <div class="text-center mb-stack-lg">
+    <div class="w-16 h-16 rounded-full mx-auto mb-4 flex items-center justify-center bg-primary text-on-primary"><span class="material-symbols-outlined text-[32px]" aria-hidden="true" style="font-variation-settings:'FILL' 1">mic_external_on</span></div>
+    <h1 class="font-display-lg text-[26px] font-extrabold text-primary tracking-tighter uppercase">MIC VOCAL</h1>
+    <p class="font-body-md text-body-md text-on-surface-variant mt-1">로그인하고 레슨을 예약하세요</p>
+  </div>
+
+  <div id="tabs" class="flex gap-2 p-1 rounded-full bg-surface-container mb-stack-md">
+    <button data-mode="login" class="flex-1 h-11 rounded-full font-label-md text-label-md transition">로그인</button>
+    <button data-mode="signup" class="flex-1 h-11 rounded-full font-label-md text-label-md transition">회원가입</button>
+  </div>
+
+  <form id="form" class="flex flex-col gap-3" novalidate>
+    <div id="name-field" class="hidden">
+      <label class="font-label-md text-label-md text-on-surface-variant mb-1.5 block">이름</label>
+      <input id="f-name" class="w-full bg-surface-container-high border border-outline-variant/30 rounded-xl px-4 py-3 font-body-md text-body-md text-on-surface placeholder:text-outline outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition" placeholder="홍길동" autocomplete="name"/>
+    </div>
+    <div>
+      <label class="font-label-md text-label-md text-on-surface-variant mb-1.5 block">이메일</label>
+      <input id="f-email" type="email" class="w-full bg-surface-container-high border border-outline-variant/30 rounded-xl px-4 py-3 font-body-md text-body-md text-on-surface placeholder:text-outline outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition" placeholder="you@example.com" autocomplete="email"/>
+    </div>
+    <div>
+      <label class="font-label-md text-label-md text-on-surface-variant mb-1.5 block">비밀번호</label>
+      <input id="f-pw" type="password" class="w-full bg-surface-container-high border border-outline-variant/30 rounded-xl px-4 py-3 font-body-md text-body-md text-on-surface placeholder:text-outline outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition" placeholder="••••" autocomplete="current-password"/>
+    </div>
+    <p id="err" class="hidden font-label-sm text-label-sm text-error px-1"></p>
+    <button id="submit" type="submit" class="h-13 py-4 rounded-full bg-primary text-on-primary font-label-md text-label-md active:scale-[.98] transition mt-1">로그인</button>
+  </form>
+
+  <div class="mt-auto pt-stack-lg">
+    <div class="rounded-2xl bg-surface-container border border-outline-variant/10 p-4">
+      <div class="font-label-sm text-label-sm text-on-surface-variant mb-2">🔑 데모 계정 (클릭하면 자동 입력)</div>
+      <div class="flex flex-col gap-1.5">
+        <button class="demo-acc text-left font-label-sm text-label-sm text-on-surface hover:text-primary transition" data-email="director@mic.com">👑 원장 — director@mic.com / 1234</button>
+        <button class="demo-acc text-left font-label-sm text-label-sm text-on-surface hover:text-primary transition" data-email="lee@mic.com">🎤 강사 — lee@mic.com / 1234</button>
+        <button class="demo-acc text-left font-label-sm text-label-sm text-on-surface hover:text-primary transition" data-email="student@mic.com">🎓 학생 — student@mic.com / 1234</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<div class="toast" id="mic-toast" style="display:none"></div>
+<script src="domain.js"></script>
+<script src="app.js"></script>
+<script src="auth.js"></script>
+<script>
+const A=MIC.auth, $=s=>document.querySelector(s);
+let mode='login';
+const params=new URLSearchParams(location.search);
+const dest=params.get('to')||'index.html';
+
+function renderTabs(){
+  document.querySelectorAll('[data-mode]').forEach(b=>{
+    const on=b.dataset.mode===mode;
+    b.className=`flex-1 h-11 rounded-full font-label-md text-label-md transition ${on?'bg-primary text-on-primary':'text-on-surface-variant'}`;
+  });
+  $('#name-field').classList.toggle('hidden', mode!=='login'?false:true);
+  $('#submit').textContent = mode==='login'?'로그인':'가입하고 시작하기';
+  $('#f-pw').autocomplete = mode==='login'?'current-password':'new-password';
+  $('#err').classList.add('hidden');
+}
+function showErr(m){const e=$('#err');e.textContent=m;e.classList.remove('hidden');}
+
+document.addEventListener('click',e=>{
+  const t=e.target.closest('[data-mode]'); if(t){mode=t.dataset.mode;renderTabs();}
+  const d=e.target.closest('.demo-acc'); if(d){mode='login';renderTabs();$('#f-email').value=d.dataset.email;$('#f-pw').value='1234';}
+});
+$('#form').addEventListener('submit',e=>{
+  e.preventDefault();
+  const email=$('#f-email').value, pw=$('#f-pw').value, name=$('#f-name').value;
+  if(mode==='login'){
+    const u=A.login(email,pw);
+    if(!u){showErr('이메일 또는 비밀번호가 올바르지 않습니다');return;}
+    location.replace(dest);
+  } else {
+    const r=A.signup({email,pw,name});
+    if(r.error){showErr(r.error);return;}
+    location.replace(dest);
+  }
+});
+renderTabs();
+</script>
+</body>
+</html>

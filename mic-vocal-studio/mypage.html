@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html class="dark" lang="ko">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>마이페이지 — MIC VOCAL</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script src="tw-config.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
+<link href="styles.css" rel="stylesheet"/>
+</head>
+<body class="bg-background text-on-background min-h-screen pb-28 pt-16">
+<main class="w-full max-w-[720px] mx-auto px-container-margin py-stack-md flex flex-col gap-stack-md">
+
+  <!-- profile -->
+  <section class="flex items-center gap-4 rounded-3xl bg-surface-container border border-outline-variant/10 p-stack-md">
+    <div class="w-16 h-16 rounded-full bg-primary-container/40 border border-primary/20 flex items-center justify-center text-[30px]">🎤</div>
+    <div class="flex-1 min-w-0">
+      <h2 class="font-headline-md text-headline-md text-on-surface">게스트 수강생</h2>
+      <p class="font-body-md text-body-md text-on-surface-variant">마이크보컬스튜디오 회원</p>
+    </div>
+    <a href="booking.html" class="h-10 px-4 rounded-full bg-primary text-on-primary font-label-sm text-label-sm flex items-center gap-1 active:scale-95 transition"><span class="material-symbols-outlined text-[18px]">add</span>예약</a>
+  </section>
+
+  <!-- summary -->
+  <section class="grid grid-cols-3 gap-2">
+    <div class="rounded-2xl bg-surface-container border border-outline-variant/10 p-4 text-center"><div id="sum-book" class="font-headline-md text-headline-md text-primary">0</div><div class="font-label-sm text-label-sm text-on-surface-variant mt-0.5">예약</div></div>
+    <div class="rounded-2xl bg-surface-container border border-outline-variant/10 p-4 text-center"><div id="sum-pay" class="font-headline-md text-headline-md text-primary">0</div><div class="font-label-sm text-label-sm text-on-surface-variant mt-0.5">결제</div></div>
+    <div class="rounded-2xl bg-surface-container border border-outline-variant/10 p-4 text-center"><div id="sum-pass" class="font-headline-md text-headline-md text-primary">0</div><div class="font-label-sm text-label-sm text-on-surface-variant mt-0.5">수강권</div></div>
+  </section>
+
+  <!-- 운영 콘솔 진입 (원장/강사용) -->
+  <a href="admin.html" class="flex items-center gap-3 rounded-2xl bg-surface-container border border-outline-variant/10 p-4 active:scale-[.99] transition">
+    <div class="w-11 h-11 rounded-xl bg-primary/15 flex items-center justify-center shrink-0"><span class="material-symbols-outlined text-primary" aria-hidden="true" style="font-variation-settings:'FILL' 1">workspace_premium</span></div>
+    <div class="flex-1"><div class="font-label-md text-label-md text-on-surface">원장 운영 콘솔</div><div class="font-label-sm text-label-sm text-on-surface-variant">매출·강사 수당·입퇴사·휴가 관리</div></div>
+    <span class="material-symbols-outlined text-on-surface-variant" aria-hidden="true">chevron_right</span>
+  </a>
+
+  <div id="tabs" class="flex gap-6 border-b border-outline-variant/15"></div>
+  <div id="content" class="flex flex-col gap-stack-sm"></div>
+</main>
+
+<!-- CANCEL SHEET -->
+<div id="cancel-sheet" class="modal-overlay fixed inset-0 z-[100] bg-black/85 backdrop-blur-sm flex items-end sm:items-center justify-center">
+  <div class="sheet w-full max-w-[420px] bg-surface-container rounded-t-3xl sm:rounded-3xl border border-outline-variant/15" role="dialog" aria-modal="true" aria-labelledby="cs-title">
+    <div class="flex items-center justify-between p-5 border-b border-outline-variant/10">
+      <h3 id="cs-title" class="font-headline-md text-headline-md text-on-surface">예약 취소</h3>
+      <button data-csclose class="w-9 h-9 rounded-full text-on-surface-variant hover:bg-surface-variant flex items-center justify-center" aria-label="닫기"><span class="material-symbols-outlined" aria-hidden="true">close</span></button>
+    </div>
+    <div id="cs-body" class="p-5"></div>
+  </div>
+</div>
+
+<script src="domain.js"></script>
+<script src="app.js"></script>
+<script src="auth.js"></script>
+<script>
+MIC.auth.requireRole('mypage');
+const {$,$$,store,KRW,esc,toast,trapFocus}=MIC;
+const D=window.DOMAIN;
+const TODAY=new Date(2026,5,14);
+const PASS_TOTAL={'4회권':4,'12회권':12,'정기권':Infinity};
+const SLOTS=['13:00','14:00','15:00','16:00','17:00','18:00','19:00','20:00','21:00'];
+let tab='bookings';
+const TABS=[['bookings','예약 내역'],['payments','결제 내역'],['passes','보유 수강권']];
+function fmt(ts){const d=new Date(ts);return `${d.getFullYear()}.${String(d.getMonth()+1).padStart(2,'0')}.${String(d.getDate()).padStart(2,'0')}`;}
+function empty(icon,t,s){return `<div class="text-center py-16 text-on-surface-variant"><span class="material-symbols-outlined text-5xl opacity-40">${icon}</span><p class="font-body-lg text-body-lg text-on-surface-variant mt-3">${t}</p><p class="font-label-sm text-label-sm mt-1">${s}</p><a href="booking.html" class="inline-block mt-5 h-11 leading-[44px] px-6 rounded-full bg-surface-variant text-on-surface font-label-md text-label-md active:scale-95 transition">예약하러 가기</a></div>`;}
+
+function renderSummary(){
+  $('#sum-book').textContent=store.get('bookings',[]).length;
+  $('#sum-pay').textContent=store.get('payments',[]).length;
+  $('#sum-pass').textContent=store.get('passes',[]).length;
+}
+function renderTabs(){
+  $('#tabs').innerHTML=TABS.map(([k,l])=>`<button data-tab="${k}" class="py-3 -mb-px border-b-2 font-label-md text-label-md transition ${k===tab?'border-primary text-primary':'border-transparent text-on-surface-variant'}">${l}</button>`).join('');
+}
+function item(icon,title,sub,right){
+  return `<div class="flex items-center gap-3 p-4 rounded-2xl bg-surface-container border border-outline-variant/10">
+    <div class="w-11 h-11 rounded-xl bg-primary/15 flex items-center justify-center shrink-0"><span class="material-symbols-outlined text-primary">${icon}</span></div>
+    <div class="flex-1 min-w-0"><div class="font-label-md text-label-md text-on-surface truncate">${title}</div><div class="font-label-sm text-label-sm text-on-surface-variant truncate">${sub}</div></div>
+    <div class="text-right shrink-0">${right}</div></div>`;
+}
+function renderContent(){
+  const c=$('#content');
+  if(tab==='bookings'){
+    const l=store.get('bookings',[]).sort((a,b)=>b.createdAt-a.createdAt);
+    c.innerHTML=l.length?l.map(b=>{const past=new Date(b.date)<TODAY;
+      const right = b.offday
+        ? `<span class="px-2 py-1 rounded-full bg-error-container/40 text-error font-label-sm text-label-sm">휴강</span><div class="font-label-sm text-[10px] text-outline mt-1">코치 휴강 안내</div>`
+        : `<span class="px-2 py-1 rounded-full font-label-sm text-label-sm ${past?'bg-surface-variant text-on-surface-variant':'bg-primary/15 text-primary'}">${past?'완료':'예정'}</span>`
+          + (!past?`<button data-cancel="${b.id}" class="block mt-2 ml-auto px-3 py-1 rounded-full bg-surface-variant text-on-surface-variant font-label-sm text-label-sm hover:text-error active:scale-95 transition">변경·취소</button>`:`<div class="font-label-sm text-[10px] text-outline mt-1">${b.id}</div>`);
+      return item('event', `${esc(b.coach)} 코치 레슨`, `${b.date} ${b.time}`, right);
+    }).join(''):empty('event_busy','예약 내역이 없어요','레슨을 예약하면 여기에 표시됩니다');
+  }
+  if(tab==='payments'){
+    const l=store.get('payments',[]).sort((a,b)=>b.createdAt-a.createdAt);
+    c.innerHTML=l.length?l.map(p=>item('receipt_long', esc(p.name), `${fmt(p.createdAt)} · ${esc(p.method)} · ${p.id}`,
+      `<div class="font-label-md text-label-md text-on-surface">${KRW(p.amount)}</div><span class="inline-block mt-1 px-2 py-0.5 rounded-full bg-primary/15 text-primary font-label-sm text-[10px]">결제완료</span>`)).join('')
+      :empty('receipt','결제 내역이 없어요','수강권·레슨을 결제하면 표시됩니다');
+  }
+  if(tab==='passes'){
+    const l=store.get('passes',[]).sort((a,b)=>b.boughtAt-a.boughtAt);
+    const used=store.get('passUsed',{});
+    c.innerHTML=l.length?l.map(p=>{
+      const total=PASS_TOTAL[p.name];
+      let right, sub=`구매일 ${fmt(p.boughtAt)}`;
+      if(total===Infinity){
+        right=`<span class="px-2 py-1 rounded-full bg-success-container text-success font-label-sm text-label-sm">무제한</span>`;
+        sub+=' · 기간 내 무제한';
+      } else if(total){
+        const r=D.passRemaining({total}, used[p.id]||0);
+        right=`<div class="font-headline-md text-headline-md ${r.expired?'text-on-surface-variant':'text-primary'}">${r.remaining}<span class="font-label-sm text-label-sm text-on-surface-variant">/${total}회</span></div><span class="inline-block mt-1 px-2 py-0.5 rounded-full font-label-sm text-[10px] ${r.expired?'bg-surface-variant text-on-surface-variant':'bg-success-container text-success'}">${r.expired?'소진':'잔여'}</span>`;
+        sub+=` · 잔여 ${r.remaining}회`;
+      } else {
+        right=`<span class="px-2 py-1 rounded-full bg-success-container text-success font-label-sm text-label-sm">활성</span>`;
+      }
+      return item('confirmation_number', esc(p.name), sub, right);
+    }).join(''):empty('confirmation_number','보유한 수강권이 없어요','수강권을 결제하면 표시됩니다');
+  }
+}
+
+/* 예약 취소·환불 */
+let csFocus=null, csRelease=null, cancelId=null;
+function openCancel(bid){
+  const b=store.get('bookings',[]).find(x=>x.id===bid); if(!b)return;
+  cancelId=bid; csFocus=document.activeElement;
+  const start=Date.parse(`${b.date}T${b.time}:00`);
+  const refund=D.calcRefund(b.price, start, TODAY.getTime());
+  const pct=b.price?Math.round(refund/b.price*100):0;
+  $('#cs-body').innerHTML=`
+    <div class="rounded-2xl bg-surface-container-high p-4 mb-4">
+      <div class="font-label-md text-label-md text-on-surface">${esc(b.coach)} 코치 레슨</div>
+      <div class="font-label-sm text-label-sm text-on-surface-variant mt-1">${b.date} ${b.time} · 결제 ${KRW(b.price)}</div>
+    </div>
+    <!-- 일정 변경 -->
+    <div class="rounded-2xl border border-outline-variant/20 p-4 mb-4">
+      <div class="font-label-md text-label-md text-on-surface mb-3">📅 일정 변경</div>
+      <div class="flex gap-2 mb-3">
+        <input id="cs-date" type="date" value="${b.date}" min="2026-06-15" class="flex-1 bg-surface-container-high border border-outline-variant/30 rounded-xl px-3 py-2.5 font-body-md text-body-md text-on-surface outline-none focus:border-primary"/>
+        <select id="cs-time" class="bg-surface-container-high border border-outline-variant/30 rounded-xl px-3 py-2.5 font-body-md text-body-md text-on-surface outline-none focus:border-primary">${SLOTS.map(s=>`<option ${s===b.time?'selected':''}>${s}</option>`).join('')}</select>
+      </div>
+      <button id="cs-change" class="w-full h-11 rounded-full bg-primary text-on-primary font-label-md text-label-md active:scale-95 transition">이 시간으로 변경</button>
+      <p class="font-label-sm text-label-sm text-on-surface-variant mt-2">* 레슨 24시간 전까지 무료 변경</p>
+    </div>
+    <!-- 예약 취소 -->
+    <div class="rounded-2xl border border-outline-variant/20 p-4">
+      <div class="flex justify-between items-center mb-1"><span class="font-label-md text-label-md text-on-surface">❌ 예약 취소</span><span class="font-headline-md text-headline-md text-primary">${KRW(refund)} 환불</span></div>
+      <p class="font-label-sm text-label-sm text-on-surface-variant mb-3">24시간 전 100% · 24~2시간 50% · 이내 0% (현재 ${pct}%)</p>
+      <button id="cs-confirm" class="w-full h-11 rounded-full bg-error-container/50 text-error font-label-md text-label-md active:scale-95 transition">취소하고 ${KRW(refund)} 환불</button>
+    </div>`;
+  $('#cancel-sheet').classList.add('show'); document.body.style.overflow='hidden';
+  csRelease=trapFocus($('#cancel-sheet'));
+}
+function closeCancel(){$('#cancel-sheet').classList.remove('show');document.body.style.overflow='';if(csRelease){csRelease();csRelease=null;}if(csFocus&&csFocus.focus)csFocus.focus();}
+function doCancel(){
+  const bks=store.get('bookings',[]); const b=bks.find(x=>x.id===cancelId); if(!b){closeCancel();return;}
+  const start=Date.parse(`${b.date}T${b.time}:00`);
+  const refund=D.calcRefund(b.price, start, TODAY.getTime());
+  store.set('bookings', bks.filter(x=>x.id!==cancelId));
+  if(b.payId){const ps=store.get('payments',[]); const p=ps.find(x=>x.id===b.payId); if(p){p.refundedAmount=refund; store.set('payments',ps);}}
+  // 수강권으로 예약했었다면 회차 복원
+  if(b.usedPass){const u=store.get('passUsed',{}); if(u[b.usedPass]){u[b.usedPass]=Math.max(0,u[b.usedPass]-1); store.set('passUsed',u);}}
+  closeCancel();
+  toast('예약이 취소되었어요', b.usedPass?'수강권 회차가 복원되었어요':(refund>0?`${KRW(refund)} 환불 예정`:'환불 대상이 아닙니다'),'success');
+  renderSummary(); renderContent();
+}
+function doChange(){
+  const bks=store.get('bookings',[]); const b=bks.find(x=>x.id===cancelId); if(!b){closeCancel();return;}
+  const nd=document.getElementById('cs-date').value, nt=document.getElementById('cs-time').value;
+  if(!nd||!nt)return;
+  if(nd===b.date && nt===b.time){toast('변경 사항이 없어요','다른 날짜·시간을 선택하세요','info');return;}
+  const start=b.start||Date.parse(`${b.date}T${b.time}:00`);
+  const newSlot={coachId:b.coachId,date:nd,time:nt,start:Date.parse(`${nd}T${nt}:00`)};
+  const others=bks.filter(x=>x.id!==cancelId);
+  const r=D.applyScheduleChange(Object.assign({},b,{start}), newSlot, others, TODAY.getTime());
+  if(!r.ok){toast(r.reason==='too_late'?'변경 시한(24시간)이 지났어요':'그 시간은 이미 예약돼 있어요','다른 시간을 선택하세요','error');return;}
+  const idx=bks.findIndex(x=>x.id===cancelId); bks[idx]=r.booking; store.set('bookings',bks);
+  closeCancel(); toast('일정이 변경되었어요',`${nd} ${nt}로 변경 완료`,'success'); renderContent();
+}
+document.addEventListener('click',e=>{
+  const t=e.target.closest('[data-tab]');if(t){tab=t.dataset.tab;renderTabs();renderContent();}
+  const cb=e.target.closest('[data-cancel]');if(cb)openCancel(cb.dataset.cancel);
+  if(e.target.closest('[data-csclose]')||e.target.id==='cancel-sheet')closeCancel();
+  if(e.target.id==='cs-change')doChange();
+  if(e.target.id==='cs-confirm')doCancel();
+});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeCancel();});
+renderSummary();renderTabs();renderContent();
+MIC.chrome({active:'my'});
+</script>
+</body>
+</html>

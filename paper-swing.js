@@ -34,7 +34,8 @@ const CAPITAL = 10_000_000;
 const FEE_BPS = 1.5;
 const MIN_PRICE = 2_000;
 const VOL_SHADOW = Number(process.env.VOL_SHADOW ?? 0);
-const VOL_WINDOW = Number(process.env.VOL_WINDOW ?? 20);
+// 장기 백테스트 비교 결과 기준 기본 window를 30으로 맞춘다.
+const VOL_WINDOW = Number(process.env.VOL_WINDOW ?? 30);
 const VOL_REF_LOOKBACK = Number(process.env.VOL_REF_LOOKBACK ?? 252);
 
 // 백테스트(2023~2026) 검증 결과 반영: swing-mom·overnight 탈락, combo(v2) 추가
