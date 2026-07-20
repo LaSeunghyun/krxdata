@@ -290,6 +290,27 @@ while (true) {
   try { tick = await getTickers([...new Set([...open.map(p => p.market), 'KRW-BTC'])]); }
   catch (e) { log(`시세 실패(재시도): ${e.message.slice(0, 60)}`); await new Promise(r => setTimeout(r, POLL_MS)); continue; }
   if (state.btcBench == null && tick.get('KRW-BTC')) state.btcBench = tick.get('KRW-BTC').price;
+  // 교훈#5 상태 정합성(KAITO 수동매도 사례): 5분마다 실계좌 잔고와 대조 → phantom 포지션(잔고 0인데 open) 자가치유.
+  if (!state._lastRecon || Date.now() - state._lastRecon >= 300_000) {
+    state._lastRecon = Date.now();
+    try {
+      const accts = await getUpbitAccounts(); // 401이면 catch로 (교훈#6 IP 알림)
+      const balMap = new Map(accts.map(a => [`KRW-${a.currency}`, Number(a.balance) + Number(a.locked)]));
+      for (const p of open) {
+        const bal = balMap.get(p.market) ?? 0;
+        if (bal * (tick.get(p.market)?.price ?? 0) < 5_000 && p.status === 'open') {
+          p.status = 'closed'; p.pnl = p.pnl ?? 0; p.reason = 'external_close';
+          log(`[상태정합] ${p.market} 실잔고 0(외부/수동 청산) → phantom 포지션 정리`);
+        }
+      }
+      state._ipAlerted = false;
+    } catch (e) {
+      if (String(e.message).includes('no_authorization_ip') && !state._ipAlerted) {
+        state._ipAlerted = true;
+        log(`⚠️ [IP인증실패 경보] 현재 IP가 업비트 미등록 — 매수/매도/조회 전면 불가. 손절 미집행 위험. 업비트 Open API IP 갱신 필요! (반복 스팸 방지로 1회만 경보)`);
+      }
+    }
+  }
   // 재량 판단의 규칙화 (2026-07-20): 3분마다 각 포지션 지표 재계산 → 과열 자동익절 / 지표붕괴 조기손절.
   // "1초마다 내가 판단해서 매매"를 실행가능형으로: 판단을 엔진 규칙으로 심어 10초 루프가 자동 집행.
   const INDIC_REFRESH_MS = 180_000;
@@ -307,6 +328,8 @@ while (true) {
         if (sig.rsi > 70 && sig.pctB >= 1.0 && ret > 0.5) { p._discSell = `과열익절(RSI${sig.rsi.toFixed(0)},%B${sig.pctB.toFixed(2)},+${ret.toFixed(1)}%)`; }
         // 지표붕괴 조기손절: MACD 음전 + RSI<45 + 손실 중 → -10% 기다리지 말고 조기 컷
         else if (sig.macd && sig.macd.hist < 0 && sig.rsi < 45 && ret < -3) { p._discSell = `지표붕괴 조기손절(RSI${sig.rsi.toFixed(0)},MACD음전,${ret.toFixed(1)}%)`; }
+        // 교훈#4 정체 청산(ONG 사례): 36h+ 보유 & 손실 중 & score<50(추세 실종) → 죽은 자본 회수
+        else if (p.buyAt && (Date.now() - p.buyAt) >= 36 * 3_600_000 && ret < 0 && sig.score < 50) { p._discSell = `정체청산(${((Date.now() - p.buyAt) / 3_600_000).toFixed(0)}h,score${sig.score},${ret.toFixed(1)}%)`; }
       } catch { /* skip */ }
     }
   }
