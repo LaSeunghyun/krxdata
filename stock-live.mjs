@@ -87,9 +87,22 @@ async function pickCandidate(cashCeil, heldSet = new Set()) {
   return { regime, cands, pick: cands[0] ?? null, rsiCount, hiCount };
 }
 
-const accounts = await getAccounts();
-const seq = accounts[0]?.accountSeq;
-if (seq == null) { log('토스 계좌 조회 실패 — 중단'); process.exit(1); }
+// 시작 계좌 조회: 네트워크 블립("fetch failed")에 즉사하지 않도록 재시도(최대 10회, 지수백오프).
+// keeper 5분 thrash 방지 + 시작 직후 포지션 무감시 구간 최소화.
+async function getAccountsResilient() {
+  for (let i = 0; i < 10; i++) {
+    try { return await getAccounts(); }
+    catch (e) {
+      const wait = Math.min(30_000, 3_000 * (i + 1));
+      log(`시작 계좌 조회 실패(${i + 1}/10, ${wait / 1000}s 후 재시도): ${String(e.message).slice(0, 60)}`);
+      await new Promise(r => setTimeout(r, wait));
+    }
+  }
+  return null;
+}
+const accounts = await getAccountsResilient();
+const seq = accounts?.[0]?.accountSeq;
+if (seq == null) { log('토스 계좌 조회 실패(10회 소진) — 중단, keeper 재기동 대기'); process.exit(1); }
 
 // ── PLAN: 미리보기 ────────────────────────────────────────────
 if (argv.includes('--plan')) {
