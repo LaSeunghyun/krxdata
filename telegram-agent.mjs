@@ -1,0 +1,79 @@
+#!/usr/bin/env node
+/**
+ * telegram-agent.mjs — krxdata 주식 시스템 텔레그램 어시스턴트 (조회·분석·운영, 2026-07-21).
+ *   롱폴 getUpdates → 승인된 chat_id 메시지만 → claude -p(조회/분석/운영, 실주문·코드수정·웹 차단) → 자연어 응답.
+ *   전제: .env의 TELEGRAM_BOT_TOKEN/CHAT_ID + CLAUDE_CODE_OAUTH_TOKEN, claude CLI 설치. systemd 상시.
+ *   킬스위치: "STOP"→일시정지(.bot-paused), "START"→재개.
+ *   안전: (1)chat_id 잠금=본인만 (2)allowedTools 화이트리스트로 Write/Edit/Web 차단 (3)시스템프롬프트로 주문·--go 금지.
+ */
+import { spawn } from 'child_process';
+import { existsSync, writeFileSync, unlinkSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import dotenv from 'dotenv';
+const __dirname = dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: join(__dirname, '.env') });
+
+const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const CHAT = String(process.env.TELEGRAM_CHAT_ID || '');
+const PAUSE = join(__dirname, '.bot-paused');
+if (!TOKEN || !CHAT) { console.error('TELEGRAM_BOT_TOKEN/CHAT_ID 미설정'); process.exit(1); }
+if (!process.env.CLAUDE_CODE_OAUTH_TOKEN && !process.env.ANTHROPIC_API_KEY) { console.error('CLAUDE_CODE_OAUTH_TOKEN 미설정'); process.exit(1); }
+
+const api = (m, body) => fetch(`https://api.telegram.org/bot${TOKEN}/${m}`,
+  { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json()).catch(e => ({ ok: false, e: e.message }));
+async function send(text) {
+  const t = String(text || '(빈 응답)');
+  for (let i = 0; i < t.length; i += 3800) await api('sendMessage', { chat_id: CHAT, text: t.slice(i, i + 3800) });
+}
+
+const SYS = `너는 krxdata 주식 자동매매 시스템(~/krxdata, VM)의 텔레그램 어시스턴트다.
+역할(가능): 계좌·포지션·손익 조회(toss-api getHoldings/getBuyingPower), 예측(forecast_ledger)·수급(stock_investor_flows) Supabase 조회,
+  종목/전략 분석, node stock-live.mjs --plan(미리보기), 운영(sudo systemctl status/restart stock-live, journalctl -u stock-live).
+절대 금지: 실주문 집행(createOrder 호출, stock-live.mjs를 --go로 실행 절대 금지), 코드 파일 수정·삭제, 외부 웹 접근.
+  주문/매수/매도 실행 요청을 받으면 거부하고 "봇은 조회·분석·운영만 한다"고 답하라.
+한국어로, 사람이 읽기 쉽게 간결히 답하라. 숫자는 근거와 함께.`;
+
+// 화이트리스트 명령만 허용 (임의 셸/주문 불가). bypassPermissions 미사용 → 비허용 도구는 헤드리스에서 자동 거부.
+const ALLOWED = [
+  'Read', 'Glob', 'Grep',
+  'Bash(node status.mjs:*)',                 // 읽기전용 계좌·포지션·예측 요약
+  'Bash(node stock-live.mjs --plan:*)',      // 매수 미리보기(주문 없음)
+  'Bash(node forecast-skill.mjs:*)',         // 예측 skill 게이트
+  'Bash(sudo systemctl status stock-live:*)',
+  'Bash(sudo systemctl restart stock-live:*)',
+  'Bash(sudo journalctl -u stock-live:*)',
+].join(',');
+function ask(prompt) {
+  return new Promise((resolve) => {
+    const args = ['-p', prompt, '--append-system-prompt', SYS,
+      '--allowedTools', ALLOWED, '--disallowedTools', 'Write,Edit,WebFetch,WebSearch'];
+    const cp = spawn('claude', args, { cwd: __dirname, env: process.env });
+    let out = '', err = '';
+    cp.stdout.on('data', d => out += d);
+    cp.stderr.on('data', d => err += d);
+    const timer = setTimeout(() => { cp.kill(); resolve('⏱️ 응답 시간초과(180s)'); }, 180000);
+    cp.on('close', (code) => { clearTimeout(timer); resolve(out.trim() || `(claude 종료 ${code}) ${err.slice(0, 300)}`); });
+    cp.on('error', e => { clearTimeout(timer); resolve('claude 실행 실패(설치/토큰 확인): ' + e.message); });
+  });
+}
+
+let offset = 0;
+console.log('[telegram-agent] 시작 — chat_id 잠금:', CHAT);
+while (true) {
+  try {
+    const r = await api('getUpdates', { offset, timeout: 30 });
+    for (const u of (r.result || [])) {
+      offset = u.update_id + 1;
+      const msg = u.message; if (!msg?.text) continue;
+      if (String(msg.chat.id) !== CHAT) { console.log('무시(미승인 chat):', msg.chat.id); continue; }
+      const text = msg.text.trim();
+      if (text === 'STOP') { writeFileSync(PAUSE, '1'); await send('⏸️ 봇 일시정지. 재개: START'); continue; }
+      if (text === 'START') { if (existsSync(PAUSE)) unlinkSync(PAUSE); await send('▶️ 봇 재개'); continue; }
+      if (existsSync(PAUSE)) continue;
+      await api('sendChatAction', { chat_id: CHAT, action: 'typing' });
+      const reply = await ask(text);
+      await send(reply);
+    }
+  } catch (e) { console.error('poll 오류:', e.message); await new Promise(r => setTimeout(r, 5000)); }
+}
