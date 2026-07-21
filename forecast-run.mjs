@@ -27,9 +27,9 @@ import { isTossConfigured, getDailyCandles, getKrMarketCalendar } from './toss-a
 import { toUtcIso, toKstDateKey, toKstTimeLabel } from './trading-time.mjs';
 import { MIN_AVG_TURNOVER } from './config.js';
 import {
-  ENGINE_VERSION, buildForecast, scoreVerification, summarizeVerifications,
+  ENGINE_VERSION, buildForecast, scoreVerification, summarizeVerifications, sampleStats,
 } from './forecast-core.mjs';
-import { llmEnabled, analyzeVerifications, analyzeDaily, analyzeOutlook } from './forecast-llm.mjs';
+import { llmEnabled, analyzeVerifications, analyzeDaily, composeReport } from './forecast-llm.mjs';
 import {
   NXT_AFTER, fetch1mByDate, fetchBasket1m, historyIntervalReturns,
   intervalReturn, basketSessionSeries, basketLiveMove, lastBarHm, priceAt,
@@ -52,9 +52,10 @@ const TOP_SECTORS = 10;
 const SESSION = 'KRX_REGULAR';
 const DATA_SOURCE_VERSION = 'toss-candles+1m+stock_prices-v2';
 const FX_PROXY = { code: '261240', label: '환율 프록시(KODEX 미국달러선물)' };
-// 장중 구간 경계(KST). 각 장중 실행은 "지금 → 다음 경계" 구간을 예측한다.
-// 09:00~10:30 개장 구간은 paper-swing 실주문 창(09:03)과 겹쳐 의도적으로 비워둔다.
-const INTRADAY_BOUNDARIES = ['1130', '1330', '1430', '1530'];
+// 장중 구간 경계(KST) — 60분 고정 원칙(규칙 §3). 각 실행은 "지금 → 다음 경계"를 예측하고,
+// 실행 누락으로 60분이 아닌 구간이 되면 통계에서 별도 버킷으로 분리 집계한다.
+// 09:00~09:30은 paper-swing 실주문 창과 겹쳐 비워둔다 (첫 슬롯 09:35→10:30).
+const INTRADAY_BOUNDARIES = ['1030', '1130', '1230', '1330', '1430', '1530'];
 const ETF_1M_TOTAL = 8000;    // ≈ 20거래일 (정규장 390분/일)
 const NXT_1M_TOTAL = 9600;    // 종목은 08:00~20:00 ~710분/일 → ≈ 13거래일
 const NXT_BASKET_SIZE = 5;    // 시총 상위 5 (top10 시총의 ~85%)
@@ -399,6 +400,7 @@ async function verifyDue({ etfSeries, etf1m = null, dry }) {
 async function fetchRecentVerificationRows() {
   const rows = await dbQuery(`
     SELECT fl.sector, fl.target_kind, fl.target_end_date, fl.call_direction,
+           fl.target_start_hm, fl.target_end_hm,
            fv.actual_return, fv.direction_hit, fv.partial_hit, fv.abs_error,
            fv.in_range, fv.brier, fv.call_result, fv.baseline_scores
     FROM forecast_verification fv JOIN forecast_ledger fl ON fl.id = fv.ledger_id
@@ -408,6 +410,23 @@ async function fetchRecentVerificationRows() {
     ...r,
     baseline_scores: typeof r.baseline_scores === 'string' ? JSON.parse(r.baseline_scores) : r.baseline_scores,
   }));
+}
+
+// 구간 길이 버킷 — 60분 예측과 그 외(캐치업 120분 등)·일간을 같은 통계로 합치지 않는다 (§3)
+const hmMin = (hm) => Number(hm.slice(0, 2)) * 60 + Number(hm.slice(2));
+function bucketOf(r) {
+  if (!r.target_start_hm || !r.target_end_hm) return 'daily';
+  const diff = hmMin(r.target_end_hm) - hmMin(r.target_start_hm);
+  return diff >= 50 && diff <= 70 ? 'm60' : 'other';
+}
+function summarizeBuckets(rows) {
+  const g = { daily: [], m60: [], other: [] };
+  for (const r of rows) g[bucketOf(r)].push(r);
+  return {
+    daily: summarizeVerifications(g.daily),
+    m60: summarizeVerifications(g.m60),
+    other_minutes: summarizeVerifications(g.other),
+  };
 }
 
 // ── NXT 바스켓 · 환율 · 공시 컨텍스트 ────────────────────────
@@ -471,7 +490,7 @@ async function fetchDisclosureContext() {
       FROM stock_disclosures sd
       JOIN stock_analysis sa ON sa.stock_code = sd.stock_code
       LEFT JOIN stock_disclosure_sentiments sds ON sds.rcept_no = sd.rcept_no
-      WHERE sd.rcept_dt >= TO_CHAR(CURRENT_DATE - 3, 'YYYY-MM-DD')
+      WHERE sd.rcept_dt >= CURRENT_DATE - 3
       GROUP BY sa.sector ORDER BY COUNT(*) DESC LIMIT 8`);
     const staleDays = latest
       ? Math.round((Date.parse(kstDate().replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3')) - Date.parse(latest)) / 86400e3)
@@ -518,15 +537,26 @@ async function makeForecasts({ phase, cal, etfSeries, sectorSeries, topSectors, 
   }
 
   const rows = [];
-  const opts = { callK: CALL_K, qualityGrade: quality.grade };
   for (const m of MARKETS) {
     const series = etfSeries[m.key] ?? [];
-    const f = buildForecast(toReturns(series.map(x => x.close)), opts);
+    const rs = toReturns(series.map(x => x.close));
+    // 조건부 표본: 전일 등락이 비슷했던 날의 "다음날" 수익률
+    const cond = similarPrevDayDates(series, endDate);
+    const condReturns = [];
+    for (let i = 1; i < series.length; i++) {
+      if (cond.dates.has(series[i].date)) condReturns.push((series[i].close / series[i - 1].close - 1) * 100);
+    }
+    const f = buildForecast(rs, { callK: CALL_K, qualityGrade: quality.grade, condReturns });
     if (!f) { log(`⚠️ ${m.key} 표본 부족 — 생략`); continue; }
     // 시작가는 정확히 startDate 종가일 때만 기록 (불변 원장에 근사값을 남기지 않는다)
     const startPrice = series.find(x => x.date === startDate)?.close ?? null;
-    rows.push({ kind: 'market', sector: m.key, label: m.label, f, startPrice });
+    rows.push({
+      kind: 'market', sector: m.key, label: m.label, f, startPrice,
+      genStats: sampleStats(rs.slice(-120)), condStats: sampleStats(condReturns),
+      condDesc: { prev_day_ret: cond.yRet, tolerance_pp: cond.tol, used: condReturns.length >= 8 },
+    });
   }
+  const opts = { callK: CALL_K, qualityGrade: quality.grade };
   for (const s of topSectors) {
     const series = sectorSeries[s.sector] ?? [];
     const f = buildForecast(series.map(x => x.ret), opts);
@@ -579,7 +609,24 @@ function nextBoundary(nowHm, marginMin = 5) {
   return INTRADAY_BOUNDARIES.find(b => toMin(b) > toMin(nowHm) + marginMin) ?? null;
 }
 
-async function makeIntradayForecasts({ etf1m, endHm, quality, versions, snapshotId, dry }) {
+// 전일 등락이 오늘과 비슷했던 날짜들 (조건부 표본, 규칙 §8 우선순위 1)
+function similarPrevDayDates(dailySeries, todayKey) {
+  const rets = [];
+  for (let i = 1; i < dailySeries.length; i++) {
+    rets.push({ date: dailySeries[i].date, ret: (dailySeries[i].close / dailySeries[i - 1].close - 1) * 100 });
+  }
+  if (rets.length < 2) return { dates: new Set(), yRet: null, tol: null };
+  const yRet = rets[rets.length - 1].ret; // 어제 등락
+  const tol = Math.max(1.5, Math.abs(yRet) * 0.5);
+  const dates = new Set();
+  for (let i = 1; i < rets.length; i++) {
+    // 날짜 d의 "전일 등락" = 직전 거래일 수익률
+    if (Math.abs(rets[i - 1].ret - yRet) <= tol && rets[i].date < todayKey) dates.add(rets[i].date);
+  }
+  return { dates, yRet: Math.round(yRet * 100) / 100, tol: Math.round(tol * 100) / 100 };
+}
+
+async function makeIntradayForecasts({ etf1m, etfSeries, endHm, quality, versions, snapshotId, dry }) {
   const todayKey = kstDate();
   if (!endHm) return [];
   const runId = `fc_intra_${todayKey}_${endHm}`;
@@ -591,11 +638,22 @@ async function makeIntradayForecasts({ etf1m, endHm, quality, versions, snapshot
     const startHm = lastBarHm(bars); // 마지막 완성 분봉 = 데이터 기준 시각 (실행 시각 아님)
     if (startHm >= endHm) continue;
     const returns = historyIntervalReturns(byDate, startHm, endHm, { excludeDate: todayKey, todayKey });
-    const f = buildForecast(returns, { callK: CALL_K, qualityGrade: quality.grade });
+    // 조건부 표본: 전일 급락·급등 폭이 오늘과 비슷했던 날의 동일 구간만
+    const cond = similarPrevDayDates(etfSeries[m.key] ?? [], todayKey);
+    const condReturns = [];
+    for (const d of [...byDate.keys()].sort()) {
+      if (!cond.dates.has(d)) continue;
+      const r = intervalReturn(byDate.get(d), startHm, endHm, { dateIsPast: d < todayKey });
+      if (r != null) condReturns.push(r);
+    }
+    const f = buildForecast(returns, { callK: CALL_K, qualityGrade: quality.grade, condReturns });
     if (!f) { log(`⚠️ ${m.key} ${fmtHm(startHm)}→${fmtHm(endHm)} 표본 부족(${returns.length}) — 생략`); continue; }
     rows.push({
       kind: 'market', sector: m.key, label: `${m.label} ${fmtHm(startHm)}→${fmtHm(endHm)}`,
       f, startPrice: priceAt(bars, startHm), startHm, endHm,
+      genStats: sampleStats(returns.slice(-120)),
+      condStats: sampleStats(condReturns),
+      condDesc: { prev_day_ret: cond.yRet, tolerance_pp: cond.tol, used: condReturns.length >= 8 },
     });
   }
   await insertLedgerRows(rows, {
@@ -667,27 +725,28 @@ const dateLabel = (k) => `${k.slice(4, 6)}/${k.slice(6, 8)}`;
 const shortName = (key) => (key === 'KOSPI_PROXY' ? '코스피' : key === 'KOSDAQ_PROXY' ? '코스닥' : key);
 // 항상 한쪽을 정해 말한다 (사용자 지시). 확신 수준만 정직하게 병기 — 얼버무림 금지.
 function stanceOf(f) {
-  const lean = f.probs.up === f.probs.down
-    ? (f.median >= 0 ? 'up' : 'down')
-    : (f.probs.up > f.probs.down ? 'up' : 'down');
-  const gap = Math.abs(f.probs.up - f.probs.down);
-  const strong = f.call !== 'no-call' || Math.abs(f.median) > f.band;
-  const level = strong ? '높음' : gap >= 8 ? '보통' : '낮음';
-  return { lean, level };
+  const gap = f.probs.up - f.probs.down;
+  const lean = Math.abs(gap) < 8 ? 'mixed' : gap > 0 ? 'up' : 'down';
+  const strong = f.call !== 'no-call';
+  const level = strong ? '높음' : Math.abs(gap) >= 8 ? '보통' : '낮음';
+  return { lean, level, gap };
 }
+// 방향 문구 — 확률 우세 기준. 기대수익률 부호와 모순 금지(§3): 어긋나면 비대칭 명시,
+// 확률 차 8%p 미만은 방향 단정 금지("혼조").
 function dirWord(f) {
   const { lean, level } = stanceOf(f);
-  return `${lean === 'up' ? '📈 오른다' : '📉 내린다'}고 봅니다 (확신 ${level})`;
+  if (lean === 'mixed') return '➖ 혼조 · 방향성 낮음';
+  const word = lean === 'up' ? '상승' : '하락';
+  const icon = lean === 'up' ? '📈' : '📉';
+  const asym = (lean === 'up' && f.median < -1e-9) || (lean === 'down' && f.median > 1e-9);
+  if (asym) return `${icon} 약한 ${word} 우세 — 단, 반대 방향 폭이 커 기대수익률은 ${f.median > 0 ? '소폭 +' : '소폭 -'}`;
+  return level === '높음' ? `${icon} ${word} 우세 (확신 높음)` : `${icon} 약한 ${word} 우세 (확신 ${level})`;
 }
 function plainReason(f) {
-  const { lean, level } = stanceOf(f);
   const drift = Math.abs(f.m20) < 0.05
-    ? '최근 4주간 이 구간은 뚜렷한 방향이 없었지만'
-    : `최근 4주간 이 구간에서 평균 ${sgn(f.m20)}%씩 ${f.m20 > 0 ? '오르던' : '빠지던'} 흐름이라`;
-  const conv = level === '높음'
-    ? `${lean === 'up' ? '상승' : '하락'}에 확신을 겁니다`
-    : `${lean === 'up' ? '위쪽' : '아래쪽'}으로 봅니다. 다만 요즘 변동이 커서 확신은 ${level}으로 잡습니다`;
-  return `${drift}, ${conv}.`;
+    ? '유사 조건 표본에 뚜렷한 방향이 없고'
+    : `유사 조건 표본 평균이 ${sgn(f.m20)}%이고`;
+  return `${drift}, 구간 변동 밴드 ±${f.band.toFixed(2)}% 기준의 확률 분포입니다.`;
 }
 function fmtSummary(s) {
   if (!s) return '아직 채점된 예측이 없습니다.';
@@ -729,6 +788,41 @@ function marketNowContext({ etfSeries, etf1m, phase }) {
   return out;
 }
 
+// 가격 구조 (규칙 §4A) — 갭·장중 위치·직전 30/60분·되돌림. 없는 값은 null로 정직하게.
+const minToHm = (min) => `${String(Math.floor(min / 60)).padStart(2, '0')}${String(min % 60).padStart(2, '0')}`;
+function priceStructureOf(key, etfSeries, etf1m) {
+  const s = etfSeries[key] ?? [];
+  if (s.length < 3) return null;
+  const todayKey = kstDate();
+  const past = s.filter(x => x.date < todayKey);
+  if (past.length < 2) return null;
+  const yClose = past[past.length - 1].close;
+  const prevDayRet = (yClose / past[past.length - 2].close - 1) * 100;
+  const r2 = (x) => (x == null ? null : Math.round(x * 100) / 100);
+  const out = { name: shortName(key), prev_day_ret_pct: r2(prevDayRet) };
+  const bars = etf1m?.[key]?.get(todayKey) ?? [];
+  if (bars.length) {
+    const open = bars[0].close, cur = bars[bars.length - 1].close;
+    const closes = bars.map(b => b.close);
+    const hi = Math.max(...closes), lo = Math.min(...closes);
+    const curHm = lastBarHm(bars);
+    const at = (minAgo) => priceAt(bars, minToHm(Math.max(0, hmMin(curHm) - minAgo)));
+    const p30 = at(30), p60 = at(60);
+    out.gap_open_pct = r2((open / yClose - 1) * 100);
+    out.today_ret_pct = r2((cur / yClose - 1) * 100);
+    out.intraday_high_pct = r2((hi / yClose - 1) * 100);
+    out.intraday_low_pct = r2((lo / yClose - 1) * 100);
+    out.pos_in_range = hi !== lo ? r2((cur - lo) / (hi - lo)) : null; // 0=저가권 1=고가권
+    out.ret_30m_pct = p30 ? r2((cur / p30 - 1) * 100) : null;
+    out.ret_60m_pct = p60 ? r2((cur / p60 - 1) * 100) : null;
+    out.two_day_cum_pct = r2(((1 + prevDayRet / 100) * (cur / yClose) - 1) * 100);
+    out.asof_hm = curHm;
+  } else {
+    out.note = '당일 분봉 미수집(장전 또는 데이터 없음)';
+  }
+  return out;
+}
+
 function fmtRunReport({ made, verified, rolling, quality, dry, fx = null, disc = null, nxt = null, now = [], flow = null }) {
   const L = [];
   const markets = made.filter(x => x.kind === 'market');
@@ -751,8 +845,8 @@ function fmtRunReport({ made, verified, rolling, quality, dry, fx = null, disc =
       const f = r.f;
       L.push('');
       L.push(`【${shortName(r.sector)}】 ${dirWord(f)}`);
-      L.push(`예상 ${sgn(f.median)}% · 오름 ${f.probs.up}% / 보합 ${f.probs.flat}% / 내림 ${f.probs.down}% (합 100)`);
-      L.push(`10번 중 8번은 ${sgn(f.low)}% ~ ${sgn(f.high)}% 사이에 들어옵니다`);
+      L.push(`예상 ${sgn(f.median)}% · 오름 ${f.probs.up}% / 보합 ${f.probs.flat}% / 내림 ${f.probs.down}%`);
+      L.push(`80% 예상 범위: ${sgn(f.low)}% ~ ${sgn(f.high)}%`);
       L.push(`왜: ${plainReason(f)}`);
     }
     const sectors = made.filter(x => x.kind === 'sector').sort((a, b) => b.f.median - a.f.median);
@@ -855,23 +949,6 @@ async function runLlmVerificationAnalysis({ verified, etfSeries, quality, phase,
   }
 }
 
-function fmtLlmSection(res, verified) {
-  if (!res) return '';
-  const L = ['', '【AI 세부 분석】'];
-  L.push(res.narrative);
-  const noteById = new Map(res.rows.map(r => [r.id, r]));
-  const causes = verified
-    .map(v => ({ v, r: noteById.get(v.id) }))
-    .filter(x => x.r?.error_cause);
-  if (causes.length) {
-    L.push('오차 원인:');
-    for (const { v, r } of causes) {
-      const name = v.target_kind === 'market' ? (v.sector === 'KOSPI_PROXY' ? 'KOSPI' : 'KOSDAQ') : v.sector;
-      L.push(`  ${name}: ${r.error_cause} [${r.cause_certainty}]${r.note ? ` — ${r.note}` : ''}`);
-    }
-  }
-  return L.join('\n');
-}
 
 // ── 일일 결산 ────────────────────────────────────────────────
 async function dailySummary({ dry }) {
@@ -1020,7 +1097,7 @@ async function main() {
     let made = [];
     let nxtInfo = null;
     if (phase === 'intraday') {
-      made = await makeIntradayForecasts({ etf1m, endHm: intraEndHm, quality, versions, snapshotId, dry });
+      made = await makeIntradayForecasts({ etf1m, etfSeries, endHm: intraEndHm, quality, versions, snapshotId, dry });
     } else {
       made = await makeForecasts({ phase, cal, etfSeries, sectorSeries, topSectors, quality, versions, snapshotId, dry });
       if (phase === 'close') {
@@ -1044,42 +1121,72 @@ async function main() {
     }
     const disc = phase !== 'intraday' ? await fetchDisclosureContext() : null;
     const flow = await fetchFlowContext();
-    const rolling = summarizeVerifications(await fetchRecentVerificationRows());
+    const rollingRows = await fetchRecentVerificationRows();
+    const rolling = summarizeVerifications(rollingRows);
+    const rollingBuckets = summarizeBuckets(rollingRows);
+    // 오차원인 분류(내부·DB 기록용) — 사용자 출력에는 노출하지 않는다 (규칙 §1·§10)
     const llm = await runLlmVerificationAnalysis({
       verified, etfSeries, quality, phase, dry,
       context: { fx, investor_flow: flow, nxt_after_obs: nxtInfo?.obs ?? null, nxt_pre_obs: nxtInfo?.preObs ?? null, disclosures: disc },
     });
     const now = marketNowContext({ etfSeries, etf1m, phase });
-    // 예측 시점 AI 브리핑 (뉴스 웹검색 + 공시 + 수급 종합) — 실패해도 보고는 나간다
-    let outlook = null;
-    if (llmEnabled() && (phase === 'pre' || phase === 'close')) {
+    // 최종 보고서: 규칙 템플릿(v2)에 따라 LLM이 합성 — 엔진 숫자 불변, 금지문구·섹션 코드 검증.
+    // 합성 실패 시 기계 형식 폴백 (보고 결측 금지)
+    let report = null;
+    if (llmEnabled()) {
       try {
         const recentDisc = await dbQuery(`
-          SELECT sd.rcept_dt, sa.corp_name, sa.sector, sd.report_nm, sds.sentiment, sds.sentiment_score
+          SELECT sd.rcept_dt, sa.corp_name, sa.sector, sd.report_nm, sa.market_cap_tril
           FROM stock_disclosures sd JOIN stock_analysis sa ON sa.stock_code = sd.stock_code
-          LEFT JOIN stock_disclosure_sentiments sds ON sds.rcept_no = sd.rcept_no
-          WHERE sd.rcept_dt >= TO_CHAR(CURRENT_DATE - 2, 'YYYY-MM-DD')
+          WHERE sd.rcept_dt >= CURRENT_DATE - 2
           ORDER BY
             CASE WHEN sd.report_nm ~ '(공급계약|수주|유상증자|무상|합병|분할|자기주식|전환사채|실적|잠정|소송|거래정지|감자|배당|임상|특허)' THEN 0 ELSE 1 END,
-            sd.rcept_dt DESC, ABS(COALESCE(sds.sentiment_score, 0)) DESC
+            sa.market_cap_tril DESC NULLS LAST, sd.rcept_dt DESC
           LIMIT 12`);
-        outlook = analyzeOutlook({
-          date: kstDate(), phase, market_now: now, investor_flow: flow, fx,
-          disclosures: { stale: disc?.is_stale ?? true, latest: disc?.latest ?? null, recent: recentDisc },
-          engine_forecasts: made.map(r => ({ name: shortName(r.sector), median: r.f.median, up: r.f.probs.up, down: r.f.probs.down })),
-        });
-      } catch (e) { log(`브리핑 실패(비치명): ${e.message}`); }
+        const causeById = new Map((llm?.rows ?? []).map(r => [r.id, r]));
+        const payload = {
+          now_kst: `${kstDate()} ${kstHM()}`,
+          phase,
+          allow_websearch: phase !== 'intraday',
+          span: made.length ? {
+            start: made[0].startHm ? `${dateLabel(made[0].startDate)} ${fmtHm(made[0].startHm)}` : `${dateLabel(made[0].startDate)} 종가`,
+            end: made[0].endHm ? fmtHm(made[0].endHm) : `${dateLabel(made[0].endDate)} 종가`,
+          } : null,
+          data_state: {
+            price_asof: quality.lastEtf, sector_asof: quality.lastSector,
+            quality: quality.grade, notes: quality.notes,
+            flow_basis: flow ? `전일(${flow.date}) 확정 · 제한된 대형주 바스켓 ${flow.n}종목` : '미제공',
+            disclosure_latest: disc?.latest ?? '미제공',
+          },
+          engine: made.map(r => ({
+            name: shortName(r.sector), kind: r.kind,
+            median_pct: r.f.median, low_pct: r.f.low, high_pct: r.f.high,
+            prob_up: r.f.probs.up, prob_flat: r.f.probs.flat, prob_down: r.f.probs.down,
+            confidence: r.f.confidence, flat_band_pct: r.f.band, sigma_pct: r.f.sigma,
+            general_stats: r.genStats ?? null, cond_stats: r.condStats ?? null, cond_desc: r.condDesc ?? null,
+          })),
+          price_structure: MARKETS.map(m => priceStructureOf(m.key, etfSeries, etf1m)).filter(Boolean),
+          market_now: now,
+          investor_flow: flow ? { ...flow, label: `제한된 대형주 바스켓 참고지표(${flow.n}종목, 전일 확정)` } : null,
+          fx,
+          nxt: nxtInfo ? { after_obs: nxtInfo.obs ?? null, pre_obs: nxtInfo.preObs ?? null, forecast: nxtInfo.rows?.[0]?.f ?? null } : null,
+          disclosures: { latest: disc?.latest ?? null, stale: disc?.is_stale ?? true, recent: recentDisc },
+          verification: verified.map(v => ({
+            name: shortName(v.sector) + (v.target_start_hm ? ` ${fmtHm(v.target_start_hm)}~${fmtHm(v.target_end_hm)}` : ''),
+            forecast_pct: v.forecast_median, actual_pct: v.actual_return,
+            direction_hit: v.direction_hit, partial: v.partial_hit, in_range: v.in_range,
+            abs_error: v.abs_error, cause: causeById.get(v.id)?.error_cause ?? '확인 불가',
+          })),
+          rolling_buckets: rollingBuckets,
+        };
+        const composed = composeReport(payload);
+        if (composed.text) report = composed.text + (dry ? '\n\n[테스트 실행 — 원장 미기록]' : '');
+        else log(`보고서 합성 실패(${composed.error}) — 기계 형식 폴백`);
+      } catch (e) { log(`보고서 합성 오류(비치명): ${e.message}`); }
     }
-    let outlookText = '';
-    if (outlook) {
-      const S = [];
-      if (outlook.news_sectors.length) S.push('오늘 뉴스로 본 주목 섹터:', ...outlook.news_sectors);
-      if (outlook.flow_read.length) S.push('수급·흐름 해석:', ...outlook.flow_read);
-      if (outlook.disclosure_watch.length) S.push('공시 체크:', ...outlook.disclosure_watch);
-      if (outlook.risks.length) S.push('예측을 뒤집을 변수:', ...outlook.risks);
-      outlookText = `\n\n【AI 브리핑 — 오늘 뭘 볼까】\n${S.join('\n')}`;
+    if (!report) {
+      report = fmtRunReport({ made, verified, rolling, quality, dry, fx, disc, nxt: nxtInfo, now, flow });
     }
-    const report = fmtRunReport({ made, verified, rolling, quality, dry, fx, disc, nxt: nxtInfo, now, flow }) + outlookText + fmtLlmSection(llm, verified);
     console.log(report);
     if (!dry) await notifyTelegram(report);
   }

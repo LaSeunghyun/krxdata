@@ -66,3 +66,14 @@ test('llmEnabled — FORECAST_LLM=0으로만 비활성', () => {
   assert.equal(llmEnabled({ FORECAST_LLM: '0' }), false);
   assert.equal(llmEnabled({ FORECAST_LLM: '1' }), true);
 });
+
+test('validateReport — 금지 문구·필수 섹션 검사', async () => {
+  const { validateReport } = await import('../forecast-llm.mjs');
+  const ok = '📊 시장 전망\n【데이터 상태】x\n【코스피 전망】y\n【코스닥 전망】z\n【직전 예측 검증】w\n' + 'a'.repeat(300);
+  assert.equal(validateReport(ok), null);
+  assert.match(validateReport(ok + '(합 100)'), /금지 문구/);
+  assert.match(validateReport(ok + 'AI 세부 분석'), /금지 문구/);
+  assert.match(validateReport(ok + '10번 중 8번'), /금지 문구/);
+  assert.match(validateReport(ok.replace('【코스닥 전망】', '')), /섹션 누락/);
+  assert.match(validateReport('짧음'), /짧음/);
+});

@@ -82,7 +82,9 @@ export function buildForecast(returns, opts = {}) {
   const sigma = ewmaStd(hist) || 0.0001;
   const band = FLAT_BAND_K * sigma;
 
-  const m20 = mean(last20);
+  // 조건부 표본(전일 급락·급등 유사일 등)이 충분하면 단순 최근평균보다 우선한다 (§8 우선순위)
+  const cond = Array.isArray(opts.condReturns) && opts.condReturns.length >= 8 ? opts.condReturns : null;
+  const m20 = mean(cond ?? last20);
   const capped = Math.max(-MEDIAN_CAP_SIGMA * sigma,
     Math.min(MEDIAN_CAP_SIGMA * sigma, MEDIAN_SHRINK * m20));
   const median = round4(capped);
@@ -213,6 +215,20 @@ export function summarizeVerifications(rows) {
     call_count: calls.length,
     call_hit_rate: calls.length ? round4(callHits / calls.length) : null,
     beat_all_baselines_rate: round4(beat / n),
+  };
+}
+
+// 표본 요약 (조건부/일반 기준값 비교 표시용 — §8: 표본수·평균·중앙값·상승비율·범위)
+export function sampleStats(xs) {
+  if (!xs?.length) return null;
+  const s = [...xs].sort((a, b) => a - b);
+  return {
+    n: xs.length,
+    mean: round4(mean(xs)),
+    median: round4(quantile(xs, 0.5)),
+    up_ratio: round4(xs.filter(r => r > 0).length / xs.length),
+    min: round4(s[0]),
+    max: round4(s[s.length - 1]),
   };
 }
 

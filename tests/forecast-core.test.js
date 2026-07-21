@@ -163,3 +163,13 @@ test('summarizeVerifications — 집계 필드, 부분적중은 헤드라인 적
   assert.equal(s.beat_all_baselines_rate, 0.5);
   assert.equal(summarizeVerifications([]), null);
 });
+
+test('buildForecast — 조건부 표본(condReturns)이 중앙값 방향을 바꾼다', () => {
+  const rs = synthReturns(200, { drift: -0.3, vol: 1 }); // 일반 표본은 하락 편향
+  const base = buildForecast(rs);
+  const cond = buildForecast(rs, { condReturns: Array(12).fill(1.2) }); // 유사일 표본은 강한 양수
+  assert.ok(cond.median > base.median, `${cond.median} > ${base.median}`);
+  // 8개 미만이면 무시
+  const few = buildForecast(rs, { condReturns: Array(5).fill(1.2) });
+  assert.equal(few.median, base.median);
+});

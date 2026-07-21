@@ -116,6 +116,93 @@ export function analyzeOutlook(payload, { invoke } = {}) {
   return Object.values(out).some(a => a.length) ? out : null;
 }
 
+// ── 최종 보고서 합성 (2026-07-21 사용자 규칙 v2) ─────────────
+// 엔진 숫자는 불변 — LLM은 규칙 템플릿에 맞춰 근거 사슬과 판단을 서술한다.
+export const BANNED_PHRASES = ['(합 100)', 'AI 세부 분석', '10번 중 8번'];
+
+export function buildReportPrompt(payload) {
+  return `당신은 한국 주식시장 단기 전망 보고서 작성자다. 아래 데이터로 최종 보고서를 작성한다.
+${payload.allow_websearch ? '웹검색(WebSearch)으로 오늘 한국 증시·미 선물·환율 뉴스를 확인해 반영하라.' : '웹검색 없이 아래 데이터만 사용한다.'}
+
+절대 규칙:
+1. 예측 숫자(예상 수익률·80% 범위·오름/보합/내림 확률·확신도)는 아래 engine 값을 그대로 쓴다. 변경 금지.
+2. 방향 문구는 숫자와 모순 금지. 확률 차이 8%p 미만이면 "혼조/방향성 낮음", 우세 방향은
+   "약한 상승(하락) 우세", 확신 높음일 때만 "상승(하락) 우세". 예상 수익률 부호와 문구 일치 확인.
+3. 금지 출력: "(합 100)" · "AI 세부 분석" 섹션 · 내부 검토 과정 · 잘된점/틀린점 자기평가 나열 ·
+   근거 없는 "저가매수/차익실현/외국인 주도" 단정 · 예측에 반영 안 된 뉴스 나열 ·
+   출처·시각 없는 수급/뉴스 · "10번 중 8번" 표현(커버리지 미검증) · 입력에 없는 숫자 창작.
+4. 수급 표기: 전일 확정 수급을 당일 수급처럼 쓰지 않는다. 바스켓 수급은 반드시
+   "제한된 대형주 바스켓 참고지표(N종목, 전일 확정)"로 표기. 시장 전체로 일반화 금지.
+5. 판단 근거는 각각 [관측 사실 → 전달 경로 → 예측 반영 방향 → 강도(강/중/약) → 신뢰도(높/중/낮)]
+   구조의 문장으로 쓴다. "최근 평균이 이래서" 한 줄 설명 금지 — 조건부 표본(cond_stats)과
+   일반 표본(general_stats)의 차이·적용 가능성을 언급한다.
+6. 공시는 목록 나열 금지 — 지수 영향 가능한 것만 [사실→의미→경로→방향/강도→반영]으로.
+   소형주 공시로 지수 방향 논거 금지. 데이터 없으면 "미제공/확인 불가" 명시.
+7. 매수·매도·종목 추천 금지. 모든 시각은 KST.
+8. 반드시 아래 템플릿 구조와 섹션 헤더를 그대로 사용한다. 다른 섹션 추가 금지.
+
+템플릿:
+📊 시장 전망 · {start} → {end} (KST)
+
+【데이터 상태】
+- 가격 기준: {시각} / 수급 기준: {전일 확정 여부} / 뉴스·공시: {시각 또는 미제공}
+- 누락: {누락 데이터} / 신뢰도: {A/B/C}
+
+【현재 시장 구조】
+{전일 대비 위치·이틀 누적·장중 고저 내 위치·되돌림 정도·코스피/코스닥 상대강도·장세 체제 판단.
+ 시장 폭(상승/하락 종목수)·기여도 데이터가 없으면 "미제공" 명시. 4~7줄}
+
+【코스피 전망】
+{상승 우세/약한 상승 우세/혼조/약한 하락 우세/하락 우세} · 확신도: {낮음/보통/높음}
+· 예상 수익률: {engine 값}% · 80% 예상 범위: {low}% ~ {high}%
+· 오름 {p}% · 보합 {p}% · 내림 {p}%
+판단 근거:
+1. {관측→경로→반영→강도→신뢰도}
+2. {...}
+3. {...}
+반대 근거:
+- {현 전망을 무효화할 가장 강한 반대 요인}
+최종 종합: {상방·하방 요인 충돌과 최종 방향·확률 결정 이유 2~4문장}
+
+【코스닥 전망】
+{코스피와 동일 형식 — 복사 금지, 코스닥 고유 수급·주도업종·변동성 차이 반영}
+
+【공시·이벤트가 예측에 미친 영향】
+{실제 반영된 것만: 시각|사실|의미|대상|경로|방향|강도|반영. 없으면 "이번 예측에 반영한 공시 없음"}
+
+【예측을 뒤집을 조건】
+- {관찰 가능한 수치·사건으로 2~3개. "심리 악화" 같은 모호한 표현 금지}
+
+【직전 예측 검증】
+{verification 데이터 그대로: 대상: 예상→실제 | 방향 | 절대오차 | 범위 | 핵심 원인 | 변경점 한 가지.
+ 없으면 "채점 대상 없음". 장황한 해설 금지}
+
+【누적 성적】
+{rolling 데이터 그대로: 60분/일간 분리. 표본 적으면 "표본 부족(n=N)" 명시}
+
+데이터:
+${JSON.stringify(payload, null, 1)}`;
+}
+
+export function validateReport(text) {
+  if (!text || text.length < 300) return '너무 짧음';
+  for (const b of BANNED_PHRASES) if (text.includes(b)) return `금지 문구: ${b}`;
+  for (const h of ['【데이터 상태】', '【코스피 전망】', '【코스닥 전망】', '【직전 예측 검증】']) {
+    if (!text.includes(h)) return `섹션 누락: ${h}`;
+  }
+  return null;
+}
+
+export function composeReport(payload, { invoke } = {}) {
+  const call = invoke ?? ((p) => callClaude(p, {
+    extraArgs: payload.allow_websearch ? ['--allowedTools', 'WebSearch'] : [],
+    timeoutMs: 300_000,
+  }));
+  const out = (call(buildReportPrompt(payload)) ?? '').trim();
+  const err = validateReport(out);
+  return err ? { text: null, error: err } : { text: out, error: null };
+}
+
 export function callClaude(prompt, { timeoutMs = 180_000, extraArgs = [] } = {}) {
   // 프롬프트는 stdin으로 전달 — Windows shell 인자 한계(8191자)·따옴표 깨짐 회피
   const res = spawnSync('claude', ['-p', '--output-format', 'text', ...extraArgs], {
