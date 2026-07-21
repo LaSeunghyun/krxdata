@@ -11,7 +11,8 @@ export const ENGINE_VERSION = 'fc-engine-v2'; // v2(2026-07-21): 잔차 EWMA σ�
 export const FLAT_BAND_K = 0.25;   // 보합 밴드 = ±0.25σ
 export const MEDIAN_SHRINK = 0.3;  // 중앙값 = 0.3 × 최근 20구간 평균 (과신 방지 수축)
 export const MEDIAN_CAP_SIGMA = 0.5; // 중앙값 상한 = ±0.5σ
-export const DEFAULT_CALL_K = 0.5; // |중앙값| ≥ 0.5σ 일 때만 방향 콜
+export const DEFAULT_CALL_K = 0.5; // (v1 잔재 — v2는 확률 차 기준)
+export const RANGE_CAP_PP = 10; // 80% 범위 총폭 상한 10%p (사용자 지시 2026-07-21). 절단 시 range_capped 표기
 
 // ── 기초 통계 ────────────────────────────────────────────────
 export function mean(xs) {
@@ -98,8 +99,18 @@ export function buildForecast(returns, opts = {}) {
   const median = round4(capped);
 
   const m = mean(hist);
-  const low = round4(median + quantile(hist.map(r => r - m), 0.10));
-  const high = round4(median + quantile(hist.map(r => r - m), 0.90));
+  let low = round4(median + quantile(hist.map(r => r - m), 0.10));
+  let high = round4(median + quantile(hist.map(r => r - m), 0.90));
+  // 총폭 상한: 중앙값 기준 비례 절단(비대칭 유지). 절단되면 명목 80% 구간이 아니므로
+  // range_capped를 원장·보고에 남긴다 — 커버리지 채점이 그 비용을 정직하게 보여준다.
+  const cap = opts.rangeCapPp ?? RANGE_CAP_PP;
+  let rangeCapped = false;
+  if (high - low > cap) {
+    const scale = cap / (high - low);
+    low = round4(median + (low - median) * scale);
+    high = round4(median + (high - median) * scale);
+    rangeCapped = true;
+  }
   const probs = probsFromHistory(hist, median, band);
 
   // 콜 게이트는 채점 대상과 동일한 최종 확률분포 기준: 우세 확률 차 ≥ CALL_GAP_PP(기본 15%p).
@@ -122,7 +133,7 @@ export function buildForecast(returns, opts = {}) {
   confidence = Math.max(10, Math.min(90, confidence));
 
   return {
-    median, low, high, sigma: round4(sigma), band: round4(band),
+    median, low, high, range_capped: rangeCapped, sigma: round4(sigma), band: round4(band),
     probs, call, baselines, confidence,
     m20: round4(m20), nSamples: hist.length,
     drivers: [

@@ -178,3 +178,12 @@ test('buildForecast — 조건부 표본(condReturns)이 중앙값 방향을 바
   assert.ok(few.median > base.median && few.median < cond.median,
     `${base.median} < ${few.median} < ${cond.median}`);
 });
+
+test('buildForecast — 80% 범위 총폭 10%p 캡 (중앙값 기준 비례 절단)', () => {
+  const wild = buildForecast(synthReturns(200, { vol: 6 })); // 고변동 → 절단
+  assert.ok(wild.range_capped);
+  assert.ok(wild.high - wild.low <= 10.001, `width ${wild.high - wild.low}`);
+  assert.ok(wild.low < wild.median && wild.median < wild.high);
+  const calm = buildForecast(synthReturns(200, { vol: 0.8 })); // 평시 → 무절단
+  assert.equal(calm.range_capped, false);
+});
