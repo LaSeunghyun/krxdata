@@ -644,20 +644,28 @@ const pct = (x) => (x == null ? '-' : `${(x * 100).toFixed(0)}%`);
 const dateLabel = (k) => `${k.slice(4, 6)}/${k.slice(6, 8)}`;
 
 const shortName = (key) => (key === 'KOSPI_PROXY' ? '코스피' : key === 'KOSDAQ_PROXY' ? '코스닥' : key);
+// 항상 한쪽을 정해 말한다 (사용자 지시). 확신 수준만 정직하게 병기 — 얼버무림 금지.
+function stanceOf(f) {
+  const lean = f.probs.up === f.probs.down
+    ? (f.median >= 0 ? 'up' : 'down')
+    : (f.probs.up > f.probs.down ? 'up' : 'down');
+  const gap = Math.abs(f.probs.up - f.probs.down);
+  const strong = f.call !== 'no-call' || Math.abs(f.median) > f.band;
+  const level = strong ? '높음' : gap >= 8 ? '보통' : '낮음';
+  return { lean, level };
+}
 function dirWord(f) {
-  if (f.median > f.band) return '📈 오를 가능성이 더 높음';
-  if (f.median < -f.band) return '📉 내릴 가능성이 더 높음';
-  if (f.probs.down - f.probs.up >= 8) return '➖ 보합, 굳이 따지면 아래쪽';
-  if (f.probs.up - f.probs.down >= 8) return '➖ 보합, 굳이 따지면 위쪽';
-  return '➖ 보합 예상';
+  const { lean, level } = stanceOf(f);
+  return `${lean === 'up' ? '📈 오른다' : '📉 내린다'}고 봅니다 (확신 ${level})`;
 }
 function plainReason(f) {
+  const { lean, level } = stanceOf(f);
   const drift = Math.abs(f.m20) < 0.05
-    ? '최근 4주간 이 구간은 뚜렷한 방향이 없었고'
-    : `최근 4주간 이 구간에서 평균 ${sgn(f.m20)}%씩 ${f.m20 > 0 ? '오르던' : '빠지던'} 흐름이고`;
-  const conv = f.call === 'no-call'
-    ? '요즘 장 출렁임이 커서 방향을 자신 있게 말하기 어렵습니다'
-    : `흐름이 강해서 이번엔 ${f.call === 'up' ? '상승' : '하락'} 쪽에 확신을 겁니다`;
+    ? '최근 4주간 이 구간은 뚜렷한 방향이 없었지만'
+    : `최근 4주간 이 구간에서 평균 ${sgn(f.m20)}%씩 ${f.m20 > 0 ? '오르던' : '빠지던'} 흐름이라`;
+  const conv = level === '높음'
+    ? `${lean === 'up' ? '상승' : '하락'}에 확신을 겁니다`
+    : `${lean === 'up' ? '위쪽' : '아래쪽'}으로 봅니다. 다만 요즘 변동이 커서 확신은 ${level}으로 잡습니다`;
   return `${drift}, ${conv}.`;
 }
 function fmtSummary(s) {
