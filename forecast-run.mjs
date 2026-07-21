@@ -1035,6 +1035,13 @@ async function main() {
       }
     }
     const fx = phase !== 'intraday' ? await fetchFxContext(includeToday) : null;
+    // 당일·전일 공시를 DART에서 직접 수집한 뒤 컨텍스트 조회 (stale 보완)
+    if (phase !== 'intraday') {
+      try {
+        const { collectRecentDisclosures } = await import('./forecast-disclosures.mjs');
+        await collectRecentDisclosures({ dbQuery, todayKey: kstDate(), log });
+      } catch (e) { log(`공시 수집 실패(비치명): ${e.message}`); }
+    }
     const disc = phase !== 'intraday' ? await fetchDisclosureContext() : null;
     const flow = await fetchFlowContext();
     const rolling = summarizeVerifications(await fetchRecentVerificationRows());
@@ -1052,7 +1059,10 @@ async function main() {
           FROM stock_disclosures sd JOIN stock_analysis sa ON sa.stock_code = sd.stock_code
           LEFT JOIN stock_disclosure_sentiments sds ON sds.rcept_no = sd.rcept_no
           WHERE sd.rcept_dt >= TO_CHAR(CURRENT_DATE - 2, 'YYYY-MM-DD')
-          ORDER BY ABS(COALESCE(sds.sentiment_score, 0)) DESC LIMIT 12`);
+          ORDER BY
+            CASE WHEN sd.report_nm ~ '(공급계약|수주|유상증자|무상|합병|분할|자기주식|전환사채|실적|잠정|소송|거래정지|감자|배당|임상|특허)' THEN 0 ELSE 1 END,
+            sd.rcept_dt DESC, ABS(COALESCE(sds.sentiment_score, 0)) DESC
+          LIMIT 12`);
         outlook = analyzeOutlook({
           date: kstDate(), phase, market_now: now, investor_flow: flow, fx,
           disclosures: { stale: disc?.is_stale ?? true, latest: disc?.latest ?? null, recent: recentDisc },
