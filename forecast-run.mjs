@@ -441,6 +441,27 @@ async function fetchFxContext(includeToday) {
   } catch { return null; }
 }
 
+// 수급 컨텍스트 — 시총 top5 합산 (KIS 종목별 투자자 동향, 확정치는 장마감 후)
+async function fetchFlowContext() {
+  const { isKisConfigured, getInvestorDaily } = await import('./kis-api.js');
+  if (!isKisConfigured()) return null;
+  try {
+    const top = await dbQuery(`
+      SELECT stock_code FROM stock_analysis ORDER BY market_cap_tril DESC NULLS LAST LIMIT ${NXT_BASKET_SIZE}`);
+    let date = null, frgn = 0, orgn = 0, prsn = 0, n = 0;
+    for (const t of top) {
+      const rows = await getInvestorDaily(t.stock_code).catch(() => []);
+      if (!rows.length) continue;
+      const r = rows[0]; // 최신 확정일
+      if (date && r.date !== date) continue; // 같은 날짜만 합산
+      date = r.date; frgn += r.frgn_amt_mil; orgn += r.orgn_amt_mil; prsn += r.prsn_amt_mil; n += 1;
+    }
+    if (!n) return null;
+    const bil = (m) => Math.round(m / 100); // 백만원 → 억원
+    return { date, n, frgn_bil: bil(frgn), orgn_bil: bil(orgn), prsn_bil: bil(prsn) };
+  } catch (e) { log(`수급 조회 실패(비치명): ${e.message}`); return null; }
+}
+
 async function fetchDisclosureContext() {
   try {
     const fresh = await dbQuery(`SELECT MAX(rcept_dt) AS mx FROM stock_disclosures`);
@@ -708,7 +729,7 @@ function marketNowContext({ etfSeries, etf1m, phase }) {
   return out;
 }
 
-function fmtRunReport({ made, verified, rolling, quality, dry, fx = null, disc = null, nxt = null, now = [] }) {
+function fmtRunReport({ made, verified, rolling, quality, dry, fx = null, disc = null, nxt = null, now = [], flow = null }) {
   const L = [];
   const markets = made.filter(x => x.kind === 'market');
   if (made.length) {
@@ -755,9 +776,13 @@ function fmtRunReport({ made, verified, rolling, quality, dry, fx = null, disc =
     L.push('');
     L.push(`【개장 전 시간외(NXT)】 어제 종가 대비 ${sgn(nxt.preObs.ret)}% (대형주 ${nxt.preObs.n}종목, 참고용)`);
   }
-  if (fx || (disc && !disc.is_stale && disc.sectors.length)) {
+  if (fx || flow || (disc && !disc.is_stale && disc.sectors.length)) {
     L.push('');
     L.push('【참고】');
+    if (flow) {
+      const w = (v, who) => `${who} ${Math.abs(v).toLocaleString()}억 ${v >= 0 ? '순매수' : '순매도'}`;
+      L.push(`수급(대형주 ${flow.n}종목 합산, ${dateLabel(flow.date)} 확정): ${w(flow.frgn_bil, '외국인')} · ${w(flow.orgn_bil, '기관')} · ${w(flow.prsn_bil, '개인')}`);
+    }
     if (fx) L.push(`달러 환율(ETF 기준): 전날 ${sgn(fx.day_return_pct)}%, 최근 한 달 ${fx.m20_pct > 0 ? '상승' : '하락'} 기조`);
     if (disc && !disc.is_stale && disc.sectors.length) {
       L.push(`공시 많은 섹터: ${disc.sectors.slice(0, 3).map(s => `${s.sector} ${s.n}건`).join(', ')}`);
@@ -1011,13 +1036,14 @@ async function main() {
     }
     const fx = phase !== 'intraday' ? await fetchFxContext(includeToday) : null;
     const disc = phase !== 'intraday' ? await fetchDisclosureContext() : null;
+    const flow = await fetchFlowContext();
     const rolling = summarizeVerifications(await fetchRecentVerificationRows());
     const llm = await runLlmVerificationAnalysis({
       verified, etfSeries, quality, phase, dry,
-      context: { fx, nxt_after_obs: nxtInfo?.obs ?? null, nxt_pre_obs: nxtInfo?.preObs ?? null, disclosures: disc },
+      context: { fx, investor_flow: flow, nxt_after_obs: nxtInfo?.obs ?? null, nxt_pre_obs: nxtInfo?.preObs ?? null, disclosures: disc },
     });
     const now = marketNowContext({ etfSeries, etf1m, phase });
-    const report = fmtRunReport({ made, verified, rolling, quality, dry, fx, disc, nxt: nxtInfo, now }) + fmtLlmSection(llm, verified);
+    const report = fmtRunReport({ made, verified, rolling, quality, dry, fx, disc, nxt: nxtInfo, now, flow }) + fmtLlmSection(llm, verified);
     console.log(report);
     if (!dry) await notifyTelegram(report);
   }
