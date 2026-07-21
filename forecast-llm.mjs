@@ -32,6 +32,9 @@ export function buildVerificationPrompt(payload) {
 4. 적중(direction_hit=true이고 in_range=true이고 partial_hit=false)한 행은 error_cause를 null로 둔다.
 5. 매수·매도 추천, 종목 추천 금지.
 6. 출력은 아래 JSON 하나만. 코드펜스·다른 텍스트 금지.
+7. narrative는 일반 투자자가 읽는다: 내부 id 숫자·영문 키(KOSPI_PROXY 등)·통계 전문용어(σ, Brier,
+   베이스라인 b1/b2 등)를 쓰지 말고 "코스피", "코스닥", 섹터명과 일반 문장으로 쓴다.
+   (rows의 id 필드는 예외 — 시스템 매칭용이므로 그대로 숫자를 넣는다)
 
 출력 형식:
 {"narrative":"3~6문장. 시장 전반 결과 → 특징적 적중/오차와 그 이유 → 다음 구간 관찰 포인트 순.",

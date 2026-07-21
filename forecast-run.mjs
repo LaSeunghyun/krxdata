@@ -670,7 +670,30 @@ function fmtSummary(s) {
 }
 const hitMark = (v) => (v.direction_hit ? (v.partial_hit ? '🔶 방향만 맞음' : '✅ 맞음') : '❌ 틀림');
 
-function fmtRunReport({ made, verified, rolling, quality, dry, fx = null, disc = null, nxt = null }) {
+// 지금 시장 상태 — 예측 이전에 현재/직전 등락부터 (사용자 피드백: 코스피·코스닥 얘기 먼저)
+function marketNowContext({ etfSeries, etf1m, phase }) {
+  const todayKey = kstDate();
+  const out = [];
+  for (const m of MARKETS) {
+    const s = etfSeries[m.key] ?? [];
+    if (s.length < 2) continue;
+    const yRet = (s[s.length - 1].close / s[s.length - 2].close - 1) * 100;
+    if (phase === 'close') {
+      // 일봉에 오늘 포함 → 마지막 수익률이 오늘 확정 등락
+      out.push({ key: m.key, today: yRet, todayDone: true, prev: (s[s.length - 2].close / (s[s.length - 3]?.close ?? s[s.length - 2].close) - 1) * 100 });
+    } else if (phase === 'intraday' && etf1m) {
+      const bars = etf1m[m.key]?.get(todayKey) ?? [];
+      const now = bars.length ? bars[bars.length - 1].close : null;
+      const yClose = s[s.length - 1].close; // includeToday=false라 마지막=어제 종가
+      out.push({ key: m.key, today: now ? (now / yClose - 1) * 100 : null, todayDone: false, prev: yRet });
+    } else {
+      out.push({ key: m.key, today: null, todayDone: false, prev: yRet });
+    }
+  }
+  return out;
+}
+
+function fmtRunReport({ made, verified, rolling, quality, dry, fx = null, disc = null, nxt = null, now = [] }) {
   const L = [];
   const markets = made.filter(x => x.kind === 'market');
   if (made.length) {
@@ -680,6 +703,14 @@ function fmtRunReport({ made, verified, rolling, quality, dry, fx = null, disc =
       : `내일(${dateLabel(endDate)}) 하루`;
     L.push(`📊 시장 전망 · ${span}${dry ? ' [테스트]' : ''}`);
     if (quality.grade !== 'A') L.push(`(참고: 일부 데이터가 늦게 도착해 신뢰도가 평소보다 낮습니다)`);
+    if (now.length) {
+      L.push('');
+      L.push('【지금 시장】');
+      for (const n of now) {
+        const t = n.today == null ? null : `${n.todayDone ? '오늘' : '오늘 지금까지'} ${sgn(n.today)}%`;
+        L.push(`${shortName(n.key)}: ${t ? `${t}, ` : ''}${n.todayDone ? '전날' : '어제'} ${sgn(n.prev)}%`);
+      }
+    }
     for (const r of markets) {
       const f = r.f;
       L.push('');
@@ -755,7 +786,7 @@ async function runLlmVerificationAnalysis({ verified, etfSeries, quality, phase,
       market_day: marketDayContext(etfSeries),
       context,
       verified: verified.map(v => ({
-        id: v.id, name: v.target_kind === 'market' ? v.sector : v.sector,
+        id: v.id, name: v.sector === 'KOSPI_PROXY' ? '코스피' : v.sector === 'KOSDAQ_PROXY' ? '코스닥' : v.sector,
         forecast_median: v.forecast_median, range80: [v.forecast_low, v.forecast_high],
         prob_up: v.probability_up, prob_down: v.probability_down,
         sigma: v.sigma, flat_band: v.flat_band, call: v.call_direction,
@@ -970,7 +1001,8 @@ async function main() {
       verified, etfSeries, quality, phase, dry,
       context: { fx, nxt_after_obs: nxtInfo?.obs ?? null, nxt_pre_obs: nxtInfo?.preObs ?? null, disclosures: disc },
     });
-    const report = fmtRunReport({ made, verified, rolling, quality, dry, fx, disc, nxt: nxtInfo }) + fmtLlmSection(llm, verified);
+    const now = marketNowContext({ etfSeries, etf1m, phase });
+    const report = fmtRunReport({ made, verified, rolling, quality, dry, fx, disc, nxt: nxtInfo, now }) + fmtLlmSection(llm, verified);
     console.log(report);
     if (!dry) await notifyTelegram(report);
   }
