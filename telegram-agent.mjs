@@ -48,7 +48,8 @@ function ask(prompt) {
   return new Promise((resolve) => {
     const args = ['-p', prompt, '--append-system-prompt', SYS,
       '--allowedTools', ALLOWED, '--disallowedTools', 'Write,Edit,WebFetch,WebSearch'];
-    const cp = spawn('claude', args, { cwd: __dirname, env: process.env });
+    // stdin 무시: 안 닫으면 claude가 파이프 stdin 입력을 기다리며 멈춰 응답이 안 나감(프롬프트는 -p 인자로 전달)
+    const cp = spawn('claude', args, { cwd: __dirname, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '', err = '';
     cp.stdout.on('data', d => out += d);
     cp.stderr.on('data', d => err += d);
