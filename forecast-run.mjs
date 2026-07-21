@@ -847,7 +847,7 @@ function fmtRunReport({ made, verified, rolling, quality, dry, fx = null, disc =
       L.push('');
       L.push(`【${shortName(r.sector)}】 ${dirWord(f)}`);
       L.push(`예상 ${sgn(f.median)}% · 오름 ${f.probs.up}% / 보합 ${f.probs.flat}% / 내림 ${f.probs.down}%`);
-      L.push(`80% 예상 범위: ${sgn(f.low)}% ~ ${sgn(f.high)}%${f.range_capped ? ' (총폭 10%p 상한 절단 — 실제 분포는 더 넓음)' : ''}`);
+      L.push(`예상 범위(적중 목표 80% · 폭 상한 10%p): ${sgn(f.low)}% ~ ${sgn(f.high)}%`);
       L.push(`왜: ${plainReason(f)}`);
     }
     const sectors = made.filter(x => x.kind === 'sector').sort((a, b) => b.f.median - a.f.median);
