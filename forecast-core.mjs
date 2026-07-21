@@ -7,7 +7,7 @@
  *  - 기준모형 3종(0%·직전구간 지속·최근 20구간 평균)은 예측 시점에 함께 고정한다.
  */
 
-export const ENGINE_VERSION = 'fc-engine-v1';
+export const ENGINE_VERSION = 'fc-engine-v2'; // v2(2026-07-21): 잔차 EWMA σ·조건부 수축 블렌드·확률기반 콜 게이트·Winkler (codex 리뷰 반영)
 export const FLAT_BAND_K = 0.25;   // 보합 밴드 = ±0.25σ
 export const MEDIAN_SHRINK = 0.3;  // 중앙값 = 0.3 × 최근 20구간 평균 (과신 방지 수축)
 export const MEDIAN_CAP_SIGMA = 0.5; // 중앙값 상한 = ±0.5σ
@@ -29,12 +29,16 @@ export function quantile(xs, p) {
   return s[lo] + (s[hi] - s[lo]) * (idx - lo);
 }
 
-// EWMA 표준편차 (RiskMetrics λ=0.94, 평균 0 가정 — 일간 수익률 관행)
+// EWMA 표준편차 — 잔차 기반(EWMA 평균 제거). zero-mean 방식은 추세장에서 drift가
+// σ에 섞여 과대추정된다 (codex 리뷰 P: "변동성"은 방향성 제외 잔차여야 함)
 export function ewmaStd(returns, lambda = 0.94) {
   if (!returns.length) return 0;
-  let v = returns[0] * returns[0];
+  let mu = returns[0];
+  let v = 0;
   for (let i = 1; i < returns.length; i++) {
-    v = lambda * v + (1 - lambda) * returns[i] * returns[i];
+    const resid = returns[i] - mu;
+    v = lambda * v + (1 - lambda) * resid * resid;
+    mu = lambda * mu + (1 - lambda) * returns[i];
   }
   return Math.sqrt(v);
 }
@@ -82,9 +86,13 @@ export function buildForecast(returns, opts = {}) {
   const sigma = ewmaStd(hist) || 0.0001;
   const band = FLAT_BAND_K * sigma;
 
-  // 조건부 표본(전일 급락·급등 유사일 등)이 충분하면 단순 최근평균보다 우선한다 (§8 우선순위)
-  const cond = Array.isArray(opts.condReturns) && opts.condReturns.length >= 8 ? opts.condReturns : null;
-  const m20 = mean(cond ?? last20);
+  // 조건부 표본(전일 등락 유사일)은 하드 스위치가 아니라 표본수 비례 수축 블렌드로 섞는다
+  // w = n/(n+8): n=4면 33%, n=8이면 50%, n=24면 75% (codex 리뷰: n≥8 스위치는 정보 낭비)
+  const condXs = Array.isArray(opts.condReturns) ? opts.condReturns : [];
+  const condW = condXs.length / (condXs.length + 8);
+  const m20 = condXs.length
+    ? condW * mean(condXs) + (1 - condW) * mean(last20)
+    : mean(last20);
   const capped = Math.max(-MEDIAN_CAP_SIGMA * sigma,
     Math.min(MEDIAN_CAP_SIGMA * sigma, MEDIAN_SHRINK * m20));
   const median = round4(capped);
@@ -94,12 +102,11 @@ export function buildForecast(returns, opts = {}) {
   const high = round4(median + quantile(hist.map(r => r - m), 0.90));
   const probs = probsFromHistory(hist, median, band);
 
-  // 콜 게이트는 수축·캡 전의 원신호(m20)로 판정한다. zero-mean EWMA는 σ ≥ |m20|이
-  // 항상 성립해 캡된 median(≤0.5σ) 기준으로는 게이트가 발화 불가능하기 때문.
-  // |m20| ≥ 0.5σ는 순수 노이즈에서 z≈2.2 (오발 ~2.5%) — 강추세에서만 콜.
-  const call = Math.abs(m20) >= callK * sigma
-    ? (m20 > 0 ? 'up' : 'down')
-    : 'no-call';
+  // 콜 게이트는 채점 대상과 동일한 최종 확률분포 기준: 우세 확률 차 ≥ CALL_GAP_PP(기본 15%p).
+  // (codex P4: |m20| 같은 중간 신호가 아니라 확률 기반 정책 + 콜 비율 상시 병기)
+  const callGapPp = opts.callGapPp ?? 15;
+  const probGap = probs.up - probs.down;
+  const call = Math.abs(probGap) >= callGapPp ? (probGap > 0 ? 'up' : 'down') : 'no-call';
 
   const baselines = {
     b0_zero: 0,
@@ -178,6 +185,13 @@ export function scoreVerification(row, actualReturn) {
   const beatAll = Object.values(baselineScores).length > 0 &&
     Object.values(baselineScores).every(s => absError < s.abs_error);
 
+  // Winkler 구간점수(α=0.2, 낮을수록 좋음) — 커버리지만 보면 구간을 넓혀 게이밍 가능하므로
+  // 폭 + 이탈 페널티를 함께 채점한다 (codex 리뷰: L1은 커버리지·구간폭 동시 통과여야)
+  const lo = Number(row.forecast_low), hi = Number(row.forecast_high);
+  const winkler = round4((hi - lo)
+    + (2 / 0.2) * Math.max(0, lo - actualReturn)
+    + (2 / 0.2) * Math.max(0, actualReturn - hi));
+
   return {
     actual_return: round4(actualReturn),
     actual_class: actualClass,
@@ -187,6 +201,7 @@ export function scoreVerification(row, actualReturn) {
     abs_error: absError,
     in_range: inRange,
     brier,
+    winkler,
     call_result: callResult,
     baseline_scores: { ...baselineScores, beat_all: beatAll },
   };
@@ -203,6 +218,7 @@ export function summarizeVerifications(rows) {
   const calls = rows.filter(r => r.call_result);
   const callHits = calls.filter(r => r.call_result === 'hit').length;
   const briers = rows.map(r => Number(r.brier)).filter(Number.isFinite);
+  const winklers = rows.map(r => Number(r.winkler)).filter(Number.isFinite);
   const maes = rows.map(r => Number(r.abs_error)).filter(Number.isFinite);
   const beat = rows.filter(r => r.baseline_scores?.beat_all).length;
   return {
@@ -212,6 +228,7 @@ export function summarizeVerifications(rows) {
     coverage_80: round4(inRange / n),
     mae: round4(mean(maes)),
     brier_mean: round4(mean(briers)),
+    winkler_mean: winklers.length ? round4(mean(winklers)) : null,
     call_count: calls.length,
     call_hit_rate: calls.length ? round4(callHits / calls.length) : null,
     beat_all_baselines_rate: round4(beat / n),

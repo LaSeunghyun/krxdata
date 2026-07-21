@@ -60,8 +60,8 @@ const ETF_1M_TOTAL = 8000;    // ≈ 20거래일 (정규장 390분/일)
 const NXT_1M_TOTAL = 9600;    // 종목은 08:00~20:00 ~710분/일 → ≈ 13거래일
 const NXT_BASKET_SIZE = 5;    // 시총 상위 5 (top10 시총의 ~85%)
 const NXT_MIN_COVERAGE = 0.5; // 유효 체결 시총 비중 미달 시 평가 보류
-const CALL_K = Number.isFinite(Number(process.env.FORECAST_CALL_K))
-  ? Number(process.env.FORECAST_CALL_K) : 0.5;
+const CALL_GAP_PP = Number.isFinite(Number(process.env.FORECAST_CALL_GAP_PP))
+  ? Number(process.env.FORECAST_CALL_GAP_PP) : 15; // 방향 콜: 우세 확률 차 ≥ 15%p (사전 등록값)
 
 // ── DB (Supabase Management API — daily-ranking.js와 동일 경로) ──
 function fetchT(url, opts = {}, timeoutMs = 60_000) {
@@ -176,6 +176,7 @@ async function ensureTables() {
       baseline_scores JSONB,
       error_cause TEXT, cause_certainty TEXT);
     ALTER TABLE forecast_ledger ADD COLUMN IF NOT EXISTS target_start_hm TEXT;
+    ALTER TABLE forecast_verification ADD COLUMN IF NOT EXISTS winkler NUMERIC;
     ALTER TABLE forecast_ledger ADD COLUMN IF NOT EXISTS target_end_hm TEXT;
     SELECT 1;
   `);
@@ -382,14 +383,14 @@ async function verifyDue({ etfSeries, etf1m = null, dry }) {
       sigma: Number(row.sigma), flat_band: Number(row.flat_band), call_direction: row.call_direction,
     });
     values.push(`(${num(row.id)}, ${num(v.actual_return)}, ${esc(v.actual_class)}, ${esc(v.pred_class)},
-      ${v.direction_hit}, ${v.partial_hit}, ${num(v.abs_error)}, ${v.in_range}, ${num(v.brier)},
+      ${v.direction_hit}, ${v.partial_hit}, ${num(v.abs_error)}, ${v.in_range}, ${num(v.brier)}, ${num(v.winkler)},
       ${esc(v.call_result)}, ${jsonb(v.baseline_scores)})`);
   }
   if (values.length && !dry) {
     await dbQuery(`
       INSERT INTO forecast_verification
         (ledger_id, actual_return, actual_class, pred_class, direction_hit, partial_hit,
-         abs_error, in_range, brier, call_result, baseline_scores)
+         abs_error, in_range, brier, winkler, call_result, baseline_scores)
       VALUES ${values.join(',')}
       ON CONFLICT (ledger_id) DO NOTHING`);
   }
@@ -402,7 +403,7 @@ async function fetchRecentVerificationRows() {
     SELECT fl.sector, fl.target_kind, fl.target_end_date, fl.call_direction,
            fl.target_start_hm, fl.target_end_hm,
            fv.actual_return, fv.direction_hit, fv.partial_hit, fv.abs_error,
-           fv.in_range, fv.brier, fv.call_result, fv.baseline_scores
+           fv.in_range, fv.brier, fv.winkler, fv.call_result, fv.baseline_scores
     FROM forecast_verification fv JOIN forecast_ledger fl ON fl.id = fv.ledger_id
     WHERE fl.target_end_date >= TO_CHAR(CURRENT_DATE - 35, 'YYYYMMDD')
     ORDER BY fl.target_end_date`);
@@ -546,7 +547,7 @@ async function makeForecasts({ phase, cal, etfSeries, sectorSeries, topSectors, 
     for (let i = 1; i < series.length; i++) {
       if (cond.dates.has(series[i].date)) condReturns.push((series[i].close / series[i - 1].close - 1) * 100);
     }
-    const f = buildForecast(rs, { callK: CALL_K, qualityGrade: quality.grade, condReturns });
+    const f = buildForecast(rs, { callGapPp: CALL_GAP_PP, qualityGrade: quality.grade, condReturns });
     if (!f) { log(`⚠️ ${m.key} 표본 부족 — 생략`); continue; }
     // 시작가는 정확히 startDate 종가일 때만 기록 (불변 원장에 근사값을 남기지 않는다)
     const startPrice = series.find(x => x.date === startDate)?.close ?? null;
@@ -556,7 +557,7 @@ async function makeForecasts({ phase, cal, etfSeries, sectorSeries, topSectors, 
       condDesc: { prev_day_ret: cond.yRet, tolerance_pp: cond.tol, used: condReturns.length >= 8 },
     });
   }
-  const opts = { callK: CALL_K, qualityGrade: quality.grade };
+  const opts = { callGapPp: CALL_GAP_PP, qualityGrade: quality.grade };
   for (const s of topSectors) {
     const series = sectorSeries[s.sector] ?? [];
     const f = buildForecast(series.map(x => x.ret), opts);
@@ -646,7 +647,7 @@ async function makeIntradayForecasts({ etf1m, etfSeries, endHm, quality, version
       const r = intervalReturn(byDate.get(d), startHm, endHm, { dateIsPast: d < todayKey });
       if (r != null) condReturns.push(r);
     }
-    const f = buildForecast(returns, { callK: CALL_K, qualityGrade: quality.grade, condReturns });
+    const f = buildForecast(returns, { callGapPp: CALL_GAP_PP, qualityGrade: quality.grade, condReturns });
     if (!f) { log(`⚠️ ${m.key} ${fmtHm(startHm)}→${fmtHm(endHm)} 표본 부족(${returns.length}) — 생략`); continue; }
     rows.push({
       kind: 'market', sector: m.key, label: `${m.label} ${fmtHm(startHm)}→${fmtHm(endHm)}`,
@@ -676,7 +677,7 @@ async function makeNxtAfterForecast({ quality, versions, snapshotId, dry }) {
     log(`NXT 유효 체결 커버리지 ${cov} < ${NXT_MIN_COVERAGE} — 유동성 부족으로 평가 보류`);
     return { rows: [], obs };
   }
-  const f = buildForecast(hist.map(x => x.ret), { callK: CALL_K, qualityGrade: quality.grade });
+  const f = buildForecast(hist.map(x => x.ret), { callGapPp: CALL_GAP_PP, qualityGrade: quality.grade });
   if (!f) { log(`⚠️ NXT 세션 표본 부족(${hist.length}) — 생략`); return { rows: [], obs }; }
   const runId = `fc_nxt_${todayKey}`;
   const rows = [{
