@@ -81,9 +81,44 @@ export function sanitizeRows(rows, validIds) {
     .map(r => (r.error_cause && !r.cause_certainty ? { ...r, cause_certainty: '확인 불가' } : r));
 }
 
-export function callClaude(prompt, { timeoutMs = 180_000 } = {}) {
+// 예측 시점 브리핑 — 뉴스(웹검색)·공시·수급·가격흐름을 종합해 "무엇을 볼지"를 쓴다.
+// 숫자 예측은 여전히 엔진 소관 — 이 패스는 관찰 포인트와 맥락만 제공한다.
+export function buildOutlookPrompt(payload) {
+  return `당신은 한국 주식시장 데일리 브리핑 작성자다. 오늘 날짜와 아래 데이터가 주어진다.
+웹검색(WebSearch)으로 오늘의 한국 증시 뉴스(코스피/코스닥 시황, 반도체·2차전지 등 주요 섹터,
+미국 증시 마감, 환율)를 확인하고 아래 데이터와 종합하라.
+
+규칙:
+1. 사실과 추측 구분 — 뉴스에서 확인한 것은 "(뉴스)" 표기, 데이터에서 온 것은 그대로, 불확실하면 "추정".
+2. 매수·매도·종목 추천 금지. "주목할 섹터/기업"은 관찰 대상 제시일 뿐임을 유지.
+3. 공시 데이터가 stale이면 그 사실을 쓰고 지어내지 않는다.
+4. 출력은 JSON 하나만, 코드펜스 금지. 각 배열 원소는 70자 이내 한 줄.
+
+출력 형식:
+{"news_sectors":["- (뉴스) <오늘 뉴스 기반 주목 섹터와 이유>", "..."],
+ "flow_read":["- <수급·거래량 해석 한 줄>", "..."],
+ "disclosure_watch":["- <공시 기반 주목 기업/이슈 또는 '공시 데이터 갱신 안 됨'>"],
+ "risks":["- <오늘 예측을 뒤집을 수 있는 변수>", "..."]}
+
+데이터:
+${JSON.stringify(payload, null, 1)}`;
+}
+
+export function analyzeOutlook(payload, { invoke } = {}) {
+  const call = invoke ?? ((p) => callClaude(p, { extraArgs: ['--allowedTools', 'WebSearch'], timeoutMs: 300_000 }));
+  const parsed = parseLlmJson(call(buildOutlookPrompt(payload)));
+  if (!parsed) return null;
+  const arr = (x) => (Array.isArray(x) ? x.filter(s => typeof s === 'string').slice(0, 5) : []);
+  const out = {
+    news_sectors: arr(parsed.news_sectors), flow_read: arr(parsed.flow_read),
+    disclosure_watch: arr(parsed.disclosure_watch), risks: arr(parsed.risks),
+  };
+  return Object.values(out).some(a => a.length) ? out : null;
+}
+
+export function callClaude(prompt, { timeoutMs = 180_000, extraArgs = [] } = {}) {
   // 프롬프트는 stdin으로 전달 — Windows shell 인자 한계(8191자)·따옴표 깨짐 회피
-  const res = spawnSync('claude', ['-p', '--output-format', 'text'], {
+  const res = spawnSync('claude', ['-p', '--output-format', 'text', ...extraArgs], {
     shell: true, encoding: 'utf8', timeout: timeoutMs,
     input: prompt,
     maxBuffer: 4 * 1024 * 1024,

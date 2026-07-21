@@ -29,7 +29,7 @@ import { MIN_AVG_TURNOVER } from './config.js';
 import {
   ENGINE_VERSION, buildForecast, scoreVerification, summarizeVerifications,
 } from './forecast-core.mjs';
-import { llmEnabled, analyzeVerifications, analyzeDaily } from './forecast-llm.mjs';
+import { llmEnabled, analyzeVerifications, analyzeDaily, analyzeOutlook } from './forecast-llm.mjs';
 import {
   NXT_AFTER, fetch1mByDate, fetchBasket1m, historyIntervalReturns,
   intervalReturn, basketSessionSeries, basketLiveMove, lastBarHm, priceAt,
@@ -1043,7 +1043,33 @@ async function main() {
       context: { fx, investor_flow: flow, nxt_after_obs: nxtInfo?.obs ?? null, nxt_pre_obs: nxtInfo?.preObs ?? null, disclosures: disc },
     });
     const now = marketNowContext({ etfSeries, etf1m, phase });
-    const report = fmtRunReport({ made, verified, rolling, quality, dry, fx, disc, nxt: nxtInfo, now, flow }) + fmtLlmSection(llm, verified);
+    // 예측 시점 AI 브리핑 (뉴스 웹검색 + 공시 + 수급 종합) — 실패해도 보고는 나간다
+    let outlook = null;
+    if (llmEnabled() && (phase === 'pre' || phase === 'close')) {
+      try {
+        const recentDisc = await dbQuery(`
+          SELECT sd.rcept_dt, sa.corp_name, sa.sector, sd.report_nm, sds.sentiment, sds.sentiment_score
+          FROM stock_disclosures sd JOIN stock_analysis sa ON sa.stock_code = sd.stock_code
+          LEFT JOIN stock_disclosure_sentiments sds ON sds.rcept_no = sd.rcept_no
+          WHERE sd.rcept_dt >= TO_CHAR(CURRENT_DATE - 2, 'YYYY-MM-DD')
+          ORDER BY ABS(COALESCE(sds.sentiment_score, 0)) DESC LIMIT 12`);
+        outlook = analyzeOutlook({
+          date: kstDate(), phase, market_now: now, investor_flow: flow, fx,
+          disclosures: { stale: disc?.is_stale ?? true, latest: disc?.latest ?? null, recent: recentDisc },
+          engine_forecasts: made.map(r => ({ name: shortName(r.sector), median: r.f.median, up: r.f.probs.up, down: r.f.probs.down })),
+        });
+      } catch (e) { log(`브리핑 실패(비치명): ${e.message}`); }
+    }
+    let outlookText = '';
+    if (outlook) {
+      const S = [];
+      if (outlook.news_sectors.length) S.push('오늘 뉴스로 본 주목 섹터:', ...outlook.news_sectors);
+      if (outlook.flow_read.length) S.push('수급·흐름 해석:', ...outlook.flow_read);
+      if (outlook.disclosure_watch.length) S.push('공시 체크:', ...outlook.disclosure_watch);
+      if (outlook.risks.length) S.push('예측을 뒤집을 변수:', ...outlook.risks);
+      outlookText = `\n\n【AI 브리핑 — 오늘 뭘 볼까】\n${S.join('\n')}`;
+    }
+    const report = fmtRunReport({ made, verified, rolling, quality, dry, fx, disc, nxt: nxtInfo, now, flow }) + outlookText + fmtLlmSection(llm, verified);
     console.log(report);
     if (!dry) await notifyTelegram(report);
   }
