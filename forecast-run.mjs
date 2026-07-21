@@ -756,7 +756,7 @@ function fmtSummary(s) {
   if (!s) return '아직 채점된 예측이 없습니다.';
   const parts = [`방향 맞음 ${pct(s.direction_hit_rate)}`];
   if (s.partial_count) parts.push(`방향만 맞음 ${s.partial_count}건`);
-  parts.push(`예상범위 안 ${pct(s.coverage_80)} (목표 80%)`);
+  parts.push(`±2% 범위 적중 ${pct(s.coverage_80)}`);
   if (s.call_count) parts.push(`확신 콜 ${s.call_count}건 중 ${Math.round((s.call_hit_rate ?? 0) * s.call_count)}건 적중`);
   return `${parts.join(' · ')} — 총 ${s.n}건`;
 }
@@ -850,7 +850,7 @@ function fmtRunReport({ made, verified, rolling, quality, dry, fx = null, disc =
       L.push('');
       L.push(`【${shortName(r.sector)}】 ${dirWord(f)}`);
       L.push(`예상 ${sgn(f.median)}% · 오름 ${f.probs.up}% / 보합 ${f.probs.flat}% / 내림 ${f.probs.down}%`);
-      L.push(`예상 범위(적중 목표 80% · 폭 상한 10%p): ${sgn(f.low)}% ~ ${sgn(f.high)}%`);
+      L.push(`예상 범위(±2%p): ${sgn(f.median - 2)}% ~ ${sgn(f.median + 2)}%`);
       L.push(`왜: ${plainReason(f)}`);
     }
     const sectors = made.filter(x => x.kind === 'sector').sort((a, b) => b.f.median - a.f.median);

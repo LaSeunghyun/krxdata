@@ -171,7 +171,9 @@ export function scoreVerification(row, actualReturn) {
     .reduce((a, b) => (probs[a] >= probs[b] ? a : b));
   const directionHit = predClass === actualClass;
   const absError = round4(Math.abs(actualReturn - median));
-  const inRange = actualReturn >= Number(row.forecast_low) && actualReturn <= Number(row.forecast_high);
+  // 범위 적중 = 예측 중앙값 ±2%p 이내 (2026-07-22 사용자 지시: 80% 경험분위수 대신 고정 ±2% 밴드).
+  //   in_range = !structural_miss (둘 다 |실제−중앙값| 기준). engine의 forecast_low/high(80%분위)는 Winkler·원장 기록용으로만 잔존.
+  const inRange = absError < STRUCTURAL_MISS_PP;
   const partialHit = directionHit && predClass !== 'flat' && sigma > 0 && absError > sigma;
 
   // 다범주 Brier (0=완벽, 2=최악)
