@@ -13,6 +13,7 @@ export const MEDIAN_SHRINK = 0.3;  // 중앙값 = 0.3 × 최근 20구간 평균 
 export const MEDIAN_CAP_SIGMA = 0.5; // 중앙값 상한 = ±0.5σ
 export const DEFAULT_CALL_K = 0.5; // (v1 잔재 — v2는 확률 차 기준)
 export const RANGE_CAP_PP = 10; // 80% 범위 총폭 상한 10%p (사용자 지시 2026-07-21). 절단 시 range_capped 표기
+export const STRUCTURAL_MISS_PP = 2.0; // |실제−예측중앙값| ≥ 2%p면 "구조적 미스"(사용자 지시 2026-07-21) → 원인분석·개선 트리거
 
 // ── 기초 통계 ────────────────────────────────────────────────
 export function mean(xs) {
@@ -203,6 +204,9 @@ export function scoreVerification(row, actualReturn) {
     + (2 / 0.2) * Math.max(0, lo - actualReturn)
     + (2 / 0.2) * Math.max(0, actualReturn - hi));
 
+  // 구조적 미스: 예측 중앙값에서 실제가 STRUCTURAL_MISS_PP(2%p) 이상 벗어남 → 원인분석·개선 트리거
+  const structuralMiss = absError >= STRUCTURAL_MISS_PP;
+
   return {
     actual_return: round4(actualReturn),
     actual_class: actualClass,
@@ -214,6 +218,7 @@ export function scoreVerification(row, actualReturn) {
     brier,
     winkler,
     call_result: callResult,
+    structural_miss: structuralMiss,
     baseline_scores: { ...baselineScores, beat_all: beatAll },
   };
 }

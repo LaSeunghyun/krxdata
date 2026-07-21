@@ -178,6 +178,7 @@ async function ensureTables() {
     ALTER TABLE forecast_ledger ADD COLUMN IF NOT EXISTS target_start_hm TEXT;
     ALTER TABLE forecast_verification ADD COLUMN IF NOT EXISTS winkler NUMERIC;
     ALTER TABLE forecast_ledger ADD COLUMN IF NOT EXISTS target_end_hm TEXT;
+    ALTER TABLE forecast_verification ADD COLUMN IF NOT EXISTS structural_miss BOOLEAN;
     SELECT 1;
   `);
 }
@@ -384,13 +385,13 @@ async function verifyDue({ etfSeries, etf1m = null, dry }) {
     });
     values.push(`(${num(row.id)}, ${num(v.actual_return)}, ${esc(v.actual_class)}, ${esc(v.pred_class)},
       ${v.direction_hit}, ${v.partial_hit}, ${num(v.abs_error)}, ${v.in_range}, ${num(v.brier)}, ${num(v.winkler)},
-      ${esc(v.call_result)}, ${jsonb(v.baseline_scores)})`);
+      ${esc(v.call_result)}, ${jsonb(v.baseline_scores)}, ${v.structural_miss})`);
   }
   if (values.length && !dry) {
     await dbQuery(`
       INSERT INTO forecast_verification
         (ledger_id, actual_return, actual_class, pred_class, direction_hit, partial_hit,
-         abs_error, in_range, brier, winkler, call_result, baseline_scores)
+         abs_error, in_range, brier, winkler, call_result, baseline_scores, structural_miss)
       VALUES ${values.join(',')}
       ON CONFLICT (ledger_id) DO NOTHING`);
   }
@@ -928,6 +929,7 @@ async function runLlmVerificationAnalysis({ verified, etfSeries, quality, phase,
         actual_return: v.actual_return, actual_class: v.actual_class,
         direction_hit: v.direction_hit, partial_hit: v.partial_hit,
         in_range: v.in_range, abs_error: v.abs_error, brier: v.brier,
+        structural_miss: v.structural_miss, // |실제−중앙값|≥2%p — 구조적 미스 우선 원인분석 대상
         baseline_scores: v.baseline_scores,
       })),
     };
