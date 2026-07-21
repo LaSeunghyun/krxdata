@@ -42,3 +42,4 @@ backtest_results.json
 candles-daily.jsonl
 forecast-bear-days.json
 .kis-token.json
+flow-snapshot-log.txt
