@@ -34,6 +34,15 @@ export const CONVICTION_SIZING = Object.freeze({
 //   패자·신규진입은 보류. forecast track record 0(오늘 시작)이라 shadow=true로 시작 —
 //   실제 매도 없이 저널·로그에만 "이익보호 했을 것" 기록 → forecast-replay 백테스트 검증 후 shadow=false로 활성화.
 //   임계(probDiff·minConf·harvestRetPct·bearTrailPct)는 백테스트로 확정 예정.
+// 2026-07-21: 부분익절 (백테스트+MC 확정 — 순수트레일 대비 CAGR 50.6% vs 38.1%, MDD 31 vs 42, 승률 59 vs 53.5, 전부 개선).
+//   기존 live는 순수트레일(열등)이었음. combo-v2 백테스트 tp1R=1/tp2R=2(=trailPct×N) 이식.
+//   +tp1Pct 도달 → 절반 익절 / +tp2Pct 도달 → 잔량 절반 추가익절 / 나머지는 트레일(승자 태우기 유지).
+export const PARTIAL_TP = Object.freeze({
+  enabled: true,
+  tp1Pct: 8,   // 진입가 +8%(=trailPct×1) → 보유수량 절반 익절
+  tp2Pct: 16,  // 진입가 +16%(=trailPct×2) → 잔량 절반 추가 익절
+});
+
 export const FORECAST_GUARD = Object.freeze({
   enabled: true,
   shadow: true,          // true=기록만(실집행 없음), false=실제 이익보호 집행 (백테스트 검증 후 전환)

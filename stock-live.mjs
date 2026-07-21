@@ -18,7 +18,7 @@ import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { getAccounts, getHoldings, getBuyingPower, getPricesMap, getDailyCandles, createOrder, getOrder, cancelOrder } from './toss-api.js';
-import { LIVE_SLOTS, CONVICTION_SIZING, FORECAST_GUARD } from './strategy-contract.mjs';
+import { LIVE_SLOTS, CONVICTION_SIZING, FORECAST_GUARD, PARTIAL_TP } from './strategy-contract.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: join(__dirname, '.env') });
@@ -197,6 +197,32 @@ while (true) {
     const m = state.meta[it.symbol] ?? (state.meta[it.symbol] = { hi: px, entry });
     m.hi = Math.max(m.hi ?? px, px);
     const ret = (px / entry - 1) * 100;
+
+    // ⓪ 부분익절 (백테스트 검증): +tp1Pct 절반 / +tp2Pct 잔량절반. 나머지는 아래 트레일 유지.
+    if (PARTIAL_TP.enabled) {
+      let tpTag = null;
+      if (ret >= PARTIAL_TP.tp2Pct && m.tp1 && !m.tp2) tpTag = 'tp2';
+      else if (ret >= PARTIAL_TP.tp1Pct && !m.tp1) tpTag = 'tp1';
+      if (tpTag) {
+        const tpQty = Math.floor(qty / 2);
+        if (tpQty >= 1) {
+          try {
+            const lpx = limitSellPx(px);
+            const o = await createOrder(seq, { symbol: it.symbol, side: 'SELL', orderType: 'LIMIT', price: String(lpx), quantity: String(tpQty) });
+            const filled = await settleOrder(o?.orderId ?? o?.id, it.symbol, 'SELL', qty, `부분익절 ${it.symbol}`);
+            if (filled) {
+              m[tpTag] = true;
+              const pct = tpTag === 'tp2' ? PARTIAL_TP.tp2Pct : PARTIAL_TP.tp1Pct;
+              log(`부분익절 ${it.name}(${it.symbol}) ${tpQty}주 @${lpx.toLocaleString()} (+${pct}% 도달, ${ret.toFixed(1)}%)`);
+              recordTrade({ ts: now(), code: it.symbol, name: it.name, side: 'SELL', px: lpx, qty: tpQty, entry, ret: Number(ret.toFixed(1)), reason: `부분익절(${tpTag}) +${pct}%` });
+              writeFileSync(STATE, JSON.stringify(state, null, 1));
+            }
+          } catch (e) { log(`부분익절 오류 ${it.symbol}: ${e.message.slice(0, 80)}`); }
+          continue; // 이번 사이클은 부분익절만 — 남은 수량은 다음 폴에서 추가익절/트레일 평가
+        }
+      }
+    }
+
     let reason = null, harvest = false;
     // 기존(검증된 combo-v2) 청산 — 항상 실집행
     if (px <= entry * (1 - HARD_STOP_PCT / 100)) reason = `하드손절 -${HARD_STOP_PCT}%`;
