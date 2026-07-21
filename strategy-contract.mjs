@@ -43,6 +43,15 @@ export const PARTIAL_TP = Object.freeze({
   tp2Pct: 8,   // +8% → 잔량 절반 추가 익절. 트레일은 8% 유지(러너 1/4는 넓게 태워 꼬리 포착)
 });
 
+// 2026-07-22: Corporate-action 서킷브레이커 (사용자 지적 — 무상증자·액면분할 권리락 급락에 헐값 자동매도 방지).
+//   직전 관측 대비 dropPct 초과 급락 = 기계적 조정 가능성 → 자동매도 전면 보류 + 텔레그램 경보.
+//   ret이 clearRet 이상 회복(평단 조정/신주 반영) 시 정상 재개. 백테스트는 수정주가라 미재현 = 라이브 전용 안전가드.
+export const CA_GUARD = Object.freeze({
+  enabled: true,
+  dropPct: 25,     // 직전 관측 대비 -25% 초과 1스텝 급락 → corporate action 의심(대형주 유기적 급락은 극히 드묾)
+  clearRet: -10,   // 수익률이 이 값(%) 이상 회복되면 조정 반영된 것 → 정상 청산로직 재개
+});
+
 export const FORECAST_GUARD = Object.freeze({
   enabled: true,
   shadow: true,          // true=기록만(실집행 없음), false=실제 이익보호 집행 (백테스트 검증 후 전환)

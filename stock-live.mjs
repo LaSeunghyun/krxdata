@@ -18,7 +18,7 @@ import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { getAccounts, getHoldings, getBuyingPower, getPricesMap, getDailyCandles, createOrder, getOrder, cancelOrder } from './toss-api.js';
-import { LIVE_SLOTS, CONVICTION_SIZING, FORECAST_GUARD, PARTIAL_TP } from './strategy-contract.mjs';
+import { LIVE_SLOTS, CONVICTION_SIZING, FORECAST_GUARD, PARTIAL_TP, CA_GUARD } from './strategy-contract.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: join(__dirname, '.env') });
@@ -168,6 +168,14 @@ function isBearish(f) {
   if (!f) return false;
   return f.dir === 'down' || (f.down - f.up >= FORECAST_GUARD.probDiff && f.conf >= FORECAST_GUARD.minConf);
 }
+// 텔레그램 경보 (CA 서킷 등 사람이 즉시 알아야 할 이벤트용). 실패해도 매매 무영향.
+async function tgNotify(text) {
+  try {
+    const T = process.env.TELEGRAM_BOT_TOKEN, C = process.env.TELEGRAM_CHAT_ID;
+    if (!T || !C) return;
+    await fetch(`https://api.telegram.org/bot${T}/sendMessage`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: C, text }) });
+  } catch {}
+}
 
 log(`=== 주식 연속 트레이더 시작 (계좌 ${accounts[0].accountSeq}, 08:00~20:00, LIVE_SLOTS=${LIVE_SLOTS}, 트레일-${TRAIL_PCT}%/하드-${HARD_STOP_PCT}%, 예측가드 ${FORECAST_GUARD.enabled ? (FORECAST_GUARD.shadow ? 'SHADOW' : 'LIVE') : 'off'}) ===`);
 let lastSignal = 0, signalCache = null;
@@ -195,8 +203,26 @@ while (true) {
   for (const it of items) {
     const px = Number(it.lastPrice), entry = Number(it.averagePurchasePrice), qty = Number(it.quantity);
     const m = state.meta[it.symbol] ?? (state.meta[it.symbol] = { hi: px, entry });
-    m.hi = Math.max(m.hi ?? px, px);
     const ret = (px / entry - 1) * 100;
+
+    // ⓪-CA: 무상증자·분할 서킷브레이커 — 직전 관측 대비 급락 시 자동매도 보류(헐값 매도 방지) + 경보.
+    if (CA_GUARD.enabled) {
+      if (m.lastPx && px < m.lastPx * (1 - CA_GUARD.dropPct / 100)) m.caHold = true; // 급락 감지
+      if (m.caHold) {
+        if (ret >= CA_GUARD.clearRet) { m.caHold = false; delete m.caAlertDay; } // 조정 반영/회복 → 정상 재개
+        else {
+          if (m.caAlertDay !== today) {
+            const msg = `⚠️ [CA서킷] ${it.name}(${it.symbol}) 급락 감지(${ret.toFixed(1)}%, 직전 ${m.lastPx?.toLocaleString()}→${px.toLocaleString()}) — 무상증자·분할 의심, 자동매도 보류. 수동 확인 필요!`;
+            log(msg); tgNotify(msg); m.caAlertDay = today;
+          }
+          m.lastPx = px;
+          writeFileSync(STATE, JSON.stringify(state, null, 1));
+          continue; // 이 종목 자동매도(부분익절·손절·트레일) 전면 스킵
+        }
+      }
+      m.lastPx = px;
+    }
+    m.hi = Math.max(m.hi ?? px, px);
 
     // ⓪ 부분익절 (백테스트 검증): +tp1Pct 절반 / +tp2Pct 잔량절반. 나머지는 아래 트레일 유지.
     if (PARTIAL_TP.enabled) {

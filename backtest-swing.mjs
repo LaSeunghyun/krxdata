@@ -95,6 +95,7 @@ const DUMP = argOf('--dump', null);
 const COOLDOWN = Number(argOf('--cooldown', 0));
 const DYNSLOT = Number(argOf('--dynslot', 0)); // MC3 I11: 포지션당 목표 예산(원), 0=비활성
 const TPFRAC = Number(argOf('--tpfrac', '0.5')); // 부분익절 매도비율 (0.5=절반, 0.333=1/3→러너↑ 꼬리포착↑)
+const MAXPOS = Number(argOf('--maxpos', '0')); // 총 종목수 상한 (0=무제한=현금기반 재투입, N=현행 live의 종목수 게이트 모사)
 const ACTIVE = Object.entries(STRATEGIES).filter(([k]) => !ONLY.length || ONLY.includes(k));
 
 function tickSize(p) {
@@ -734,6 +735,7 @@ for (let di = 0; di < tradingDays.length; di++) {
       const countSub = (sub) => Object.values(book.positions).filter(p => p.sub === sub).length;
       // hi120 서브 진입 (모멘텀 유니버스 신고가 돌파)
       for (const code of mom) {
+        if (MAXPOS > 0 && Object.keys(book.positions).length >= MAXPOS) break; // 총 종목수 상한(현행 live 모사)
         if (countSub('hi120') >= caps.hi120 || book.positions[code]) continue;
         const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
         if (i == null || i < cfg.lookback + 1) continue;
@@ -762,6 +764,7 @@ for (let di = 0; di < tradingDays.length; di++) {
       // rsi2 서브 진입 (PIT 시총 상위 + 20일 평균 거래대금 30억 이상)
       const rsiPool = mcapUniverse(day, MCAP_TOP);
       for (const code of rsiPool) {
+        if (MAXPOS > 0 && Object.keys(book.positions).length >= MAXPOS) break; // 총 종목수 상한(현행 live 모사)
         if (countSub('rsi2') >= caps.rsi2 || book.positions[code]) continue;
         const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
         if (i == null || i < 4) continue;
