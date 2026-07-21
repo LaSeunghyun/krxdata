@@ -28,6 +28,7 @@ import { toUtcIso, toKstDateKey, toKstTimeLabel } from './trading-time.mjs';
 import { MIN_AVG_TURNOVER } from './config.js';
 import {
   ENGINE_VERSION, buildForecast, scoreVerification, summarizeVerifications, sampleStats,
+  summarizeStructuralMisses,
 } from './forecast-core.mjs';
 import { llmEnabled, analyzeVerifications, analyzeDaily, composeReport } from './forecast-llm.mjs';
 import {
@@ -404,7 +405,8 @@ async function fetchRecentVerificationRows() {
     SELECT fl.sector, fl.target_kind, fl.target_end_date, fl.call_direction,
            fl.target_start_hm, fl.target_end_hm,
            fv.actual_return, fv.direction_hit, fv.partial_hit, fv.abs_error,
-           fv.in_range, fv.brier, fv.winkler, fv.call_result, fv.baseline_scores
+           fv.in_range, fv.brier, fv.winkler, fv.call_result, fv.baseline_scores,
+           fv.structural_miss, fv.error_cause
     FROM forecast_verification fv JOIN forecast_ledger fl ON fl.id = fv.ledger_id
     WHERE fl.target_end_date >= TO_CHAR(CURRENT_DATE - 35, 'YYYYMMDD')
     ORDER BY fl.target_end_date`);
@@ -972,6 +974,7 @@ async function dailySummary({ dry }) {
     rolling: summarizeVerifications(all),
     best_sectors: sectorStats.slice(0, 3).map(s => ({ sector: s.sector, hit: s.direction_hit_rate, n: s.n })),
     worst_sectors: sectorStats.slice(-3).reverse().map(s => ({ sector: s.sector, hit: s.direction_hit_rate, n: s.n })),
+    structural: summarizeStructuralMisses(all), // 2%p 구조적 미스 집계 + 재캘리브레이션 권고(개선 루프)
     engine_version: ENGINE_VERSION,
   };
   if (!dry) {
@@ -992,6 +995,13 @@ function fmtDailyReport(s) {
     L.push('');
     L.push(`잘 맞춘 섹터: ${s.best_sectors.map(x => `${x.sector}(${pct(x.hit)})`).join(', ')}`);
     L.push(`자주 틀린 섹터: ${s.worst_sectors.map(x => `${x.sector}(${pct(x.hit)})`).join(', ')}`);
+  }
+  if (s.structural && s.structural.missCount > 0) {
+    L.push('');
+    L.push(`⚠️ 구조적 미스(2%p↑ 빗나감) ${s.structural.missCount}건 / 표본 ${s.structural.total}`);
+    if (s.structural.dominantCause) L.push(`반복 원인: ${s.structural.dominantCause} (${s.structural.dominantN}건)`);
+    if (s.structural.recommend) L.push(`→ 재캘리브레이션 권고: "${s.structural.dominantCause}"가 반복됨. 20거래일 표본 충족 — 조건부 분포 재조정 검토`);
+    else L.push(`(개선 트리거 대기: 표본 20+ & 동일원인 3+ 필요 — 현재 미달, 조기 튜닝 안 함)`);
   }
   if (s.rolling) L.push(`\n(통계 상세: 평균 빗나간 폭 ${s.rolling.mae}%p, 확률점수 Brier ${s.rolling.brier_mean})`);
   return L.join('\n');

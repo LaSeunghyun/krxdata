@@ -2,9 +2,30 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   mean, quantile, ewmaStd, classify, roundProbs100, probsFromHistory,
-  buildForecast, scoreVerification, summarizeVerifications,
-  FLAT_BAND_K, DEFAULT_CALL_K,
+  buildForecast, scoreVerification, summarizeVerifications, summarizeStructuralMisses,
+  FLAT_BAND_K, DEFAULT_CALL_K, STRUCTURAL_MISS_PP,
 } from '../forecast-core.mjs';
+
+test('structural_miss: |actual-median|>=2pp면 true, 미만이면 false', () => {
+  const row = { flat_band: 0.3, sigma: 1, forecast_median: 0.1, forecast_low: -1, forecast_high: 1.6,
+    probability_up: 40, probability_flat: 30, probability_down: 30, baselines: {}, call_direction: 'no-call' };
+  assert.equal(scoreVerification(row, 2.2).structural_miss, true);   // |2.2-0.1|=2.1 ≥ 2
+  assert.equal(scoreVerification(row, 1.5).structural_miss, false);  // |1.5-0.1|=1.4 < 2
+  assert.equal(STRUCTURAL_MISS_PP, 2.0);
+});
+
+test('summarizeStructuralMisses: 표본·반복원인 게이트', () => {
+  const mk = (miss, cause) => ({ structural_miss: miss, error_cause: cause });
+  // 표본 5개(20 미만) → recommend false
+  const few = [mk(true, 'A'), mk(true, 'A'), mk(true, 'A'), mk(false, null), mk(false, null)];
+  const rf = summarizeStructuralMisses(few);
+  assert.equal(rf.missCount, 3); assert.equal(rf.dominantCause, 'A'); assert.equal(rf.recommend, false);
+  // 표본 22개 + 원인 A 4회 → recommend true
+  const many = Array.from({ length: 18 }, () => mk(false, null))
+    .concat([mk(true, 'A'), mk(true, 'A'), mk(true, 'A'), mk(true, 'A')]);
+  const rm = summarizeStructuralMisses(many);
+  assert.equal(rm.total, 22); assert.equal(rm.dominantN, 4); assert.equal(rm.recommend, true);
+});
 
 // 재현 가능한 의사난수 수익률 (Date.now/Math.random 미사용 컨벤션 준수)
 function synthReturns(n, { drift = 0, vol = 1, seed = 7 } = {}) {

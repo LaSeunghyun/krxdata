@@ -251,6 +251,22 @@ export function summarizeVerifications(rows) {
   };
 }
 
+// 구조적 미스(2%p↑) 집계 → 반복 원인 있으면 재캘리브레이션 권고 (개선 루프).
+// 게이트: 전체 표본 ≥ minSample(20거래일 규칙) AND 특정 원인 ≥ minCause 반복일 때만 권고.
+// 단일 이상치(외부충격)는 권고 안 함 — 근거 없는 조기 파라미터 변경 방지.
+export function summarizeStructuralMisses(rows, { minSample = 20, minCause = 3 } = {}) {
+  const misses = rows.filter(r => r.structural_miss);
+  const byCause = {};
+  for (const r of misses) {
+    const c = r.error_cause || '미분류';
+    byCause[c] = (byCause[c] || 0) + 1;
+  }
+  let dominantCause = null, dominantN = 0;
+  for (const [c, n] of Object.entries(byCause)) if (n > dominantN) { dominantCause = c; dominantN = n; }
+  const recommend = rows.length >= minSample && dominantN >= minCause;
+  return { total: rows.length, missCount: misses.length, byCause, dominantCause, dominantN, recommend };
+}
+
 // 표본 요약 (조건부/일반 기준값 비교 표시용 — §8: 표본수·평균·중앙값·상승비율·범위)
 export function sampleStats(xs) {
   if (!xs?.length) return null;
