@@ -39,8 +39,8 @@ export const CONVICTION_SIZING = Object.freeze({
 //   +tp1Pct 도달 → 절반 익절 / +tp2Pct 도달 → 잔량 절반 추가익절 / 나머지는 트레일(승자 태우기 유지).
 export const PARTIAL_TP = Object.freeze({
   enabled: true,
-  tp1Pct: 8,   // 진입가 +8%(=trailPct×1) → 보유수량 절반 익절
-  tp2Pct: 16,  // 진입가 +16%(=trailPct×2) → 잔량 절반 추가 익절
+  tp1Pct: 4,   // +4% → 절반 익절 (2026-07-21 백테스트+MC: +8/16 대비 CAGR 50.6→56.6·MDD 31→30·승률 59→61 전부 개선)
+  tp2Pct: 8,   // +8% → 잔량 절반 추가 익절. 트레일은 8% 유지(러너 1/4는 넓게 태워 꼬리 포착)
 });
 
 export const FORECAST_GUARD = Object.freeze({
