@@ -94,6 +94,7 @@ for (const [flag, key] of [['--bbperiod', 'period'], ['--bbmult', 'mult']]) {
 const DUMP = argOf('--dump', null);
 const COOLDOWN = Number(argOf('--cooldown', 0));
 const DYNSLOT = Number(argOf('--dynslot', 0)); // MC3 I11: 포지션당 목표 예산(원), 0=비활성
+const TPFRAC = Number(argOf('--tpfrac', '0.5')); // 부분익절 매도비율 (0.5=절반, 0.333=1/3→러너↑ 꼬리포착↑)
 const ACTIVE = Object.entries(STRATEGIES).filter(([k]) => !ONLY.length || ONLY.includes(k));
 
 function tickSize(p) {
@@ -697,12 +698,12 @@ for (let di = 0; di < tradingDays.length; di++) {
           // C26 (--breakfail 1): 돌파 실패 청산 — 종가가 돌파 기준선(직전 120일 고가) 아래 회귀 시 즉시 청산
           if (cfg.breakFail > 0 && !p.halfDone && p.breakLv > 0 && cd.c[i] < p.breakLv) { p.exitAtOpen = 'break_fail'; continue; }
           // H6 (--tp1r N): 진입가 +trailPct×N 도달 시 절반 익절 (잔량은 트레일링 지속)
-          if (cfg.tp1R > 0 && !p.halfDone && cd.c[i] >= p.entry * (1 + cfg.trailPct / 100 * cfg.tp1R) && Math.floor(p.qty / 2) >= 1) {
-            p.exitAtOpen = 'tp_half'; p.exitQty = Math.floor(p.qty / 2); p.halfDone = true;
+          if (cfg.tp1R > 0 && !p.halfDone && cd.c[i] >= p.entry * (1 + cfg.trailPct / 100 * cfg.tp1R) && Math.floor(p.qty * TPFRAC) >= 1) {
+            p.exitAtOpen = 'tp_half'; p.exitQty = Math.floor(p.qty * TPFRAC); p.halfDone = true;
           }
-          // C14 (--tp2r N): 절반익절 후 진입가 +trailPct×N 도달 시 잔량 절반 추가 익절
-          else if (cfg.tp2R > 0 && p.halfDone && !p.qtrDone && cd.c[i] >= p.entry * (1 + cfg.trailPct / 100 * cfg.tp2R) && Math.floor(p.qty / 2) >= 1) {
-            p.exitAtOpen = 'tp_quarter'; p.exitQty = Math.floor(p.qty / 2); p.qtrDone = true;
+          // C14 (--tp2r N): 1차 부분익절 후 진입가 +trailPct×N 도달 시 잔량 추가 부분익절 (--tpfrac 비율)
+          else if (cfg.tp2R > 0 && p.halfDone && !p.qtrDone && cd.c[i] >= p.entry * (1 + cfg.trailPct / 100 * cfg.tp2R) && Math.floor(p.qty * TPFRAC) >= 1) {
+            p.exitAtOpen = 'tp_quarter'; p.exitQty = Math.floor(p.qty * TPFRAC); p.qtrDone = true;
           }
           // C15 (--trailwide N): 절반익절 후 잔량 트레일링 폭 확대 (러너 추세 보존)
           else if (cd.c[i] <= p.hi * (1 - (p.halfDone && cfg.trailWide > 0 ? cfg.trailWide : cfg.trailPct) / 100)) p.exitAtOpen = 'trailing';
