@@ -676,7 +676,14 @@ function fmtSummary(s) {
   if (s.call_count) parts.push(`확신 콜 ${s.call_count}건 중 ${Math.round((s.call_hit_rate ?? 0) * s.call_count)}건 적중`);
   return `${parts.join(' · ')} — 총 ${s.n}건`;
 }
-const hitMark = (v) => (v.direction_hit ? (v.partial_hit ? '🔶 방향만 맞음' : '✅ 맞음') : '❌ 틀림');
+const hitMark = (v) => {
+  if (v.direction_hit) return v.partial_hit ? '🔶 방향만 맞음' : '✅ 맞음';
+  // 부호는 맞았지만 실제 움직임이 보합 밴드 안 → 채점상 틀림이되 오해 없게 별도 표기
+  if (v.actual_class === 'flat' && Number(v.forecast_median) * Number(v.actual_return) > 0) {
+    return '🔸 방향 부호는 맞음(실제는 보합 수준이라 미적중 처리)';
+  }
+  return '❌ 틀림';
+};
 
 // 지금 시장 상태 — 예측 이전에 현재/직전 등락부터 (사용자 피드백: 코스피·코스닥 얘기 먼저)
 function marketNowContext({ etfSeries, etf1m, phase }) {
