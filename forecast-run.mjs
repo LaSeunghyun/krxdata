@@ -643,98 +643,94 @@ const sgn = (x, d = 2) => `${x >= 0 ? '+' : ''}${Number(x).toFixed(d)}`;
 const pct = (x) => (x == null ? '-' : `${(x * 100).toFixed(0)}%`);
 const dateLabel = (k) => `${k.slice(4, 6)}/${k.slice(6, 8)}`;
 
+const shortName = (key) => (key === 'KOSPI_PROXY' ? '코스피' : key === 'KOSDAQ_PROXY' ? '코스닥' : key);
 function dirWord(f) {
-  if (f.median > f.band) return '상승 우위';
-  if (f.median < -f.band) return '하락 우위';
-  if (f.probs.up > f.probs.down) return '보합권(상승 소폭 우위)';
-  if (f.probs.down > f.probs.up) return '보합권(하락 소폭 우위)';
-  return '보합권(중립)';
+  if (f.median > f.band) return '📈 오를 가능성이 더 높음';
+  if (f.median < -f.band) return '📉 내릴 가능성이 더 높음';
+  if (f.probs.down - f.probs.up >= 8) return '➖ 보합, 굳이 따지면 아래쪽';
+  if (f.probs.up - f.probs.down >= 8) return '➖ 보합, 굳이 따지면 위쪽';
+  return '➖ 보합 예상';
 }
-function reasonOf(f) {
-  const trend = f.m20 > 0.05 ? '상승 흐름' : f.m20 < -0.05 ? '하락 흐름' : '뚜렷한 추세 없음';
-  const conviction = f.call === 'no-call'
-    ? '방향 확신 낮음(관망)'
-    : `강추세 → ${f.call === 'up' ? '상승' : '하락'} 콜`;
-  return `최근 20구간 평균 ${sgn(f.m20)}%(${trend}), 구간 변동성 σ${f.sigma.toFixed(2)}% → ${conviction}`;
+function plainReason(f) {
+  const drift = Math.abs(f.m20) < 0.05
+    ? '최근 4주간 이 구간은 뚜렷한 방향이 없었고'
+    : `최근 4주간 이 구간에서 평균 ${sgn(f.m20)}%씩 ${f.m20 > 0 ? '오르던' : '빠지던'} 흐름이고`;
+  const conv = f.call === 'no-call'
+    ? '요즘 장 출렁임이 커서 방향을 자신 있게 말하기 어렵습니다'
+    : `흐름이 강해서 이번엔 ${f.call === 'up' ? '상승' : '하락'} 쪽에 확신을 겁니다`;
+  return `${drift}, ${conv}.`;
 }
 function fmtSummary(s) {
-  if (!s) return '표본 없음';
-  const partial = s.partial_count ? ` (+부분적중 ${s.partial_count}건)` : '';
-  return `방향적중 ${pct(s.direction_hit_rate)}${partial} · 80%범위 적중 ${pct(s.coverage_80)}`
-    + ` · 평균오차 ${s.mae}%p · Brier ${s.brier_mean}`
-    + ` · 방향콜 ${s.call_count}건(적중 ${pct(s.call_hit_rate)}) · 기준모형 우위 ${pct(s.beat_all_baselines_rate)} (n=${s.n})`;
+  if (!s) return '아직 채점된 예측이 없습니다.';
+  const parts = [`방향 맞음 ${pct(s.direction_hit_rate)}`];
+  if (s.partial_count) parts.push(`방향만 맞음 ${s.partial_count}건`);
+  parts.push(`예상범위 안 ${pct(s.coverage_80)} (목표 80%)`);
+  if (s.call_count) parts.push(`확신 콜 ${s.call_count}건 중 ${Math.round((s.call_hit_rate ?? 0) * s.call_count)}건 적중`);
+  return `${parts.join(' · ')} — 총 ${s.n}건`;
 }
+const hitMark = (v) => (v.direction_hit ? (v.partial_hit ? '🔶 방향만 맞음' : '✅ 맞음') : '❌ 틀림');
 
 function fmtRunReport({ made, verified, rolling, quality, dry, fx = null, disc = null, nxt = null }) {
   const L = [];
+  const markets = made.filter(x => x.kind === 'market');
   if (made.length) {
-    const { startDate, endDate, startHm, endHm } = made[0];
+    const { endDate, startHm, endHm } = made[0];
     const span = startHm
-      ? `${dateLabel(startDate)} ${fmtHm(startHm)} → ${fmtHm(endHm)} 장중 구간`
-      : `${dateLabel(startDate)} 종가 → ${dateLabel(endDate)} 종가`;
-    L.push(`📈 ${span} 예측 (데이터품질 ${quality.grade}${dry ? ' · DRY' : ''})`);
-    L.push('');
-    L.push('■ 시장 전망');
-    for (const r of made.filter(x => x.kind === 'market')) {
+      ? `오늘 ${fmtHm(startHm)} → ${fmtHm(endHm)}`
+      : `내일(${dateLabel(endDate)}) 하루`;
+    L.push(`📊 시장 전망 · ${span}${dry ? ' [테스트]' : ''}`);
+    if (quality.grade !== 'A') L.push(`(참고: 일부 데이터가 늦게 도착해 신뢰도가 평소보다 낮습니다)`);
+    for (const r of markets) {
       const f = r.f;
-      L.push(`${r.label}: ${dirWord(f)} — 중앙 ${sgn(f.median)}%`);
-      L.push(`  확률 상승${f.probs.up}/보합${f.probs.flat}/하락${f.probs.down}% · 80%범위 ${sgn(f.low)}~${sgn(f.high)}%`);
-      L.push(`  이유: ${reasonOf(f)}`);
+      L.push('');
+      L.push(`【${shortName(r.sector)}】 ${dirWord(f)}`);
+      L.push(`예상 ${sgn(f.median)}% · 오를 확률 ${f.probs.up}% vs 내릴 확률 ${f.probs.down}%`);
+      L.push(`10번 중 8번은 ${sgn(f.low)}% ~ ${sgn(f.high)}% 사이에 들어옵니다`);
+      L.push(`왜: ${plainReason(f)}`);
     }
-    const sectors = made.filter(x => x.kind === 'sector')
-      .sort((a, b) => b.f.median - a.f.median);
+    const sectors = made.filter(x => x.kind === 'sector').sort((a, b) => b.f.median - a.f.median);
     if (sectors.length) {
       L.push('');
-      L.push('■ 섹터 전망 (예측 중앙값 순)');
+      L.push('【섹터】 강해 보이는 순서');
       for (const r of sectors) {
-        const f = r.f;
-        L.push(`${sgn(f.median)}% ${r.sector} — 상승확률 ${f.probs.up}%, 20일 ${sgn(f.m20)}%/일, σ${f.sigma.toFixed(1)}%`);
+        L.push(`  ${r.sector}: ${sgn(r.f.median)}% 예상 (오를 확률 ${r.f.probs.up}%)`);
       }
     }
   }
   if (nxt?.rows?.length || nxt?.obs) {
     L.push('');
-    L.push('■ NXT 애프터마켓 (합성 바스켓 — 공식지수 아님)');
-    if (nxt.obs) L.push(`15:30 대비 현재 ${sgn(nxt.obs.ret)}% (유효 ${nxt.obs.n}종목, 시총 커버리지 ${Math.round(nxt.obs.coverage * 100)}%)`);
+    L.push('【시간외 거래(NXT)】 15:30~20:00 · 대형주 5종목 기준');
+    if (nxt.obs) L.push(`지금까지 ${sgn(nxt.obs.ret)}% 움직임 (${nxt.obs.n}종목 체결 중)`);
     for (const r of nxt.rows ?? []) {
-      const f = r.f;
-      L.push(`${r.label}: ${dirWord(f)} — 중앙 ${sgn(f.median)}% [${sgn(f.low)}~${sgn(f.high)}%] 상승확률 ${f.probs.up}%`);
-      L.push(`  이유: ${reasonOf(f)}`);
+      L.push(`오늘 저녁 전망: ${sgn(r.f.median)}% 예상, 오를 확률 ${r.f.probs.up}% — ${plainReason(r.f)}`);
     }
   }
   if (nxt?.preObs) {
     L.push('');
-    L.push(`■ NXT 프리마켓 관측 (전일 KRX 종가 대비, 진행 중 — 채점 대상 아님)`);
-    L.push(`합성 바스켓 ${sgn(nxt.preObs.ret)}% (유효 ${nxt.preObs.n}종목, 커버리지 ${Math.round(nxt.preObs.coverage * 100)}%)`);
+    L.push(`【개장 전 시간외(NXT)】 어제 종가 대비 ${sgn(nxt.preObs.ret)}% (대형주 ${nxt.preObs.n}종목, 참고용)`);
   }
-  if (fx || disc) {
+  if (fx || (disc && !disc.is_stale && disc.sectors.length)) {
     L.push('');
-    L.push('■ 참고 지표');
-    if (fx) L.push(`${fx.label}: 직전일 ${sgn(fx.day_return_pct)}%, 20일 평균 ${sgn(fx.m20_pct)}%/일`);
+    L.push('【참고】');
+    if (fx) L.push(`달러 환율(ETF 기준): 전날 ${sgn(fx.day_return_pct)}%, 최근 한 달 ${fx.m20_pct > 0 ? '상승' : '하락'} 기조`);
     if (disc && !disc.is_stale && disc.sectors.length) {
-      const top = disc.sectors.slice(0, 4).map(s => `${s.sector} ${s.n}건${s.avg_sentiment != null ? `(감성 ${s.avg_sentiment})` : ''}`).join(' · ');
-      L.push(`최근 3일 공시: ${top}`);
-    } else if (disc?.is_stale) {
-      L.push(`공시 데이터 STALE(최신 ${disc.latest ?? '없음'}) — 예측 미반영`);
+      L.push(`공시 많은 섹터: ${disc.sectors.slice(0, 3).map(s => `${s.sector} ${s.n}건`).join(', ')}`);
     }
   }
   L.push('');
-  L.push('■ 직전 예측 채점');
+  L.push('【직전 예측 채점】');
   if (verified.length) {
-    const s = summarizeVerifications(verified);
-    L.push(fmtSummary(s));
     for (const v of verified) {
-      let name = v.target_kind === 'market' ? (v.sector === 'KOSPI_PROXY' ? 'KOSPI' : 'KOSDAQ') : v.sector;
-      if (v.target_start_hm) name += ` ${fmtHm(v.target_start_hm)}→${fmtHm(v.target_end_hm)}`;
-      L.push(`  ${name}: 예측 ${sgn(v.forecast_median)}% → 실제 ${sgn(v.actual_return)}%`
-        + ` ${v.direction_hit ? (v.partial_hit ? '△부분적중' : '○적중') : '✗빗나감'} · 범위${v.in_range ? '내' : '밖'}`);
+      let name = shortName(v.sector);
+      if (v.target_start_hm) name += ` ${fmtHm(v.target_start_hm)}~${fmtHm(v.target_end_hm)}`;
+      L.push(`  ${name}: ${sgn(v.forecast_median)}% 예상 → 실제 ${sgn(v.actual_return)}% ${hitMark(v)}${v.in_range ? '' : ' (예상범위도 벗어남)'}`);
     }
+    L.push(`  → ${fmtSummary(summarizeVerifications(verified))}`);
   } else {
-    L.push('채점 만기가 도래한 예측 없음');
+    L.push('  이번에 채점할 예측이 없습니다 (다음 마감 때 채점)');
   }
   L.push('');
-  L.push(`■ 누적 정확도 (최근 20거래일 롤링)`);
-  L.push(fmtSummary(rolling));
+  L.push(`【지금까지 성적】 ${fmtSummary(rolling)}`);
   return L.join('\n');
 }
 
@@ -790,7 +786,7 @@ async function runLlmVerificationAnalysis({ verified, etfSeries, quality, phase,
 
 function fmtLlmSection(res, verified) {
   if (!res) return '';
-  const L = ['', '■ LLM 세부 분석'];
+  const L = ['', '【AI 세부 분석】'];
   L.push(res.narrative);
   const noteById = new Map(res.rows.map(r => [r.id, r]));
   const causes = verified
@@ -837,15 +833,16 @@ async function dailySummary({ dry }) {
 }
 
 function fmtDailyReport(s) {
-  const L = [`📊 예측 일일결산 ${dateLabel(s.date)}`];
-  L.push(`오늘 채점: ${fmtSummary(s.today)}`);
-  L.push(`누적(20거래일 롤링): ${fmtSummary(s.rolling)}`);
+  const L = [`📊 오늘의 예측 성적표 (${dateLabel(s.date)})`];
+  L.push('');
+  L.push(`오늘: ${fmtSummary(s.today)}`);
+  L.push(`최근 4주 누적: ${fmtSummary(s.rolling)}`);
   if (s.best_sectors.length) {
-    L.push(`잘 맞춘 섹터: ${s.best_sectors.map(x => `${x.sector} ${pct(x.hit)}(n${x.n})`).join(' · ')}`);
+    L.push('');
+    L.push(`잘 맞춘 섹터: ${s.best_sectors.map(x => `${x.sector}(${pct(x.hit)})`).join(', ')}`);
+    L.push(`자주 틀린 섹터: ${s.worst_sectors.map(x => `${x.sector}(${pct(x.hit)})`).join(', ')}`);
   }
-  if (s.worst_sectors.length) {
-    L.push(`반복 오답 섹터: ${s.worst_sectors.map(x => `${x.sector} ${pct(x.hit)}(n${x.n})`).join(' · ')}`);
-  }
+  if (s.rolling) L.push(`\n(통계 상세: 평균 빗나간 폭 ${s.rolling.mae}%p, 확률점수 Brier ${s.rolling.brier_mean})`);
   return L.join('\n');
 }
 
