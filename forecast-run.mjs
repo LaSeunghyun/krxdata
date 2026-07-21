@@ -29,6 +29,7 @@ import { MIN_AVG_TURNOVER } from './config.js';
 import {
   ENGINE_VERSION, buildForecast, scoreVerification, summarizeVerifications,
 } from './forecast-core.mjs';
+import { llmEnabled, analyzeVerifications, analyzeDaily } from './forecast-llm.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: join(__dirname, '.env') });
@@ -311,8 +312,11 @@ async function verifyDue({ etfSeries, dry }) {
     if (actual == null) { pending += 1; continue; } // 데이터 미도착 — 다음 실행이 캐치업
     const v = scoreVerification(row, actual);
     verified.push({
-      ...v, sector: row.sector, target_kind: row.target_kind, run_id: row.run_id,
+      ...v, id: Number(row.id), sector: row.sector, target_kind: row.target_kind, run_id: row.run_id,
       target_end_date: row.target_end_date, forecast_median: Number(row.forecast_median),
+      forecast_low: Number(row.forecast_low), forecast_high: Number(row.forecast_high),
+      probability_up: Number(row.probability_up), probability_down: Number(row.probability_down),
+      sigma: Number(row.sigma), flat_band: Number(row.flat_band), call_direction: row.call_direction,
     });
     values.push(`(${num(row.id)}, ${num(v.actual_return)}, ${esc(v.actual_class)}, ${esc(v.pred_class)},
       ${v.direction_hit}, ${v.partial_hit}, ${num(v.abs_error)}, ${v.in_range}, ${num(v.brier)},
@@ -525,6 +529,73 @@ function fmtRunReport({ made, verified, rolling, quality, dry }) {
   return L.join('\n');
 }
 
+// ── LLM 세부 분석 (Phase 1.5 — 채점 결론 시점에만, 실패해도 보고는 나간다) ──
+function marketDayContext(etfSeries) {
+  const ctx = {};
+  for (const m of MARKETS) {
+    const s = etfSeries[m.key] ?? [];
+    if (s.length >= 2) {
+      const a = s[s.length - 2], b = s[s.length - 1];
+      ctx[m.key] = { date: b.date, day_return_pct: Math.round((b.close / a.close - 1) * 1e4) / 100 };
+    }
+  }
+  return ctx;
+}
+
+async function runLlmVerificationAnalysis({ verified, etfSeries, quality, phase, dry }) {
+  if (!verified.length || !llmEnabled()) return null;
+  try {
+    const payload = {
+      run: { date: kstDate(), time: kstHM(), phase, data_quality: quality.grade, engine: ENGINE_VERSION },
+      market_day: marketDayContext(etfSeries),
+      verified: verified.map(v => ({
+        id: v.id, name: v.target_kind === 'market' ? v.sector : v.sector,
+        forecast_median: v.forecast_median, range80: [v.forecast_low, v.forecast_high],
+        prob_up: v.probability_up, prob_down: v.probability_down,
+        sigma: v.sigma, flat_band: v.flat_band, call: v.call_direction,
+        actual_return: v.actual_return, actual_class: v.actual_class,
+        direction_hit: v.direction_hit, partial_hit: v.partial_hit,
+        in_range: v.in_range, abs_error: v.abs_error, brier: v.brier,
+        baseline_scores: v.baseline_scores,
+      })),
+    };
+    const res = analyzeVerifications(payload);
+    if (!res) { log('LLM 분석 파싱 실패 — 분석 없이 진행'); return null; }
+    if (!dry && res.rows.length) {
+      const updates = res.rows.filter(r => r.error_cause || r.cause_certainty);
+      for (const r of updates) {
+        await dbQuery(`
+          UPDATE forecast_verification
+          SET error_cause = ${esc(r.error_cause)}, cause_certainty = ${esc(r.cause_certainty)}
+          WHERE ledger_id = ${num(r.id)}`);
+      }
+      if (updates.length) log(`오차 원인 분류 ${updates.length}건 기록`);
+    }
+    return res;
+  } catch (e) {
+    log(`LLM 분석 실패(비치명): ${e.message}`);
+    return null;
+  }
+}
+
+function fmtLlmSection(res, verified) {
+  if (!res) return '';
+  const L = ['', '■ LLM 세부 분석'];
+  L.push(res.narrative);
+  const noteById = new Map(res.rows.map(r => [r.id, r]));
+  const causes = verified
+    .map(v => ({ v, r: noteById.get(v.id) }))
+    .filter(x => x.r?.error_cause);
+  if (causes.length) {
+    L.push('오차 원인:');
+    for (const { v, r } of causes) {
+      const name = v.target_kind === 'market' ? (v.sector === 'KOSPI_PROXY' ? 'KOSPI' : 'KOSDAQ') : v.sector;
+      L.push(`  ${name}: ${r.error_cause} [${r.cause_certainty}]${r.note ? ` — ${r.note}` : ''}`);
+    }
+  }
+  return L.join('\n');
+}
+
 // ── 일일 결산 ────────────────────────────────────────────────
 async function dailySummary({ dry }) {
   const todayKey = kstDate();
@@ -654,19 +725,26 @@ async function main() {
   const { verified, pending } = await verifyDue({ etfSeries, dry });
   if (pending) log(`검증 대기 ${pending}건 (데이터 미도착 — 다음 실행이 캐치업)`);
 
-  // 2) 신규 예측 (pre/close) + 보고
+  // 2) 신규 예측 (pre/close) + LLM 세부 분석 + 보고
   if (phase === 'pre' || phase === 'close') {
     const made = await makeForecasts({ phase, cal, etfSeries, sectorSeries, topSectors, quality, versions, snapshotId, dry });
     const rolling = summarizeVerifications(await fetchRecentVerificationRows());
-    const report = fmtRunReport({ made, verified, rolling, quality, dry });
+    const llm = await runLlmVerificationAnalysis({ verified, etfSeries, quality, phase, dry });
+    const report = fmtRunReport({ made, verified, rolling, quality, dry }) + fmtLlmSection(llm, verified);
     console.log(report);
     if (!dry) await notifyTelegram(report);
   }
 
-  // 3) 일일 결산 (daily)
+  // 3) 일일 결산 (daily) + LLM 해설
   if (phase === 'daily') {
     const s = await dailySummary({ dry });
-    const report = fmtDailyReport(s);
+    let report = fmtDailyReport(s);
+    if (llmEnabled()) {
+      try {
+        const res = analyzeDaily({ date: kstDate(), summary: s });
+        if (res) report += `\n\n■ LLM 해설\n${res.narrative}`;
+      } catch (e) { log(`LLM 결산 해설 실패(비치명): ${e.message}`); }
+    }
     console.log(report);
     if (!dry) await notifyTelegram(report);
   }
