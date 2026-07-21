@@ -28,3 +28,17 @@ export const CONVICTION_SIZING = Object.freeze({
   strongThreshold: 7,   // conviction(0~10) 이 값 이상 → "확실" → 집중(2종목 몰빵)
   strongFraction: 0.5,  // 확실 종목 1건에 현금 50% (= slots=2 상당, 견고구간). 1.0 금지(slots=1 파산위험)
 });
+
+// 2026-07-21: 예측 연동 이익보호 (forecast_ledger → 매매). 사용자 요청 "하락 예측 시 +종목 수익화".
+//   하락경보(KOSPI 프록시 예측)일 때: 수익종목(+harvestRetPct↑) 트레일을 bearTrailPct로 조여 이익 확정,
+//   패자·신규진입은 보류. forecast track record 0(오늘 시작)이라 shadow=true로 시작 —
+//   실제 매도 없이 저널·로그에만 "이익보호 했을 것" 기록 → forecast-replay 백테스트 검증 후 shadow=false로 활성화.
+//   임계(probDiff·minConf·harvestRetPct·bearTrailPct)는 백테스트로 확정 예정.
+export const FORECAST_GUARD = Object.freeze({
+  enabled: true,
+  shadow: true,          // true=기록만(실집행 없음), false=실제 이익보호 집행 (백테스트 검증 후 전환)
+  probDiff: 15,          // 하락확률−상승확률 ≥ 이 %p면 하락경보 (call_direction=='down' 아니어도)
+  minConf: 50,           // 위 확률차 조건의 최소 confidence
+  harvestRetPct: 3,      // 이 수익률(%) 이상 종목만 이익보호 대상
+  bearTrailPct: 3,       // 하락경보 시 트레일 폭 (평시 8% → 3%로 조임)
+});

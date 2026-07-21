@@ -18,7 +18,7 @@ import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { getAccounts, getHoldings, getBuyingPower, getPricesMap, getDailyCandles, createOrder, getOrder, cancelOrder } from './toss-api.js';
-import { LIVE_SLOTS, CONVICTION_SIZING } from './strategy-contract.mjs';
+import { LIVE_SLOTS, CONVICTION_SIZING, FORECAST_GUARD } from './strategy-contract.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: join(__dirname, '.env') });
@@ -150,7 +150,26 @@ async function settleOrder(orderId, symbol, side, qtyBefore, tag) {
   return false;
 }
 
-log(`=== 주식 연속 트레이더 시작 (계좌 ${accounts[0].accountSeq}, 08:00~20:00, LIVE_SLOTS=${LIVE_SLOTS}, 트레일-${TRAIL_PCT}%/하드-${HARD_STOP_PCT}%) ===`);
+// 최신 KOSPI 프록시 시장 예측 (forecast_ledger). 실패/부재 시 null = 경보 없음(안전 기본).
+// 스윙 보유(수일)엔 일간 예측(session=KRX_REGULAR, hm NULL)이 맞는 지평 → 일간 우선, 없으면 최신 아무거나.
+async function marketForecast() {
+  try {
+    const rows = await dbQuery(`SELECT call_direction, probability_up, probability_down, confidence, forecast_median, forecast_created_at, session
+      FROM forecast_ledger WHERE target_kind='market' AND sector='KOSPI_PROXY'
+      ORDER BY (session='KRX_REGULAR') DESC, forecast_created_at DESC LIMIT 1`);
+    if (!Array.isArray(rows) || !rows.length) return null;
+    const r = rows[0];
+    return { dir: r.call_direction, up: Number(r.probability_up), down: Number(r.probability_down),
+             conf: Number(r.confidence), median: Number(r.forecast_median), at: r.forecast_created_at, session: r.session };
+  } catch { return null; }
+}
+// 하락경보: call_direction=='down' 이거나 (하락확률−상승확률 ≥ probDiff AND confidence ≥ minConf)
+function isBearish(f) {
+  if (!f) return false;
+  return f.dir === 'down' || (f.down - f.up >= FORECAST_GUARD.probDiff && f.conf >= FORECAST_GUARD.minConf);
+}
+
+log(`=== 주식 연속 트레이더 시작 (계좌 ${accounts[0].accountSeq}, 08:00~20:00, LIVE_SLOTS=${LIVE_SLOTS}, 트레일-${TRAIL_PCT}%/하드-${HARD_STOP_PCT}%, 예측가드 ${FORECAST_GUARD.enabled ? (FORECAST_GUARD.shadow ? 'SHADOW' : 'LIVE') : 'off'}) ===`);
 let lastSignal = 0, signalCache = null;
 
 while (true) {
@@ -166,25 +185,45 @@ while (true) {
     await new Promise(r => setTimeout(r, POLL_MS)); continue;
   }
   const items = (holdings?.items ?? []).filter(i => i.marketCountry === 'KR' && Number(i.quantity) > 0);
+  const today = now().slice(0, 10);
 
-  // ① 청산 판정 (트레일링 최대익절 + 하드손절)
+  // 시장 예측 조회 (하락경보 판정) — forecast_ledger 최신 KOSPI 프록시
+  const fc = FORECAST_GUARD.enabled ? await marketForecast() : null;
+  const bear = isBearish(fc);
+
+  // ① 청산 판정 (트레일링 최대익절 + 하드손절) + 예측하락 이익보호(신규)
   for (const it of items) {
     const px = Number(it.lastPrice), entry = Number(it.averagePurchasePrice), qty = Number(it.quantity);
     const m = state.meta[it.symbol] ?? (state.meta[it.symbol] = { hi: px, entry });
     m.hi = Math.max(m.hi ?? px, px);
     const ret = (px / entry - 1) * 100;
-    let reason = null;
+    let reason = null, harvest = false;
+    // 기존(검증된 combo-v2) 청산 — 항상 실집행
     if (px <= entry * (1 - HARD_STOP_PCT / 100)) reason = `하드손절 -${HARD_STOP_PCT}%`;
     else if (px <= m.hi * (1 - TRAIL_PCT / 100) && ret > 0) reason = `트레일링(고점대비 -${TRAIL_PCT}%, ${ret.toFixed(1)}%)`;
     else if (px <= m.hi * (1 - TRAIL_PCT / 100)) reason = `트레일손절(고점대비 -${TRAIL_PCT}%, ${ret.toFixed(1)}%)`;
+    // 신규: 예측 하락경보 이익보호 — 기존 규칙 미발동 & 수익종목이 조인 트레일(bearTrailPct) 이탈 시
+    else if (bear && ret >= FORECAST_GUARD.harvestRetPct && px <= m.hi * (1 - FORECAST_GUARD.bearTrailPct / 100)) {
+      harvest = true;
+      reason = `예측하락 이익보호(트레일-${FORECAST_GUARD.bearTrailPct}%, ${ret.toFixed(1)}%, 하락${fc.down}/상승${fc.up} conf${fc.conf})`;
+    }
     if (reason) {
+      // shadow 모드: 예측하락 이익보호는 실집행 없이 하루 1회 기록만 (검증 데이터 축적). 기존 청산은 그대로 실집행.
+      if (harvest && FORECAST_GUARD.shadow) {
+        if (m.shadowDay !== today) {
+          log(`[SHADOW] 이익보호 예정: ${it.name}(${it.symbol}) ${ret.toFixed(1)}% — ${reason}`);
+          recordTrade({ ts: now(), code: it.symbol, name: it.name, side: 'SHADOW_HARVEST', px, entry, ret: Number(ret.toFixed(1)), reason, forecast: fc });
+          m.shadowDay = today;
+        }
+        continue; // 실제 매도 안 함
+      }
       try {
         const lpx = limitSellPx(px);
         const o = await createOrder(seq, { symbol: it.symbol, side: 'SELL', orderType: 'LIMIT', price: String(lpx), quantity: String(qty) });
         const filled = await settleOrder(o?.orderId ?? o?.id, it.symbol, 'SELL', qty, `매도 ${it.symbol}`);
         if (filled) {
           log(`매도 ${it.name}(${it.symbol}) ${qty}주 @${lpx.toLocaleString()} (${reason})`);
-          recordTrade({ ts: now(), code: it.symbol, name: it.name, side: 'SELL', px: lpx, entry, ret: Number(ret.toFixed(1)), reason });
+          recordTrade({ ts: now(), code: it.symbol, name: it.name, side: 'SELL', px: lpx, entry, ret: Number(ret.toFixed(1)), reason, forecast: harvest ? fc : undefined });
           delete state.meta[it.symbol];
         }
       } catch (e) { log(`매도 오류 ${it.symbol}: ${e.message.slice(0, 80)}`); }
@@ -192,8 +231,15 @@ while (true) {
   }
   writeFileSync(STATE, JSON.stringify(state, null, 1));
 
-  // ② 진입 (빈 슬롯 있고 현금 있으면) — 확신도 기반 사이징: 확실하면 현금 집중(몰빵), 아니면 균등분산
-  if (items.length < LIVE_SLOTS && cash >= MIN_PRICE) {
+  // 하락경보 시 신규진입 보류 (shadow면 기록만, live면 실제 스킵)
+  if (bear && items.length < LIVE_SLOTS && cash >= MIN_PRICE) {
+    if (FORECAST_GUARD.shadow) {
+      if (state.shadowBearDay !== today) { log(`[SHADOW] 하락경보(하락${fc.down}/상승${fc.up} conf${fc.conf}) — 신규진입 보류 대상(실제로는 진행)`); state.shadowBearDay = today; }
+    }
+  }
+
+  // ② 진입 (빈 슬롯 있고 현금 있으면) — 확신도 기반 사이징. 하락경보+live면 진입 보류.
+  if (items.length < LIVE_SLOTS && cash >= MIN_PRICE && !(bear && !FORECAST_GUARD.shadow)) {
     const heldSet = new Set(items.map(i => i.symbol));
     const remainingSlots = LIVE_SLOTS - items.length;
     const diversified = Math.floor(cash / remainingSlots);
