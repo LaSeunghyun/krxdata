@@ -723,7 +723,7 @@ function fmtRunReport({ made, verified, rolling, quality, dry, fx = null, disc =
       const f = r.f;
       L.push('');
       L.push(`【${shortName(r.sector)}】 ${dirWord(f)}`);
-      L.push(`예상 ${sgn(f.median)}% · 오를 확률 ${f.probs.up}% vs 내릴 확률 ${f.probs.down}%`);
+      L.push(`예상 ${sgn(f.median)}% · 오름 ${f.probs.up}% / 보합 ${f.probs.flat}% / 내림 ${f.probs.down}% (합 100)`);
       L.push(`10번 중 8번은 ${sgn(f.low)}% ~ ${sgn(f.high)}% 사이에 들어옵니다`);
       L.push(`왜: ${plainReason(f)}`);
     }
