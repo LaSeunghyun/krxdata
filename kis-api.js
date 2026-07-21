@@ -4,10 +4,20 @@
  * 수급(외국인·기관·개인 순매수)은 장마감 후 확정 — 당일 장중엔 빈 값이 정상.
  * env: KIS_APP_KEY, KIS_APP_SECRET (files/.env)
  */
+import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
 const BASE = 'https://openapi.koreainvestment.com:9443';
+// 토큰 디스크 캐시: KIS는 토큰 발급 1분당 1회 제한 + 토큰 ~24h 유효.
+// 프로세스(forecast-run·검증 스크립트)가 공유하도록 디스크에 캐시 — 재발급 rate-limit(403) 방지.
+const TOKEN_CACHE = join(dirname(fileURLToPath(import.meta.url)), '.kis-token.json');
 
 let token = null; // { value, expiresAt }
 async function getToken() {
+  if (!token && existsSync(TOKEN_CACHE)) {
+    try { const t = JSON.parse(readFileSync(TOKEN_CACHE, 'utf8')); if (t?.value && t?.expiresAt) token = t; } catch {}
+  }
   if (token && Date.now() < token.expiresAt - 60_000) return token.value;
   const res = await fetch(`${BASE}/oauth2/tokenP`, {
     method: 'POST',
@@ -22,6 +32,7 @@ async function getToken() {
   const j = await res.json();
   if (!j.access_token) throw new Error(`KIS 토큰 발급 실패: ${res.status} ${j.error_description ?? ''}`);
   token = { value: j.access_token, expiresAt: Date.now() + (Number(j.expires_in) || 86400) * 1000 };
+  try { writeFileSync(TOKEN_CACHE, JSON.stringify(token)); } catch {}
   return token.value;
 }
 

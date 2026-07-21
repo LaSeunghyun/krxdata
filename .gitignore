@@ -41,3 +41,4 @@ backtest_results.json
 .claude/settings.local.json
 candles-daily.jsonl
 forecast-bear-days.json
+.kis-token.json
