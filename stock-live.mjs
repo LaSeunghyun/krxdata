@@ -18,7 +18,7 @@ import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { getAccounts, getHoldings, getBuyingPower, getPricesMap, getDailyCandles, createOrder, getOrder, cancelOrder } from './toss-api.js';
-import { LIVE_SLOTS, CONVICTION_SIZING, FORECAST_GUARD, PARTIAL_TP, CA_GUARD } from './strategy-contract.mjs';
+import { LIVE_SLOTS, CONVICTION_SIZING, FORECAST_GUARD, PARTIAL_TP, CA_GUARD, LIVE_EXCLUDE } from './strategy-contract.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: join(__dirname, '.env') });
@@ -65,7 +65,7 @@ async function pickCandidate(cashCeil, heldSet = new Set()) {
   const rows = await dbQuery(`SELECT stock_code,corp_name,current_price FROM stock_analysis WHERE current_price>=${MIN_PRICE} AND current_price<${Math.floor(cashCeil)} AND avg_turnover_20d>=${MIN_TURNOVER} ORDER BY market_cap_tril DESC LIMIT 40`);
   const cands = [];
   for (const r of rows) {
-    if (heldSet.has(r.stock_code)) continue; // 이미 보유 종목 제외 (분산)
+    if (heldSet.has(r.stock_code) || LIVE_EXCLUDE.has(r.stock_code)) continue; // 보유·제외종목 스킵
     try {
       const cd = (await getDailyCandles(r.stock_code, 130)).reverse();
       if (cd.length < 61) continue;
@@ -192,7 +192,8 @@ while (true) {
     else if (!String(e.message).includes('no_authorization_ip')) log(`조회 실패(재시도): ${e.message.slice(0, 60)}`);
     await new Promise(r => setTimeout(r, POLL_MS)); continue;
   }
-  const items = (holdings?.items ?? []).filter(i => i.marketCountry === 'KR' && Number(i.quantity) > 0);
+  // LIVE_EXCLUDE(사용자 수동관리 종목)는 봇이 전혀 안 건드림 — items에서 제외(청산·슬롯계산 모두 스킵)
+  const items = (holdings?.items ?? []).filter(i => i.marketCountry === 'KR' && Number(i.quantity) > 0 && !LIVE_EXCLUDE.has(i.symbol));
   const today = now().slice(0, 10);
 
   // 시장 예측 조회 (하락경보 판정) — forecast_ledger 최신 KOSPI 프록시

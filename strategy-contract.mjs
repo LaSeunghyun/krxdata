@@ -16,6 +16,10 @@ export const LIVE_MAX_ORDERS_PER_DAY = 3;
 export const LIVE_SLOTS = 3;
 export const LIVE_RSI2_UNIVERSE_LIMIT = 30;
 
+// 2026-07-22: 봇 제외종목 — 사용자가 수동 관리하는 개인 보유(봇이 매수·매도·손절 전부 스킵).
+//   토스 계좌에 있어도 stock-live가 건드리지 않음. 예: 한화솔루션(009830) 평단 32,219 −14% 물린 것 손절 방지.
+export const LIVE_EXCLUDE = new Set(['009830']);
+
 // 2026-07-20: 확신도 기반 포지션 사이징 (사용자 요청 — "확실한 종목이면 한두개 몰빵 허용").
 //   후보의 conviction(0~10) 이 strongThreshold 이상이면 5분산을 채우지 않고
 //   현금의 strongFraction 을 그 한 종목에 집중 매수(몰빵). 그 외엔 기존 균등분산.
