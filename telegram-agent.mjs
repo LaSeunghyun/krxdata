@@ -11,6 +11,9 @@ import { existsSync, writeFileSync, unlinkSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import dotenv from 'dotenv';
+import { getAccounts, getHoldings } from './toss-api.js';
+import { parseCommand, executeBuy, executeSell, resolveStock } from './tg-order.mjs';
+import { readBotExclude, removeBotExclude } from './bot-exclude.mjs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: join(__dirname, '.env') });
 
@@ -25,6 +28,53 @@ const api = (m, body) => fetch(`https://api.telegram.org/bot${TOKEN}/${m}`,
 async function send(text) {
   const t = String(text || '(빈 응답)');
   for (let i = 0; i < t.length; i += 3800) await api('sendMessage', { chat_id: CHAT, text: t.slice(i, i + 3800) });
+}
+
+// ── 결정론적 주문 경로 (LLM 안 거침) ─────────────────────────
+const dbQuery = async (sql) => {
+  const r = await fetch(`https://api.supabase.com/v1/projects/${process.env.SUPABASE_PROJECT_REF}/database/query`,
+    { method: 'POST', headers: { Authorization: `Bearer ${process.env.SUPABASE_MANAGEMENT_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ query: sql }) });
+  const j = await r.json(); return Array.isArray(j) ? j : [];
+};
+let SEQ = null;
+const getSeq = async () => { if (SEQ == null) SEQ = (await getAccounts())[0].accountSeq; return SEQ; };
+const ORDERS_FLAG = join(__dirname, '.orders-enabled');  // 존재 시 실주문, 없으면 DRY(모의). 기본 없음=안전.
+const ordersOn = () => existsSync(ORDERS_FLAG);
+const marketOpen = () => { const h = new Date(Date.now() + 9 * 3600000).getUTCHours(); return h >= 8 && h < 20; };
+
+// ── 매도 사인 모니터 (수동픽 보유분이 AI 목표/손절 도달 시 알림, 자동매도 X) ──
+const MONITOR_MS = 20 * 60 * 1000;
+let lastMonitor = 0;
+const sentSignals = new Set(); // `${code}:${type}:${date}` 하루 1회 dedup
+async function monitorSells() {
+  try {
+    const seq = await getSeq();
+    const excl = readBotExclude(); // 수동픽만 감시(자동봇 픽은 봇이 관리)
+    const h = await getHoldings(seq);
+    const items = (h?.items ?? []).filter(i => i.marketCountry === 'KR' && Number(i.quantity) > 0 && excl.has(i.symbol));
+    if (!items.length) return;
+    const codes = items.map(i => `'${i.symbol}'`).join(',');
+    const strat = await dbQuery(`SELECT DISTINCT ON (stock_code) stock_code, name, strategy FROM ai_shadow_decisions
+      WHERE stock_code IN (${codes}) AND decision='buy' ORDER BY stock_code, run_at DESC`);
+    const sMap = new Map(strat.map(r => [r.stock_code, { name: r.name, s: typeof r.strategy === 'string' ? (() => { try { return JSON.parse(r.strategy); } catch { return null; } })() : r.strategy }]));
+    const today = new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10);
+    for (const it of items) {
+      const entry = Number(it.averagePurchasePrice), cur = Number(it.lastPrice);
+      if (!entry || !cur) continue;
+      const ret = (cur / entry - 1) * 100;
+      const info = sMap.get(it.symbol); const st = info?.s;
+      const nm = info?.name || it.name || it.symbol;
+      const tgt = Number(st?.target_pct ?? 7), stp = Number(st?.stop_pct ?? 5);
+      let type = null, label = null;
+      if (ret >= tgt) { type = 'target'; label = `🎯 목표 +${tgt}% 도달`; }
+      else if (ret <= -stp) { type = 'stop'; label = `🛑 손절선 -${stp}% 도달`; }
+      if (!type) continue;
+      const key = `${it.symbol}:${type}:${today}`;
+      if (sentSignals.has(key)) continue;
+      sentSignals.add(key);
+      await send(`🔔 매도 사인: ${nm}(${it.symbol}) 현재 ${ret >= 0 ? '+' : ''}${ret.toFixed(1)}% (${label})\n진입 ${entry.toLocaleString()} → 현재 ${cur.toLocaleString()}\n팔려면: 매도 ${nm}`);
+    }
+  } catch (e) { console.error('모니터 오류:', String(e.message).slice(0, 120)); } // 모니터 실패가 봇 멈추면 안 됨
 }
 
 const SYS = `너는 krxdata 주식 자동매매 시스템(~/krxdata, VM)의 텔레그램 어시스턴트다.
@@ -55,7 +105,7 @@ function ask(prompt) {
     let out = '', err = '';
     cp.stdout.on('data', d => out += d);
     cp.stderr.on('data', d => err += d);
-    const timer = setTimeout(() => { cp.kill(); resolve('⏱️ 응답 시간초과(180s)'); }, 180000);
+    const timer = setTimeout(() => { cp.kill(); resolve('⏱️ 응답 시간초과(300s)'); }, 300000); // 2026-07-24: 180→300s (개별종목 분석이 종종 180s 넘김, 재현확인됨)
     cp.on('close', (code) => { clearTimeout(timer); resolve(out.trim() || `(claude 종료 ${code}) ${err.slice(0, 300)}`); });
     cp.on('error', e => { clearTimeout(timer); resolve('claude 실행 실패(설치/토큰 확인): ' + e.message); });
   });
@@ -74,9 +124,51 @@ while (true) {
       if (text === 'STOP') { writeFileSync(PAUSE, '1'); await send('⏸️ 봇 일시정지. 재개: START'); continue; }
       if (text === 'START') { if (existsSync(PAUSE)) unlinkSync(PAUSE); await send('▶️ 봇 재개'); continue; }
       if (existsSync(PAUSE)) continue;
+      // 실주문 킬스위치
+      if (text === '주문ON') { writeFileSync(ORDERS_FLAG, '1'); await send('🟢 실주문 ON — 매수/매도 명령이 실제 체결됩니다. (끄기: 주문OFF)'); continue; }
+      if (text === '주문OFF') { if (existsSync(ORDERS_FLAG)) unlinkSync(ORDERS_FLAG); await send('🔴 실주문 OFF — 명령은 DRY(모의)로만 표시됩니다.'); continue; }
+      if (text.startsWith('격리해제')) { // 수동픽 전량 매도·체결 확인 후 자동봇 관리대상 복귀
+        const nm = text.replace(/^격리해제\s*/, '').trim();
+        if (!nm) { await send('사용법: 격리해제 <종목명>'); continue; }
+        try { const rr = await resolveStock(nm, { dbQuery }); if (rr.status === 'ok') { removeBotExclude(rr.code); await send(`✅ 격리해제: ${rr.name}(${rr.code}) — 자동봇 관리대상 복귀.`); } else await send(`'${nm}' 못 찾음/모호 — 격리해제 실패.`); } catch (e) { await send('격리해제 오류: ' + String(e.message).slice(0, 120)); }
+        continue;
+      }
+      // 결정론적 주문 인터셉터 (매수/매도 명령은 claude 안 거치고 tg-order로 직접 처리)
+      const cmd = parseCommand(text);
+      if (cmd.action === 'ca_clear') {
+        try {
+          const e2 = (s) => String(s ?? '').replace(/'/g, "''");
+          await dbQuery(`INSERT INTO tg_order_queue (side, name) VALUES ('ca-clear', '${e2(cmd.name)}')`);
+          await send(`📥 CA서킷 해제 요청 큐 등록: ${cmd.name} — 자동봇이 곧 락업 해제(최대 30초).`);
+        } catch (e) { await send('CA서킷 해제 오류: ' + String(e.message).slice(0, 120)); }
+        continue;
+      }
+      if (cmd.action === 'buy' || cmd.action === 'sell' || cmd.action === 'sell_target') {
+        const dry = !ordersOn();
+        if (!dry && !marketOpen()) { await send('⏰ 장시간(08:00~20:00 KST) 외 — 주문 보류. 시간 내 재시도해줘.'); continue; }
+        try {
+          if (dry) {
+            // DRY = DB 가격으로 계획만(Toss 안 침)
+            const r = cmd.action === 'buy'
+              ? await executeBuy({ name: cmd.name, amountKrw: cmd.amount }, { dbQuery, dryRun: true })
+              : await executeSell({ name: cmd.name, targetPrice: cmd.targetPrice }, { dbQuery, dryRun: true });
+            await send('🔵 [DRY · 실행하려면 "주문ON"] ' + r.msg);
+          } else {
+            // 실주문 = 큐 적재(Toss 안 침). stock-live 단일 세션이 30초 내 집행 → 결과는 stock-live가 텔레그램 전송.
+            const e2 = (s) => String(s ?? '').replace(/'/g, "''");
+            const side = cmd.action === 'buy' ? 'buy' : 'sell';
+            const amt = cmd.action === 'buy' ? Number(cmd.amount) : 'NULL';
+            const tp = cmd.targetPrice ? Number(cmd.targetPrice) : 'NULL';
+            await dbQuery(`INSERT INTO tg_order_queue (side, name, amount_krw, target_price) VALUES ('${side}', '${e2(cmd.name)}', ${amt}, ${tp})`);
+            await send(`📥 주문 큐 등록: ${side === 'buy' ? '매수' : '매도'} ${cmd.name}${cmd.action === 'buy' ? ' ' + Math.round(cmd.amount / 10000) + '만원' : ''} — 자동봇이 곧 집행(최대 30초).`);
+          }
+        } catch (e) { await send('주문 오류: ' + String(e.message).slice(0, 200)); }
+        continue;
+      }
       await api('sendChatAction', { chat_id: CHAT, action: 'typing' });
       const reply = await ask(text);
       await send(reply);
     }
+    // 매도사인 모니터는 stock-live(30초 루프, Toss 재사용)로 이관 — telegram-agent는 명령 처리만.
   } catch (e) { console.error('poll 오류:', e.message); await new Promise(r => setTimeout(r, 5000)); }
 }
