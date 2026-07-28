@@ -84,9 +84,14 @@ export function sanitizeRows(rows, validIds) {
 // 예측 시점 브리핑 — 뉴스(웹검색)·공시·수급·가격흐름을 종합해 "무엇을 볼지"를 쓴다.
 // 숫자 예측은 여전히 엔진 소관 — 이 패스는 관찰 포인트와 맥락만 제공한다.
 export function buildOutlookPrompt(payload) {
+  const hasProvidedNews = Array.isArray(payload?.news) && payload.news.length > 0;
+  const newsInstruction = payload?.allow_websearch
+    ? '웹검색(WebSearch)으로 오늘의 한국 증시 뉴스(코스피/코스닥 시황, 반도체·2차전지 등 주요 섹터, 미국 증시 마감, 환율)를 확인하고 아래 데이터와 종합하라.'
+    : hasProvidedNews
+    ? '웹검색은 사용하지 않는다. 아래 데이터의 news 배열에 제공된 제목·출처·스니펫만 뉴스 근거로 사용하라.'
+    : '웹검색은 사용하지 않는다. 뉴스 데이터가 없으면 뉴스·해외시장 원인은 확인 불가로 처리하라.';
   return `당신은 한국 주식시장 데일리 브리핑 작성자다. 오늘 날짜와 아래 데이터가 주어진다.
-웹검색(WebSearch)으로 오늘의 한국 증시 뉴스(코스피/코스닥 시황, 반도체·2차전지 등 주요 섹터,
-미국 증시 마감, 환율)를 확인하고 아래 데이터와 종합하라.
+${newsInstruction}
 
 규칙:
 1. 사실과 추측 구분 — 뉴스에서 확인한 것은 "(뉴스)" 표기, 데이터에서 온 것은 그대로, 불확실하면 "추정".
@@ -105,8 +110,9 @@ ${JSON.stringify(payload, null, 1)}`;
 }
 
 export function analyzeOutlook(payload, { invoke } = {}) {
-  const call = invoke ?? ((p) => callClaude(p, { extraArgs: ['--allowedTools', 'WebSearch'], timeoutMs: 300_000 }));
-  const parsed = parseLlmJson(call(buildOutlookPrompt(payload)));
+  const call = invoke ?? callClaude;
+  const extraArgs = payload?.allow_websearch ? ['--allowedTools', 'WebSearch'] : [];
+  const parsed = parseLlmJson(call(buildOutlookPrompt(payload), { extraArgs, timeoutMs: 300_000 }));
   if (!parsed) return null;
   const arr = (x) => (Array.isArray(x) ? x.filter(s => typeof s === 'string').slice(0, 5) : []);
   const out = {
@@ -118,7 +124,92 @@ export function analyzeOutlook(payload, { invoke } = {}) {
 
 // ── 최종 보고서 합성 (2026-07-21 사용자 규칙 v2) ─────────────
 // 엔진 숫자는 불변 — LLM은 규칙 템플릿에 맞춰 근거 사슬과 판단을 서술한다.
-export const BANNED_PHRASES = ['(합 100)', 'AI 세부 분석', '10번 중 8번'];
+// 프롬프트 규칙 §3이 금지한 문구는 전부 여기에 있어야 한다 — 말로만 금지하면 드리프트한다
+export const BANNED_PHRASES = [
+  '(합 100)', 'AI 세부 분석', '10번 중 8번',
+  '80% 범위', '80% 예상 범위', '적중 목표 80%',
+];
+
+const round2 = (n) => Math.round(n * 100) / 100;
+
+// 【{header}】 ~ 다음 【 까지
+function sectionOf(text, header) {
+  const i = text.indexOf(header);
+  if (i < 0) return null;
+  const rest = text.slice(i + header.length);
+  const j = rest.indexOf('【');
+  return j < 0 ? rest : rest.slice(0, j);
+}
+
+/**
+ * 엔진 숫자 충실도 검증 (프롬프트 규칙 §1·§2·§10을 기계 검사로)
+ * 엔진 행이 한 시장에 2개 이상이면 매핑이 모호하므로 그 시장은 건너뛴다 — 오탐이 폴백률을 올리는 게 더 나쁘다.
+ */
+export function checkEngineFidelity(text, payload) {
+  const problems = [];
+  const rows = Array.isArray(payload?.engine) ? payload.engine : [];
+  if (!rows.length) return problems;
+
+  for (const mkt of ['코스피', '코스닥']) {
+    const mine = rows.filter(r => r.name === mkt);
+    if (mine.length !== 1) continue;
+    const e = mine[0];
+    const body = sectionOf(text, `【${mkt} 전망】`);
+    if (!body) { problems.push(`${mkt}: 【${mkt} 전망】 섹션 없음`); continue; }
+
+    // §1 예상 수익률 = engine median_pct 그대로
+    const m = /예상\s*수익률\s*:?\s*([+-]?\d+(?:\.\d+)?)\s*%/.exec(body);
+    if (!m) {
+      problems.push(`${mkt}: 예상 수익률 표기 없음`);
+    } else {
+      const got = Number(m[1]);
+      const want = round2(e.median_pct);
+      if (Math.abs(got - want) > 0.005) {
+        problems.push(`${mkt}: 예상 수익률 ${got}% — engine 값 ${want}%로 고칠 것`);
+      }
+      // §10 예상 범위 = 예상 수익률 ±2%p
+      const r = /예상\s*범위[^:\n]*:?\s*([+-]?\d+(?:\.\d+)?)\s*%\s*~\s*([+-]?\d+(?:\.\d+)?)\s*%/.exec(body);
+      if (!r) {
+        problems.push(`${mkt}: 예상 범위(±2%p) 표기 없음`);
+      } else {
+        const lo = Number(r[1]), hi = Number(r[2]);
+        if (Math.abs(lo - (got - 2)) > 0.011) problems.push(`${mkt}: 범위 하한 ${lo}% — ${round2(got - 2)}%여야 함`);
+        if (Math.abs(hi - (got + 2)) > 0.011) problems.push(`${mkt}: 범위 상한 ${hi}% — ${round2(got + 2)}%여야 함`);
+      }
+    }
+
+    // §1 오름·보합·내림 확률 그대로
+    const p = /오름\s*([\d.]+)\s*%\s*·\s*보합\s*([\d.]+)\s*%\s*·\s*내림\s*([\d.]+)\s*%/.exec(body);
+    if (!p) {
+      problems.push(`${mkt}: 오름·보합·내림 확률 표기 없음`);
+    } else {
+      const pairs = [['오름', Number(p[1]), e.prob_up], ['보합', Number(p[2]), e.prob_flat], ['내림', Number(p[3]), e.prob_down]];
+      for (const [label, got, want] of pairs) {
+        if (want != null && Math.abs(got - round2(want)) > 0.51) {
+          problems.push(`${mkt}: ${label} ${got}% — engine 값 ${round2(want)}%로 고칠 것`);
+        }
+      }
+    }
+
+    // §2 방향 문구가 확률차와 모순되지 않는지 (stanceOf와 같은 8%p 기준)
+    if (e.prob_up != null && e.prob_down != null) {
+      const gap = e.prob_up - e.prob_down;
+      const hasUp = /(약한\s*)?상승\s*우세/.test(body);
+      const hasDown = /(약한\s*)?하락\s*우세/.test(body);
+      const hasMixed = /혼조|방향성\s*낮음/.test(body);
+      if (Math.abs(gap) < 8 && !hasMixed) {
+        problems.push(`${mkt}: 확률차 ${round2(gap)}%p(<8)인데 "혼조/방향성 낮음" 표기 없음`);
+      }
+      if (gap >= 8 && (!hasUp || hasDown)) {
+        problems.push(`${mkt}: 확률차 +${round2(gap)}%p인데 상승 우세 표기가 아님`);
+      }
+      if (gap <= -8 && (!hasDown || hasUp)) {
+        problems.push(`${mkt}: 확률차 ${round2(gap)}%p인데 하락 우세 표기가 아님`);
+      }
+    }
+  }
+  return problems;
+}
 
 export function buildReportPrompt(payload) {
   return `당신은 한국 주식시장 단기 전망 보고서 작성자다. 아래 데이터로 최종 보고서를 작성한다.
@@ -143,7 +234,8 @@ ${payload.allow_websearch ? '웹검색(WebSearch)으로 오늘 한국 증시·�
 8. 반드시 아래 템플릿 구조와 섹션 헤더를 그대로 사용한다. 다른 섹션 추가 금지.
 9. 가독성 (모바일 메신저 기준 — 위반 시 반려):
    - 섹션 사이, 그리고 판단 근거 번호 항목 사이에 반드시 빈 줄 1개.
-   - 한 줄 45자 이내. 한 줄에 한 가지 생각만. 긴 문장은 줄을 나눈다.
+   - 서술 문장은 한 줄 45자 이내, 한 줄에 한 가지 생각만. 긴 문장은 줄을 나눈다.
+     (수익률·확률·범위처럼 값을 나열하는 라인은 템플릿 형식을 그대로 지키고 자 수 제한을 적용하지 않는다)
    - 판단 근거는 한 문단 서술 금지 — 아래처럼 화살표 줄바꿈 구조로:
      1. 관측: 전일 -6.63% 급락
         → 경로: 유사 급락일(n=21) 평균 +0.92% 반등 경향
@@ -197,23 +289,41 @@ ${payload.allow_websearch ? '웹검색(WebSearch)으로 오늘 한국 증시·�
 ${JSON.stringify(payload, null, 1)}`;
 }
 
-export function validateReport(text) {
+/** payload를 주면 엔진 숫자 충실도까지 검사한다. 안 주면 기존 형식 검사만(하위 호환). */
+export function validateReport(text, payload = null) {
   if (!text || text.length < 300) return '너무 짧음';
   for (const b of BANNED_PHRASES) if (text.includes(b)) return `금지 문구: ${b}`;
   for (const h of ['【데이터 상태】', '【코스피 전망】', '【코스닥 전망】', '【직전 예측 검증】']) {
     if (!text.includes(h)) return `섹션 누락: ${h}`;
   }
-  return null;
+  // §9 소수 2자리 — 3자리 이상은 반올림 누락
+  const over = text.match(/[+-]?\d+\.\d{3,}\s*%/);
+  if (over) return `소수 2자리 초과: ${over[0]}`;
+
+  const engine = checkEngineFidelity(text, payload);
+  return engine.length ? `엔진 값 불일치 — ${engine.join(' / ')}` : null;
 }
 
-export function composeReport(payload, { invoke } = {}) {
+export function composeReport(payload, { invoke, retries = 1 } = {}) {
   const call = invoke ?? ((p) => callClaude(p, {
     extraArgs: payload.allow_websearch ? ['--allowedTools', 'WebSearch'] : [],
     timeoutMs: 300_000,
   }));
-  const out = (call(buildReportPrompt(payload)) ?? '').trim();
-  const err = validateReport(out);
-  return err ? { text: null, error: err } : { text: out, error: null };
+
+  const base = buildReportPrompt(payload);
+  let lastErr = null;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    // 재시도는 규칙을 다시 훈계하지 않고 어긋난 지점만 지적한다
+    const prompt = attempt === 0
+      ? base
+      : `${base}\n\n---\n직전 시도가 아래 기계 검증에 걸렸다. 해당 부분만 고쳐 보고서 전체를 다시 출력하라:\n${lastErr}`;
+    const out = (call(prompt) ?? '').trim();
+    const err = validateReport(out, payload);
+    if (!err) return { text: out, error: null, attempts: attempt + 1 };
+    lastErr = err;
+  }
+  return { text: null, error: lastErr, attempts: retries + 1 };
 }
 
 export function callClaude(prompt, { timeoutMs = 180_000, extraArgs = [] } = {}) {

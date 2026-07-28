@@ -14,6 +14,7 @@ profitable-stocks.json
 .idea/
 .update-status.json
 .sector_cache.json
+.news-search-cache.json
 kospi-all.json
 kosdaq-all.json
 kospi-codes.json

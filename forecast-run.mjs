@@ -31,6 +31,7 @@ import {
   summarizeStructuralMisses,
 } from './forecast-core.mjs';
 import { llmEnabled, analyzeVerifications, analyzeDaily, composeReport } from './forecast-llm.mjs';
+import { buildImprovementLoop, formatImprovementLoopReport } from './forecast-improvement-loop.mjs';
 import {
   NXT_AFTER, fetch1mByDate, fetchBasket1m, historyIntervalReturns,
   intervalReturn, basketSessionSeries, basketLiveMove, lastBarHm, priceAt,
@@ -986,6 +987,36 @@ async function dailySummary({ dry }) {
   return summary;
 }
 
+async function fetchImprovementRows(days = 90) {
+  const safeDays = Math.max(1, Math.min(365, Math.trunc(Number(days) || 90)));
+  return dbQuery(`
+    SELECT fl.id, fl.run_id, fl.market_layer, fl.target_kind, fl.sector,
+           fl.target_start_date, fl.target_end_date, fl.target_start_hm, fl.target_end_hm,
+           fl.forecast_median, fl.forecast_low, fl.forecast_high,
+           fl.probability_up, fl.probability_flat, fl.probability_down,
+           fl.flat_band, fl.sigma, fl.call_direction, fl.baselines,
+           fv.actual_return, fv.structural_miss, fv.error_cause
+    FROM forecast_verification fv
+    JOIN forecast_ledger fl ON fl.id = fv.ledger_id
+    WHERE fl.target_kind = 'market'
+      AND fl.target_end_date >= TO_CHAR(CURRENT_DATE - ${safeDays}, 'YYYYMMDD')
+    ORDER BY fl.target_end_date, fl.id`);
+}
+
+async function dailyImprovementLoop({ dry }) {
+  const rows = await fetchImprovementRows(90);
+  const loop = buildImprovementLoop(rows);
+  const payload = { date: kstDate(), dry, ...loop };
+  if (!dry) {
+    await dbQuery(`
+      INSERT INTO paper_state (k, data, updated_at)
+      VALUES (${esc(`fc_improvement_loop:${kstDate()}`)}, ${jsonb(payload)}, NOW()),
+             ('fc_improvement_loop:latest', ${jsonb(payload)}, NOW())
+      ON CONFLICT (k) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`);
+  }
+  return loop;
+}
+
 function fmtDailyReport(s) {
   const L = [`📊 오늘의 예측 성적표 (${dateLabel(s.date)})`];
   L.push('');
@@ -1208,6 +1239,13 @@ async function main() {
   if (phase === 'daily') {
     const s = await dailySummary({ dry });
     let report = fmtDailyReport(s);
+    try {
+      const loop = await dailyImprovementLoop({ dry });
+      report += `\n\n${formatImprovementLoopReport(loop)}`;
+    } catch (e) {
+      log(`개선 루프 shadow 검증 실패(비치명): ${e.message}`);
+      report += `\n\n개선 루프 shadow 검증\n- 실패: ${e.message}`;
+    }
     if (llmEnabled()) {
       try {
         const res = analyzeDaily({ date: kstDate(), summary: s });
