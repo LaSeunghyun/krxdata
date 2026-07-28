@@ -8,17 +8,60 @@ export const BACKTEST_COMBO_CAPS = LIVE_COMBO_CAPS;
 
 export const LIVE_MAX_ORDER_VALUE = 100_000;
 export const LIVE_MAX_ORDERS_PER_DAY = 3;
-// 2026-07-20: 사이징 백테스트+MC(714k, 2023~2026, subsample0.8 ×10시드)로 slots 3 확정.
+// 2026-07-20: 사이징 백테스트+MC(714k, 2023~2026, subsample0.8 ×10시드)로 slots 3 확정 (uni40 기준).
 //   결과 — slots별 CAGR중앙/MDD중앙/원금손실:  1=45%/61%/(MC 35%파산, 기각)
 //   2=64.6%/36.4%/0런  3=50.6%/29.8%/0런  5=31.5%/25.0%/0런  10=17%/16%.
 //   slots=3 = 성장(중앙 50.6%, worst +30.8%)과 안정(MDD 30%)의 최적 균형, 파산 0.
 //   전액몰빵(slots=1)은 수익·위험 둘 다 열등 + MC 파산 35%로 데이터 기각.
-export const LIVE_SLOTS = 3;
-export const LIVE_RSI2_UNIVERSE_LIMIT = 30;
+// 2026-07-24: 유니버스 40→420 확장(사용자 요청) — 그대로(slots3/trail8/tp+4·8)는 5시드 MC서 CAGR 34.3→27.9%↓
+//   MDD 18.2→35.4%↑로 전부 악화(대형주 대비 소형주 노이즈↑) 확인. 위험관리 재조정 스윕(단일경로+5시드MC) 결과:
+//   slots=5(3/8/10보다 우위, MDD 20.6% vs 36.7%) + trail=6/tp1R=1·tp2R=2(=+6%/+12%, 8·4·8보다 우위)가
+//   uni420 최적: 5시드 MC 평균 CAGR 43.9%·MDD 19.9%(uni40 기존 대비도 CAGR+9.6%p 우위, MDD 거의 동급) —
+//   slots=6·trail5 등 인접값도 확인했으나 5시드 MC서 slots=5/trail=6 조합이 더 강건(단일경로 순위와 다름, MC로 뒤집힘).
+//   sectorcap·rsivol 재스윕도 했으나 기존값(0/1.25) 그대로가 최적 유지.
+export const LIVE_SLOTS = 5;
+export const LIVE_UNIVERSE_LIMIT = 420;
+export const LIVE_RSI2_UNIVERSE_LIMIT = LIVE_UNIVERSE_LIMIT;
 
 // 2026-07-22: 봇 제외종목 — 사용자가 수동 관리하는 개인 보유(봇이 매수·매도·손절 전부 스킵).
 //   토스 계좌에 있어도 stock-live가 건드리지 않음. 예: 한화솔루션(009830) 평단 32,219 −14% 물린 것 손절 방지.
 export const LIVE_EXCLUDE = new Set(['009830']);
+
+// 2026-07-22: 자본기반 진입(사용자 요청 B — "특정금액 이상되면 구매"). 큰 현금 유입 시 종목수 게이트가
+//   현금을 방치(예: 한화솔루션 손절로 588만 유입됐는데 레거시 5종목이 슬롯 채워 신규매수 차단 → 91% 유휴)하는 문제 해결.
+//   게이트를 '종목수 < slots' → '자본 기준'으로 전환: perSlot=equity/slots, 유휴현금 ≥ perSlot*minFillFraction 이면 편입.
+//   레거시 dust(시가평가 < perSlot*dustFraction)는 슬롯 카운트에서 제외 → 큰 현금이 dust에 막히지 않음.
+//   ※ 트레이드오프: 이건 backtest native(현금기반 재투입)와 동일 = MC 중앙 ~56.6%(capped-3의 60.7%보다 낮음).
+//     정상 상황선 capped가 미세우위였으나, 큰 현금 방치(0% 수익)는 그보다 훨씬 열등 → 사용자 결정 B로 전환.
+//     enabled=false면 기존 종목수 게이트로 롤백.
+export const CAPITAL_DEPLOY = Object.freeze({
+  enabled: true,
+  dustFraction: 0.5,     // 시가평가액 < perSlot*dustFraction 인 포지션은 '슬롯'으로 카운트 안 함(레거시 dust 무시)
+  minFillFraction: 0.5,  // 유휴현금 ≥ perSlot*minFillFraction(반슬롯) 이면 편입 실행
+});
+
+// 2026-07-22: 섹터 캡(사용자 요청 — "너무 섹터가 똑같아 리스크 크다"). 같은 섹터 동시보유를 max로 제한.
+//   근거: backtest-swing --sectorcap 스윕 (slots3·maxpos0·rsiuni30, 2023~2026). MC 6시드 중앙값 —
+//     cap0(현행): CAGR72.6%·최종63.3M·MDD33% / cap1: CAGR75.8%·최종67.3M·MDD31.7% / cap2: 71.5%·62.1M·34%.
+//   cap=1이 단일경로+MC 방향 일치(강건). 수익은 시드별 3:3 혼전이나 낙폭·최악시드 방어 뚜렷 + 금융 편중 원천차단.
+//   섹터 출처=stock_analysis.sector. NULL 섹터는 캡 미적용(카운트 0). enabled=false면 롤백.
+// 2026-07-22 재검증(live-parity+MC): 섹터캡 "우위"는 생존편향 이상화 엔진 결과였고, 현실 엔진선 효과가 노이즈(부호가 tp에 따라 뒤집힘).
+//   +4/8 config에선 cap0(해제)이 중앙 최종 10.9M > cap1 9.95M. 사용자 "수익 높은 쪽" 지시 → enabled=false로 해제.
+//   ※ 금융 편중 다시 허용됨(수익 우선). 상시 검증기(validate-hypotheses.mjs)가 이 판정을 매일 재확인 → 뒤집히면 경보.
+export const SECTOR_CAP = Object.freeze({
+  enabled: false,
+  max: 1,
+});
+
+// 2026-07-22: 백테스트 캠페인 승자 이식 (skipNrsi + rsivol1.5). combo-v2 baseline 대비 MC 6시드 전승:
+//   CAGR 19.4→36.6%, MDD 22.4→20.3%, Calmar 0.87→1.80. rsi2(과매도) 매수를 —
+//   (1) 투매 거래량 동반(당일 ≥ 20일평균×volMin)에만 (2) NEUTRAL 레짐선 스킵.
+//   근거: 투매확인=진짜 패닉반등만(가짜신호 제거) + NEUTRAL rsi2는 우리 실거래서 순손실. 리서치·데이터 둘 다 지지.
+//   ※ 여전히 생존편향 포함(절대수치는 낙관)이나 baseline 대비 상대우위는 6/6 강건. hi120(돌파)엔 미적용.
+export const RSI_ENTRY_FILTER = Object.freeze({
+  volMin: 1.25,      // rsi2 매수 시 당일거래량 ≥ 20일평균 × 이 배수 (투매 확인). 2026-07-22 A스윕서 1.25가 MC 최적(Calmar 2.17·MDD17.2 vs 1.5의 1.80·20.3, 6/6). 0=off
+  skipNeutral: true, // NEUTRAL 레짐선 rsi2 매수 스킵
+});
 
 // 2026-07-20: 확신도 기반 포지션 사이징 (사용자 요청 — "확실한 종목이면 한두개 몰빵 허용").
 //   후보의 conviction(0~10) 이 strongThreshold 이상이면 5분산을 채우지 않고
@@ -41,10 +84,25 @@ export const CONVICTION_SIZING = Object.freeze({
 // 2026-07-21: 부분익절 (백테스트+MC 확정 — 순수트레일 대비 CAGR 50.6% vs 38.1%, MDD 31 vs 42, 승률 59 vs 53.5, 전부 개선).
 //   기존 live는 순수트레일(열등)이었음. combo-v2 백테스트 tp1R=1/tp2R=2(=trailPct×N) 이식.
 //   +tp1Pct 도달 → 절반 익절 / +tp2Pct 도달 → 잔량 절반 추가익절 / 나머지는 트레일(승자 태우기 유지).
+// 2026-07-24: 유니버스 420 확장에 맞춰 trail 8→6, tp1R/tp2R 1→2 재조정(5시드 MC 최적, LIVE_SLOTS 주석 참조).
 export const PARTIAL_TP = Object.freeze({
   enabled: true,
-  tp1Pct: 4,   // +4% → 절반 익절 (2026-07-21 백테스트+MC: +8/16 대비 CAGR 50.6→56.6·MDD 31→30·승률 59→61 전부 개선)
-  tp2Pct: 8,   // +8% → 잔량 절반 추가 익절. 트레일은 8% 유지(러너 1/4는 넓게 태워 꼬리 포착)
+  tp1Pct: 6,   // +6% → 절반 익절 (=trail6%×tp1R1, 2026-07-24 uni420 재조정)
+  tp2Pct: 12,  // +12% → 잔량 절반 추가 익절 (=trail6%×tp2R2). 트레일도 6%로 축소(uni420 소형주 변동성 대응)
+});
+
+// 2026-07-25: 수급붕괴 청산 (사용자 제안 → 백테 검증 → 사용자 배포 결정).
+//   hi120(돌파) 보유분만 대상. 최근 days 거래일 누적 (기관+외국인) 순매수 ≤ 0 이면 익절/손절 도달 전에도 전량 청산.
+//   근거(라이브패리티 10시드 MC, uni420·slots5·trail6·tp1r1·tp2r2):
+//     CAGR 36.8→37.2%(+0.5%p = 중립, 4승6패) / **MDD 22.3→20.5%(-1.8%p, 6승4패)** / Calmar 1.65→1.82
+//     낙폭 개선이 최악 시드에 집중(23.6→18.2 · 23.0→18.3 · 25.5→20.0 · 27.5→18.3) = 나쁜 꼬리 절단
+//     단일경로선 윈도 3~20 전 구간이 베이스라인 상회(플래토=실제효과 근거)하나 MC서 CAGR은 flat으로 수렴 → **수익개선 아님, 낙폭도구**
+//   데이터 = stock_investor_flows(KIS, 매일 18:00 cron, 422종목·30일 롤링). KRX(pykrx) 수치와 완전일치 실측 확인.
+//   수급은 장마감 후 확정이므로 T-1 기준 판정(백테와 동일). 데이터 10일 미확보 종목은 룰 미적용(통과).
+export const FLOW_EXIT = Object.freeze({
+  enabled: true,
+  days: 10,        // 누적 윈도(거래일). MC서 d5는 기각(CAGR -3.1%p), d10 채택
+  threshold: 0,    // 누적 순매수(억) ≤ 이 값이면 청산. 0=순매도 전환
 });
 
 // 2026-07-22: Corporate-action 서킷브레이커 (사용자 지적 — 무상증자·액면분할 권리락 급락에 헐값 자동매도 방지).

@@ -18,13 +18,16 @@ import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { getAccounts, getHoldings, getBuyingPower, getPricesMap, getDailyCandles, createOrder, getOrder, cancelOrder } from './toss-api.js';
-import { LIVE_SLOTS, CONVICTION_SIZING, FORECAST_GUARD, PARTIAL_TP, CA_GUARD, LIVE_EXCLUDE } from './strategy-contract.mjs';
+import { LIVE_SLOTS, LIVE_UNIVERSE_LIMIT, CONVICTION_SIZING, FORECAST_GUARD, PARTIAL_TP, CA_GUARD, LIVE_EXCLUDE, CAPITAL_DEPLOY, SECTOR_CAP, RSI_ENTRY_FILTER, FLOW_EXIT } from './strategy-contract.mjs';
+import { buildLiveCandidates } from './live-parity.mjs';
+import { readBotExclude } from './bot-exclude.mjs';
+import { executeBuy, executeSell } from './tg-order.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: join(__dirname, '.env') });
 const argv = process.argv.slice(2);
 const POLL_MS = 30_000;
-const TRAIL_PCT = 8, HARD_STOP_PCT = 7;   // 승자 태우기: 고점 -8% 트레일 / 진입 -7% 하드손절
+const TRAIL_PCT = 6, HARD_STOP_PCT = 7;   // 승자 태우기: 고점 -6% 트레일(2026-07-24 uni420 재조정) / 진입 -7% 하드손절
 const RSI_MAX = 10, MIN_TURNOVER = 3e9, MIN_PRICE = 2_000;
 const STATE = join(__dirname, 'stock-live-state.json');
 const JOURNAL = join(__dirname, 'stock-live-journal.json');
@@ -49,7 +52,11 @@ const dbQuery = async (sql) => {
 function rsi2(c) { const i = c.length - 1; if (i < 2) return 50; let up = 0, dn = 0; for (let j = i - 1; j <= i; j++) { const ch = c[j] - c[j - 1]; if (ch > 0) up += ch; else dn -= ch; } return up + dn === 0 ? 50 : (up / (up + dn)) * 100; }
 
 async function regimeOf() {
-  const c = (await getDailyCandles('005930', 70)).map(b => b.close);
+  // 2026-07-23: HMA(30) 실험 롤백 — SMA20/60 복원. HMA는 slots=10 백테선 우위였으나 진짜 live 설정
+  //   (slots=3·tp+4/8) MC 5시드 재검증서 SMA가 CAGR +2.9%p 우위(4/5)·MDD 동률 → HMA 검증 실패(설정 아티팩트).
+  const cd = await getDailyCandles('005930', 70);
+  if (!Array.isArray(cd) || cd.length < 61) return 'NEUTRAL'; // ★ 캔들 부족 시 안전 가드
+  const c = cd.reverse().map(b => b.close); // ★버그수정 2026-07-22: getDailyCandles는 newest-first → reverse 필수. 안 하면 ~70일 전(4월) 데이터로 레짐 계산했음(pickCandidate는 이미 reverse). 레짐게이트·skipNeutral 전부 영향.
   const i = c.length - 1; const avg = (n) => c.slice(i - n + 1, i + 1).reduce((s, v) => s + v, 0) / n;
   const ma20 = avg(20), ma60 = avg(60), ret5 = (c[i] / c[i - 5] - 1) * 100;
   if (c[i] > ma20 && ma20 > ma60) return 'UP';
@@ -59,29 +66,39 @@ async function regimeOf() {
 
 // combo-v2 진입 후보: 레짐별 rsi2 과매도(전 레짐) + hi120 신고가돌파(UP만). cashCeil로 살 수 있는 것만.
 // 각 후보에 conviction(0~10) 부여 → 확신도 내림차순 반환(사이징은 호출부에서).
-const REGIME_F = { UP: 1.0, NEUTRAL: 0.85, DOWN: 0.5 };  // rsi2 평균회귀 신뢰도 레짐 가중
+const SCAN_CONCURRENCY = 15; // 2026-07-26 최적화: 동시배치 15개로 스캔 속도 향상
 async function pickCandidate(cashCeil, heldSet = new Set()) {
   const regime = await regimeOf();
-  const rows = await dbQuery(`SELECT stock_code,corp_name,current_price FROM stock_analysis WHERE current_price>=${MIN_PRICE} AND current_price<${Math.floor(cashCeil)} AND avg_turnover_20d>=${MIN_TURNOVER} ORDER BY market_cap_tril DESC LIMIT 40`);
-  const cands = [];
-  for (const r of rows) {
-    if (heldSet.has(r.stock_code) || LIVE_EXCLUDE.has(r.stock_code)) continue; // 보유·제외종목 스킵
-    try {
-      const cd = (await getDailyCandles(r.stock_code, 130)).reverse();
-      if (cd.length < 61) continue;
-      const cl = cd.map(b => b.close), px = cl[cl.length - 1];
-      if (px >= cashCeil) continue;
-      const rv = rsi2(cl);
-      if (rv < RSI_MAX) cands.push({ code: r.stock_code, name: r.corp_name, px, rsi2: rv, sub: 'rsi2', conviction: (RSI_MAX - rv) * (REGIME_F[regime] ?? 0.85) });
-      if (regime === 'UP') {
-        let hh = 0; for (let j = cl.length - 121; j < cl.length - 1; j++) hh = Math.max(hh, cd[j].high);
-        const brk = (px / hh - 1) * 100;
-        if (px > hh && brk >= 3) cands.push({ code: r.stock_code, name: r.corp_name, px, breakout: brk, sub: 'hi120', conviction: Math.min(10, brk) });
-      }
-    } catch { /* skip */ }
+  const rows = await dbQuery(`SELECT stock_code,corp_name,current_price,sector FROM stock_analysis WHERE current_price>=${MIN_PRICE} AND current_price<${Math.floor(cashCeil)} AND avg_turnover_20d>=${MIN_TURNOVER} ORDER BY market_cap_tril DESC LIMIT ${LIVE_UNIVERSE_LIMIT}`);
+  const dynExclude = readBotExclude(); // 텔레그램 수동매수 종목 = 봇 재매수 금지
+  const targets = rows.filter(r => !heldSet.has(r.stock_code) && !LIVE_EXCLUDE.has(r.stock_code) && !dynExclude.has(r.stock_code)); // 보유·제외·수동관리 스킵
+  const signals = [];
+  for (let i = 0; i < targets.length; i += SCAN_CONCURRENCY) {
+    const batch = targets.slice(i, i + SCAN_CONCURRENCY);
+    const results = await Promise.all(batch.map(async (r) => {
+      try {
+        const cd = (await getDailyCandles(r.stock_code, 122)).reverse(); // 122일로 최적화하여 패치 지연 최소화
+        if (!Array.isArray(cd) || cd.length < 61) return null;
+        const cl = cd.map(b => b.close), px = cl[cl.length - 1];
+        if (px >= cashCeil) return null;
+        const rv = rsi2(cl);
+        // 투매 확인용 거래량비: 당일 / 최근20일 평균
+        const vols = cd.map(b => Number(b.volume) || 0);
+        const prev20 = vols.slice(-21, -1); const avgVol = prev20.length ? prev20.reduce((a, b) => a + b, 0) / prev20.length : 0;
+        const volRatio = avgVol > 0 ? vols[vols.length - 1] / avgVol : 1;
+        let brk = 0;
+        if (regime === 'UP') {
+          let hh = 0; const startJ = Math.max(0, cl.length - 121); for (let j = startJ; j < cl.length - 1; j++) hh = Math.max(hh, cd[j]?.high ?? 0);
+          brk = hh > 0 ? (px / hh - 1) * 100 : 0;
+        }
+        return { code: r.stock_code, name: r.corp_name, px, rsi: rv, rsi2: rv, breakoutPct: brk, breakout: brk, sector: r.sector, volRatio };
+      } catch { return null; } // skip
+    }));
+    for (const s of results) if (s) signals.push(s);
   }
-  // 확신도 내림차순, 동점이면 hi120(추세) 우선
-  cands.sort((a, b) => b.conviction - a.conviction || (a.sub === 'hi120' ? -1 : 1));
+  // 캠페인 승자: rsi2 매수 시 투매 거래량 확인(rsiVolMin) + NEUTRAL 레짐 rsi2 스킵
+  let cands = buildLiveCandidates(signals, { regime, rsiMax: RSI_MAX, minBreakout: 3, rsiVolMin: RSI_ENTRY_FILTER.volMin });
+  if (RSI_ENTRY_FILTER.skipNeutral && regime === 'NEUTRAL') cands = cands.filter(c => c.sub !== 'rsi2');
   const rsiCount = cands.filter(c => c.sub === 'rsi2').length;
   const hiCount = cands.filter(c => c.sub === 'hi120').length;
   return { regime, cands, pick: cands[0] ?? null, rsiCount, hiCount };
@@ -104,6 +121,15 @@ const accounts = await getAccountsResilient();
 const seq = accounts?.[0]?.accountSeq;
 if (seq == null) { log('토스 계좌 조회 실패(10회 소진) — 중단, keeper 재기동 대기'); process.exit(1); }
 
+// 섹터 캡용 code→sector 맵 (1회 로드, Supabase stock_analysis). 실패 시 빈 맵 = 캡 무효화(안전 기본).
+let SECTOR = {};
+if (SECTOR_CAP.enabled) {
+  try {
+    SECTOR = Object.fromEntries((await dbQuery(`SELECT stock_code, sector FROM stock_analysis`)).map(r => [r.stock_code, r.sector]));
+    log(`섹터맵 로드 ${Object.keys(SECTOR).length}종목 (섹터캡 max ${SECTOR_CAP.max})`);
+  } catch (e) { log(`섹터맵 로드 실패(캡 무효화): ${String(e.message).slice(0, 60)}`); }
+}
+
 // ── PLAN: 미리보기 ────────────────────────────────────────────
 if (argv.includes('--plan')) {
   const cash = Number((await getBuyingPower(seq, { currency: 'KRW' }))?.cashBuyingPower ?? 0);
@@ -112,15 +138,20 @@ if (argv.includes('--plan')) {
   console.log(`현금 ${cash.toLocaleString()}원 | 레짐 ${regime} | rsi2후보 ${rsiCount} / hi120후보 ${hiCount} | 슬롯 ${LIVE_SLOTS} | 몰빵임계 ${CONVICTION_SIZING.strongThreshold}(현금×${CONVICTION_SIZING.strongFraction})`);
   const diversified = Math.floor(cash / LIVE_SLOTS);
   // 확신도순으로 훑어 예산에 맞는(살 수 있는) 후보만 최대 슬롯수만큼 표시 = 라이브 진입순서
-  let shownN = 0;
+  let shownN = 0; const secSeen = {};
   for (const p of (cands ?? [])) {
     if (shownN >= LIVE_SLOTS) break;
+    // 섹터 캡 미리보기 반영: 같은 섹터 max개 넘으면 표시 스킵 (라이브 진입과 일치)
+    if (SECTOR_CAP.enabled && p.sector && (secSeen[p.sector] ?? 0) >= SECTOR_CAP.max) continue;
     const strong = CONVICTION_SIZING.enabled && p.conviction >= CONVICTION_SIZING.strongThreshold;
-    const budget = strong ? Math.floor(cash * CONVICTION_SIZING.strongFraction) : diversified;
+    const minRemainForSlots = MIN_PRICE * 2 * (LIVE_SLOTS - 1);
+    const strongBudgetCap = Math.max(MIN_PRICE, cash - minRemainForSlots);
+    const budget = strong ? Math.min(Math.floor(cash * CONVICTION_SIZING.strongFraction), strongBudgetCap) : diversified;
     if (p.px >= budget) continue;
     const qty = Math.floor(budget * 0.999 / limitBuyPx(p.px));
     if (qty < 1) continue;
-    console.log(`→ ${strong ? '[집중몰빵]' : '[분산]'} ${p.name}(${p.code}) ${p.px.toLocaleString()}원 × ${qty}주 (예산 ${budget.toLocaleString()}) [${p.sub}, 확신도 ${p.conviction.toFixed(1)}${p.rsi2 != null ? ', RSI2 ' + p.rsi2.toFixed(1) : ', 돌파 ' + p.breakout?.toFixed(1) + '%'}]`);
+    if (SECTOR_CAP.enabled && p.sector) secSeen[p.sector] = (secSeen[p.sector] ?? 0) + 1;
+    console.log(`→ ${strong ? '[집중몰빵]' : '[분산]'} ${p.name}(${p.code}) ${p.px.toLocaleString()}원 × ${qty}주 (예산 ${budget.toLocaleString()}) [${p.sub}, ${p.sector ?? '섹터?'}, 확신도 ${p.conviction.toFixed(1)}${p.rsi2 != null ? ', RSI2 ' + p.rsi2.toFixed(1) : ', 돌파 ' + p.breakout?.toFixed(1) + '%'}]`);
     shownN++;
   }
   if (!shownN) console.log(`→ 매수 대상 없음 (예산 내 신호 종목 없음 — 현금 대기)`);
@@ -148,6 +179,33 @@ async function settleOrder(orderId, symbol, side, qtyBefore, tag) {
   }
   try { await cancelOrder(seq, orderId); log(`  ${tag} 미체결 → 주문취소(스테일 방지)`); } catch {}
   return false;
+}
+
+// 수급붕괴 판정 (FLOW_EXIT). stock_investor_flows에서 종목별 최근 N거래일 누적 순매수 조회 → ≤ threshold면 청산대상.
+//   하루 1회만 조회(수급은 장마감 후 확정). 조회 실패 시 빈 Set = 청산 안 함(안전 기본).
+//   ★데이터가 N일 미확보인 종목은 제외(HAVING COUNT) — 백테의 "데이터 부족 시 룰 미적용"과 동일.
+let flowCache = { day: null, breaking: new Set() };
+async function flowBreaking(codes, today) {
+  if (!codes.length) return new Set();
+  if (flowCache.day === today) return flowCache.breaking;
+  try {
+    const rows = await dbQuery(`SELECT stock_code, SUM(net) AS total FROM (
+        SELECT stock_code, (COALESCE(orgn_amt_mil,0) + COALESCE(frgn_amt_mil,0)) AS net,
+               ROW_NUMBER() OVER (PARTITION BY stock_code ORDER BY date DESC) AS rn
+        FROM stock_investor_flows WHERE stock_code IN (${codes.map(c => `'${c}'`).join(',')})
+      ) t WHERE rn <= ${FLOW_EXIT.days}
+      GROUP BY stock_code HAVING COUNT(*) >= ${FLOW_EXIT.days}`);
+    const brk = new Set();
+    for (const r of (Array.isArray(rows) ? rows : [])) {
+      if (Number(r.total) / 100 <= FLOW_EXIT.threshold) brk.add(r.stock_code); // 백만원→억
+    }
+    flowCache = { day: today, breaking: brk };
+    if (brk.size) log(`수급붕괴 감지 ${brk.size}종목: ${[...brk].join(',')}`);
+    return brk;
+  } catch (e) {
+    log(`수급조회 실패(청산 보류): ${String(e.message).slice(0, 70)}`);
+    return new Set();
+  }
 }
 
 // 최신 KOSPI 프록시 시장 예측 (forecast_ledger). 실패/부재 시 null = 경보 없음(안전 기본).
@@ -179,6 +237,108 @@ async function tgNotify(text) {
 
 log(`=== 주식 연속 트레이더 시작 (계좌 ${accounts[0].accountSeq}, 08:00~20:00, LIVE_SLOTS=${LIVE_SLOTS}, 트레일-${TRAIL_PCT}%/하드-${HARD_STOP_PCT}%, 예측가드 ${FORECAST_GUARD.enabled ? (FORECAST_GUARD.shadow ? 'SHADOW' : 'LIVE') : 'off'}) ===`);
 let lastSignal = 0, signalCache = null;
+let scanCash = 0, scanHeld = new Set();
+// 상태 로그 스로틀: key가 바뀌거나 10분 경과 시에만 1줄 (매 사이클 도배 방지)
+let gateKey = '', gateAt = 0;
+function logGate(msg, key) {
+  if (key === gateKey && Date.now() - gateAt < 600_000) return;
+  gateKey = key; gateAt = Date.now(); log(msg);
+}
+// 신호스캔 독립 루프 (2026-07-24: uni420 확장 후 Toss 레이트리밋(10TPS, rateSlot)상 스캔 자체가 45초~2분 걸려
+//   메인루프(30초 매도/손절 체크) 안에서 실행하면 그 체크까지 같이 지연됨 → 완전 분리, 메인루프는 항상 30초 유지.
+//   scanCash/scanHeld는 메인루프가 매 사이클 최신값으로 갱신(아래), 매수 실행은 여전히 메인루프 for-loop에서
+//   현재(fresh) heldSet으로 재검증하므로 이 캐시가 한 스캔주기만큼 낡아도 중복매수 위험 없음.
+async function signalScanLoop() {
+  while (true) {
+    try {
+      if (marketOpen() && scanCash >= MIN_PRICE) {
+        signalCache = await pickCandidate(scanCash, scanHeld);
+        lastSignal = Date.now();
+      }
+    } catch (e) { log(`신호스캔 오류: ${String(e.message).slice(0, 80)}`); }
+    await new Promise(r => setTimeout(r, 5_000)); // 완료 즉시 잠깐 쉬고 재스캔(실제 페이싱은 rateSlot 전역 10TPS가 담당)
+  }
+}
+signalScanLoop();
+
+// 매도 사인 (수동픽 보유분이 AI 목표/손절 도달 시 텔레그램 알림, 자동매도 X). 30초 루프의 holdings 재사용 = Toss 추가호출 0.
+const TG_T = process.env.TELEGRAM_BOT_TOKEN, TG_C = process.env.TELEGRAM_CHAT_ID;
+const tgSend = async (t) => { if (!TG_T || !TG_C) return; try { await fetch(`https://api.telegram.org/bot${TG_T}/sendMessage`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: TG_C, text: t }) }); } catch {} };
+async function emitSellSignals(holdings, manualCodes, today) {
+  const held = (holdings?.items ?? []).filter(i => i.marketCountry === 'KR' && Number(i.quantity) > 0 && manualCodes.has(i.symbol));
+  if (!held.length) return;
+  const sig = (state.sellSig ??= {});
+  let strat = [];
+  try { strat = await dbQuery(`SELECT DISTINCT ON (stock_code) stock_code,name,strategy FROM ai_shadow_decisions WHERE stock_code IN (${held.map(i => `'${i.symbol}'`).join(',')}) AND decision='buy' ORDER BY stock_code, run_at DESC`); } catch {}
+  const sMap = new Map(strat.map(r => [r.stock_code, { name: r.name, s: typeof r.strategy === 'string' ? (() => { try { return JSON.parse(r.strategy); } catch { return null; } })() : r.strategy }]));
+  for (const it of held) {
+    const entry = Number(it.averagePurchasePrice), cur = Number(it.lastPrice);
+    if (!entry || !cur) continue;
+    const ret = (cur / entry - 1) * 100;
+    const info = sMap.get(it.symbol); const st = info?.s; const nm = info?.name || it.name || it.symbol;
+    const tgt = Number(st?.target_pct ?? 7), stp = Number(st?.stop_pct ?? 5);
+    let type = null, label = null;
+    if (ret >= tgt) { type = 'target'; label = `🎯 목표 +${tgt}% 도달`; }
+    else if (ret <= -stp) { type = 'stop'; label = `🛑 손절선 -${stp}% 도달`; }
+    if (!type) continue;
+    const key = `${it.symbol}:${type}`;
+    if (sig[key] === today) continue; // 종목·유형당 하루 1회
+    sig[key] = today;
+    await tgSend(`🔔 매도 사인: ${nm}(${it.symbol}) ${ret >= 0 ? '+' : ''}${ret.toFixed(1)}% (${label})\n진입 ${entry.toLocaleString()} → 현재 ${cur.toLocaleString()}\n팔려면 텔레그램: 매도 ${nm}`);
+    writeFileSync(STATE, JSON.stringify(state, null, 1));
+  }
+}
+
+// 텔레그램 주문 큐 집행 — telegram-agent가 적재한 매수/매도를 stock-live의 단일 Toss 세션으로 집행(경합 0). 결과는 텔레그램 전송.
+async function processOrderQueue(seq) {
+  const e2 = (s) => String(s ?? '').replace(/'/g, "''");
+  // H2: 오래된 pending 만료(장경계·지연 → 다음날 엉뚱가격 집행 방지)
+  try {
+    const exp = await dbQuery(`UPDATE tg_order_queue SET status='expired', done_at=NOW() WHERE status='pending' AND requested_at <= NOW() - INTERVAL '10 minutes' RETURNING name, side`);
+    for (const e of (Array.isArray(exp) ? exp : [])) await tgSend(`⏰ 주문 만료(10분 미집행): ${e.side === 'buy' ? '매수' : '매도'} ${e.name} — 필요하면 다시 명령해줘.`);
+  } catch {}
+  let pend = [];
+  try { pend = await dbQuery(`SELECT id, side, name, amount_krw, target_price FROM tg_order_queue WHERE status='pending' AND requested_at > NOW() - INTERVAL '10 minutes' ORDER BY id LIMIT 5`); } catch { return 0; }
+  let executed = 0;
+  for (const o of pend) {
+    // C1: 실행 전 원자적 선점 — 중복 집행 방지(크래시 시 processing서 멈춤 = 재집행 안 됨 ≫ 중복매수)
+    let claim;
+    try { claim = await dbQuery(`UPDATE tg_order_queue SET status='processing', claimed_at=NOW() WHERE id=${o.id} AND status='pending' RETURNING id`); } catch { continue; }
+    if (!Array.isArray(claim) || !claim.length) continue; // 이미 다른 사이클이 가져감
+    let r, threw = false;
+    try {
+      if (o.side === 'ca-clear') {
+        const res = await resolveStock(o.name, { dbQuery });
+        if (res.status === 'ok') {
+          if (state.meta[res.code]) {
+            delete state.meta[res.code].caHold;
+            delete state.meta[res.code].caAlertDay;
+            writeFileSync(STATE, JSON.stringify(state, null, 1));
+          }
+          r = { ok: true, msg: `✅ [CA서킷 해제] ${res.name}(${res.code}) 봇 자동 매도/손절 정상 재개` };
+        } else {
+          r = { ok: false, msg: `[CA서킷 해제 실패] '${o.name}' 종목을 찾지 못함` };
+        }
+      } else {
+        r = o.side === 'buy'
+          ? await executeBuy({ name: o.name, amountKrw: Number(o.amount_krw) }, { dbQuery, seq, dryRun: false })
+          : await executeSell({ name: o.name, targetPrice: o.target_price != null ? Number(o.target_price) : undefined }, { dbQuery, seq, dryRun: false });
+      }
+    } catch (e) { threw = true; r = { ok: false, msg: String(e.message).slice(0, 150) }; }
+    executed++;
+    // H1: 응답 실패(throw)면 주문이 Toss에 접수됐을 수 있음 → 'error_check'로 두고 경보(failed 단정 금지)
+    const st = threw ? 'error_check' : (r.ok ? 'done' : 'failed');
+    try {
+      await dbQuery(`UPDATE tg_order_queue SET status='${st}', result='${e2(r.msg)}', order_id='${e2(r.orderId)}', done_at=NOW() WHERE id=${o.id}`);
+    } catch {
+      await tgSend(`🚨 주문 상태갱신 실패 (id ${o.id} ${o.name}) — ${r.ok ? '체결됐으나 원장 미갱신' : ''}. 큐/계좌 수동확인 필요. (processing 상태라 재집행은 안 됨)`);
+      continue;
+    }
+    if (threw) await tgSend(`⚠️ 주문 응답 불확실: ${o.name} — Toss에 접수됐을 수 있음. 계좌·체결 직접 확인해줘. (${r.msg})`);
+    else await tgSend((r.ok ? '' : '⚠️ ') + r.msg);
+  }
+  return executed;
+}
 
 while (true) {
   if (!marketOpen()) { await new Promise(r => setTimeout(r, 300_000)); continue; } // 장외: 5분 슬립
@@ -192,15 +352,36 @@ while (true) {
     else if (!String(e.message).includes('no_authorization_ip')) log(`조회 실패(재시도): ${e.message.slice(0, 60)}`);
     await new Promise(r => setTimeout(r, POLL_MS)); continue;
   }
-  // LIVE_EXCLUDE(사용자 수동관리 종목)는 봇이 전혀 안 건드림 — items에서 제외(청산·슬롯계산 모두 스킵)
-  const items = (holdings?.items ?? []).filter(i => i.marketCountry === 'KR' && Number(i.quantity) > 0 && !LIVE_EXCLUDE.has(i.symbol));
+  // LIVE_EXCLUDE(정적) + 동적 봇제외(텔레그램 수동매수, .bot-exclude.json)는 봇이 전혀 안 건드림 — items에서 제외(청산·슬롯계산 모두 스킵)
+  const EXCLUDED = new Set([...LIVE_EXCLUDE, ...readBotExclude()]);
+  const items = (holdings?.items ?? []).filter(i => i.marketCountry === 'KR' && Number(i.quantity) > 0 && !EXCLUDED.has(i.symbol));
   const today = now().slice(0, 10);
+  // ★ meta 고아 정리 (2026-07-28 버그 수정): 사용자가 토스 앱에서 직접 팔면 봇은 매도를 못 봐서 meta가 남는다.
+  //   그 종목을 나중에 다시 사면 372행이 **낡은 meta를 그대로 재사용**해 옛 고점으로 트레일을 계산하고
+  //   (즉시 매도 위험) 옛 진입가로 하드손절을 잡고 tp1:true가 남아 부분익절을 건너뛴다.
+  //   조회 실패·부분응답으로 트레일 고점을 잃지 않게 **3사이클 연속 미보유**일 때만 삭제한다.
+  if (holdings?.items) {
+    const heldNow = new Set((holdings.items ?? []).filter(i => Number(i.quantity) > 0).map(i => i.symbol));
+    const miss = (state.metaMiss ??= {});
+    let purged = 0;
+    for (const code of Object.keys(state.meta)) {
+      if (heldNow.has(code)) { delete miss[code]; continue; }
+      miss[code] = (miss[code] ?? 0) + 1;
+      if (miss[code] >= 3) { delete state.meta[code]; delete miss[code]; purged++; }
+    }
+    if (purged) log(`meta 고아 정리 ${purged}건 (미보유 3사이클 연속) → 남은 ${Object.keys(state.meta).length}건`);
+  }
+  try { await emitSellSignals(holdings, readBotExclude(), today); } catch (e) { log(`매도사인 오류: ${String(e.message).slice(0, 80)}`); } // 수동픽 목표/손절 도달 시 텔레그램 매도사인(자동매도 X)
+  try { const ne = await processOrderQueue(seq); if (ne > 0) cash = Number((await getBuyingPower(seq, { currency: 'KRW' }))?.cashBuyingPower ?? cash); } catch (e) { log(`주문큐 오류: ${String(e.message).slice(0, 80)}`); } // 큐 집행 후 현금 재조회(M3)
 
   // 시장 예측 조회 (하락경보 판정) — forecast_ledger 최신 KOSPI 프록시
   const fc = FORECAST_GUARD.enabled ? await marketForecast() : null;
   const bear = isBearish(fc);
 
-  // ① 청산 판정 (트레일링 최대익절 + 하드손절) + 예측하락 이익보호(신규)
+  // 수급붕괴 청산용 조회(하루 1회 — 수급은 장마감 후 확정이라 장중 재조회 불필요)
+  const flowBrk = FLOW_EXIT.enabled ? await flowBreaking(items.filter(i => state.meta[i.symbol]?.sub === 'hi120').map(i => i.symbol), today) : new Set();
+
+  // ① 청산 판정 (트레일링 최대익절 + 하드손절) + 예측하락 이익보호(신규) + 수급붕괴(신규)
   for (const it of items) {
     const px = Number(it.lastPrice), entry = Number(it.averagePurchasePrice), qty = Number(it.quantity);
     const m = state.meta[it.symbol] ?? (state.meta[it.symbol] = { hi: px, entry });
@@ -224,6 +405,26 @@ while (true) {
       m.lastPx = px;
     }
     m.hi = Math.max(m.hi ?? px, px);
+
+    // ⓪-FLOW 수급붕괴 청산 (2026-07-25 배포, 사용자 결정): hi120 보유분의 최근 10거래일 누적(기관+외국인) ≤ 0 → 전량 청산.
+    //   ★백테스트 우선순위와 동일하게 부분익절·트레일보다 먼저 판정(검증된 동작을 그대로 재현).
+    //   MC 10시드: CAGR +0.5%p(중립) / MDD -1.8%p 개선(6/10), 최악시드 낙폭 대폭 축소(27.5→18.3 등), Calmar 1.65→1.82.
+    if (flowBrk.has(it.symbol) && !m.flowSold) {
+      try {
+        const lpx = limitSellPx(px);
+        const o = await createOrder(seq, { symbol: it.symbol, side: 'SELL', orderType: 'LIMIT', price: String(lpx), quantity: String(qty) });
+        const filled = await settleOrder(o?.orderId ?? o?.id, it.symbol, 'SELL', qty, `수급청산 ${it.symbol}`);
+        if (filled) {
+          const rsn = `수급붕괴(기관+외국인 ${FLOW_EXIT.days}일 순매도)`;
+          log(`매도 ${it.name}(${it.symbol}) ${qty}주 @${lpx.toLocaleString()} (${rsn}, ${ret.toFixed(1)}%)`);
+          recordTrade({ ts: now(), code: it.symbol, name: it.name, side: 'SELL', px: lpx, entry, ret: Number(ret.toFixed(1)), reason: rsn });
+          delete state.meta[it.symbol];
+          writeFileSync(STATE, JSON.stringify(state, null, 1));
+          continue;
+        }
+        m.flowSold = today; // 미체결 → 당일 재시도 안 함(다음날 재판정)
+      } catch (e) { log(`수급청산 오류 ${it.symbol}: ${String(e.message).slice(0, 80)}`); }
+    }
 
     // ⓪ 부분익절 (백테스트 검증): +tp1Pct 절반 / +tp2Pct 잔량절반. 나머지는 아래 트레일 유지.
     if (PARTIAL_TP.enabled) {
@@ -291,19 +492,38 @@ while (true) {
     }
   }
 
-  // ② 진입 (빈 슬롯 있고 현금 있으면) — 확신도 기반 사이징. 하락경보+live면 진입 보류.
-  if (items.length < LIVE_SLOTS && cash >= MIN_PRICE && !(bear && !FORECAST_GUARD.shadow)) {
+  // ② 진입 — 자본기반 게이트(CAPITAL_DEPLOY). perSlot=equity/slots, 유휴현금이 반슬롯↑이면 편입.
+  //   레거시 dust(시가평가<perSlot*dustFraction)는 슬롯 카운트 제외 → 큰 현금이 dust에 막히지 않음.
+  const posVal = items.reduce((s, it) => s + Number(it.quantity) * Number(it.lastPrice), 0);
+  const equity = cash + posVal;
+  const perSlot = Math.max(MIN_PRICE, Math.floor(equity / LIVE_SLOTS));
+  const bigCount = CAPITAL_DEPLOY.enabled
+    ? items.filter(it => Number(it.quantity) * Number(it.lastPrice) >= perSlot * CAPITAL_DEPLOY.dustFraction).length
+    : items.length;
+  const canDeploy = CAPITAL_DEPLOY.enabled
+    ? (bigCount < LIVE_SLOTS && cash >= perSlot * CAPITAL_DEPLOY.minFillFraction && cash >= MIN_PRICE)
+    : (items.length < LIVE_SLOTS && cash >= MIN_PRICE);
+  if (canDeploy && !(bear && !FORECAST_GUARD.shadow)) {
     const heldSet = new Set(items.map(i => i.symbol));
-    const remainingSlots = LIVE_SLOTS - items.length;
-    const diversified = Math.floor(cash / remainingSlots);
-    // 전액현금 기준으로 최상위 신호 탐색(집중매수 시 비싼 확신종목도 후보에 포함)
-    if (Date.now() - lastSignal >= 900_000 || !signalCache) { signalCache = await pickCandidate(cash, heldSet); lastSignal = Date.now(); }
-    const { regime, cands } = signalCache;
+    const remainingSlots = Math.max(1, LIVE_SLOTS - bigCount);
+    const diversified = Math.min(cash, perSlot);   // 한 슬롯 예산(초과 현금은 다음 폴에서 추가 편입)
+    // 전액현금 기준으로 최상위 신호 탐색(집중매수 시 비싼 확신종목도 후보에 포함). 스캔은 signalScanLoop가 독립수행.
+    scanCash = cash; scanHeld = heldSet; // 다음 백그라운드 스캔부터 최신 현금·보유현황 반영
+    const { regime, cands } = signalCache ?? { regime: null, cands: [] }; // 재시작 직후 첫 스캔 완료 전 = 빈 후보로 안전 대기
+    // 진입대기 가시성(2026-07-27): 후보 0건이면 아무 로그도 안 남아 "왜 안 사는지"를 매번 수동확인해야 했음.
+    //   레짐 변경·후보 유무 반전 시, 그리고 최소 10분마다 1줄. (5초 스캔마다 찍으면 로그 폭발)
+    logGate(`진입대기: 레짐 ${regime ?? '스캔중'} · 후보 ${cands?.length ?? 0}건 · 현금 ${Math.round(cash / 10000).toLocaleString()}만 · 슬롯 ${bigCount}/${LIVE_SLOTS}`,
+      `${regime ?? '스캔중'}|${(cands?.length ?? 0) > 0 ? 'cand' : 'none'}`);
+
     // 확신도순으로 훑어 각 후보의 예산(집중 or 분산)에 맞는 첫 종목 1건 매수
     for (const pick of (cands ?? [])) {
       if (heldSet.has(pick.code)) continue;
+      // 섹터 캡: 후보와 같은 섹터를 이미 SECTOR_CAP.max개 보유 중이면 스킵(금융 편중 차단). sector 미상(null)은 캡 미적용.
+      if (SECTOR_CAP.enabled) { const psec = SECTOR[pick.code]; if (psec && items.filter(it => SECTOR[it.symbol] === psec).length >= SECTOR_CAP.max) continue; }
       const strong = CONVICTION_SIZING.enabled && pick.conviction >= CONVICTION_SIZING.strongThreshold;
-      const budget = strong ? Math.floor(cash * CONVICTION_SIZING.strongFraction) : diversified;
+      const minRemainForSlots = MIN_PRICE * 2 * (LIVE_SLOTS - 1);
+      const strongBudgetCap = Math.max(MIN_PRICE, cash - minRemainForSlots);
+      const budget = strong ? Math.min(Math.floor(cash * CONVICTION_SIZING.strongFraction), strongBudgetCap) : diversified;
       if (pick.px >= budget) continue;   // 이 예산으론 못 삼 → 다음 후보
       const lpx = limitBuyPx(pick.px);
       const qty = Math.floor(budget * 0.999 / lpx);
@@ -316,12 +536,16 @@ while (true) {
           const size = strong ? `집중 ${Math.round(CONVICTION_SIZING.strongFraction * 100)}%몰빵` : `분산 1/${remainingSlots}`;
           log(`매수 ${pick.name}(${pick.code}) ${qty}주 @${lpx.toLocaleString()} [${pick.sub}, 레짐 ${regime}, 확신도 ${pick.conviction.toFixed(1)}, ${size}${pick.rsi2 != null ? ', RSI2 ' + pick.rsi2.toFixed(1) : ', 돌파 ' + pick.breakout?.toFixed(1) + '%'}]`);
           recordTrade({ ts: now(), code: pick.code, name: pick.name, side: 'BUY', px: lpx, qty, sub: pick.sub, regime, conviction: Number(pick.conviction.toFixed(1)), sizing: strong ? 'concentrate' : 'diversify' });
-          signalCache = null;
+          // signalCache는 더 이상 여기서 비우지 않음(2026-07-24) — signalScanLoop가 독립적으로 계속 갱신하므로
+          // 비우면 다음 백그라운드 스캔 완료까지 후보가 빈 채로 대기하게 돼 불필요하게 매수 기회를 놓침.
           writeFileSync(STATE, JSON.stringify(state, null, 1));
         }
       } catch (e) { log(`매수 오류 ${pick.code}: ${e.message.slice(0, 80)}`); }
       break;  // 사이클당 진입 1건 (나머지 슬롯은 다음 폴에서 잔여현금 재계산 후 평가)
     }
+  } else if (marketOpen()) {
+    logGate(`진입보류: 슬롯 ${bigCount}/${LIVE_SLOTS} · 현금 ${Math.round(cash / 10000).toLocaleString()}만(슬롯예산 ${Math.round(perSlot / 10000).toLocaleString()}만)${bear && !FORECAST_GUARD.shadow ? ' · 하락경보' : ''}`,
+      `blocked|${bigCount}|${cash >= perSlot * CAPITAL_DEPLOY.minFillFraction ? 'cash' : 'nocash'}`);
   }
   await new Promise(r => setTimeout(r, POLL_MS));
 }

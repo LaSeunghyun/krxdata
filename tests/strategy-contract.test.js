@@ -17,6 +17,6 @@ test('backtest combo caps match the live contract', () => {
 test('live execution constants stay small-account safe', () => {
   assert.equal(LIVE_MAX_ORDER_VALUE, 100_000);
   assert.equal(LIVE_MAX_ORDERS_PER_DAY, 3);
-  assert.equal(LIVE_SLOTS, 2);
-  assert.equal(LIVE_RSI2_UNIVERSE_LIMIT, 30);
+  assert.equal(LIVE_SLOTS, 3);
+  assert.equal(LIVE_RSI2_UNIVERSE_LIMIT, 40);
 });
