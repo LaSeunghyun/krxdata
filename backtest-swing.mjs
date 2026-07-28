@@ -16,14 +16,18 @@
  *   node backtest-swing.mjs --strategies rsi2,hi120 --from 20240102 --to 20241230
  */
 import dotenv from 'dotenv';
-import { createReadStream, existsSync, appendFileSync } from 'fs';
+import { createReadStream, existsSync, appendFileSync, readFileSync } from 'fs';
 import { createInterface } from 'readline';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { getDailyCandles } from './toss-api.js';
 import { calcBuyCashImpact, calcSellCashImpact, calcRoundTripPnl, getSellTaxBps } from './execution-model.mjs';
-import { LIVE_COMBO_CAPS } from './strategy-contract.mjs';
+import { LIVE_COMBO_CAPS, LIVE_UNIVERSE_LIMIT, LIVE_EXCLUDE, CONVICTION_SIZING, CAPITAL_DEPLOY } from './strategy-contract.mjs';
+import { buildLiveCandidates, liveCandidateBudget } from './live-parity.mjs';
 import { volatilityThrottleMultiplier } from './volatility-throttle.mjs';
+import { absoluteTrendOn, hi120RegimeAllows, marketSeriesIndex, selectMomentumLeaders } from './research-strategies.mjs';
+import { recordDailyEquity, serializeResearchBook } from './research-backtest-output.mjs';
+import { ensureCandlesFresh } from './ensure-candles-fresh.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: join(__dirname, '.env') });
@@ -36,6 +40,8 @@ const CAPITAL = Number(argOf('--capital', '10000000'));
 const BARS_DEPTH = Number(argOf('--bars', '1150')); // 2022-01~ (FROM 이전 룩백 130일 포함)
 const ONLY = argOf('--strategies', '').split(',').filter(Boolean);
 const CACHE_FILE = join(__dirname, 'candles-daily.jsonl');
+// 2026-07-24: 6주 stale 캐시로 리서치가 조용히 좁은 표본 도는 사고 재발 방지 — 실행 전 자동 신선도 체크(+장중이면 스킵).
+if (!argv.includes('--no-freshness-check')) await ensureCandlesFresh();
 
 // C31 (--stress 1): 슬리피지 ±2틱 + 수수료 2배 비관 시나리오
 const STRESS = Number(argOf('--stress', 0));
@@ -55,6 +61,7 @@ const STRATEGIES = {
   'vb':         { slots: 5, k: 0.5 },                                 // 변동성 돌파, 익일 시가 청산
   'overnight':  { slots: 5 },                                         // 종가 매수 → 익일 시가
   'hi120':      { slots: 10, lookback: 120, trailPct: 10, maxHold: 60 }, // 120일 신고가 + 트레일링
+  'trend-cash': { slots: 3, lookback: 120 },                            // MA120 절대추세 + 120일 모멘텀 top3, 약세 현금
   'rsi2':       { slots: 5, rsiMax: 10, stopPct: 7, maxHold: 10 },    // 과매도 반등 (현재 시총 상위 — lookahead 주의)
   'rsi2-pit':   { slots: 5, rsiMax: 10, stopPct: 7, maxHold: 10 },    // 과매도 반등 (PIT 20일 거래대금 상위 — 테마주 포함)
   'rsi2-mcap':  { slots: 5, rsiMax: 10, stopPct: 7, maxHold: 10 },    // 과매도 반등 (PIT 시총 상위 = 당시 가격×발행주식수)
@@ -94,8 +101,91 @@ for (const [flag, key] of [['--bbperiod', 'period'], ['--bbmult', 'mult']]) {
 const DUMP = argOf('--dump', null);
 const COOLDOWN = Number(argOf('--cooldown', 0));
 const DYNSLOT = Number(argOf('--dynslot', 0)); // MC3 I11: 포지션당 목표 예산(원), 0=비활성
+// 레짐 노출 스로틀(2026-07-22 사용자 가설): 레짐별 총 투자비율. 나머지는 현금 보유. "--regimeexp 1.0,0.7,0.5"(UP,NEUTRAL,DOWN). null=현행(풀투자). live-parity 진입에만 적용.
+const REGIME_EXP = (() => { const v = argOf('--regimeexp', null); if (!v) return null; const [u, n, d] = v.split(',').map(Number); return { UP: u, NEUTRAL: n, DOWN: d }; })();
+// 2026-07-22 리서치 ICE#1: NEUTRAL 레짐 rsi2 진입 스킵(우리 regime pnl서 NEUTRAL rsi2=순손실). live-parity 진입에만 적용.
+const SKIP_NEUTRAL_RSI = argv.includes('--skipneutralrsi');
+// 2026-07-27 사용자 제안: 레짐을 시장(삼전) 프록시가 아니라 종목 자체 추세로 판정 (--selfregime)
+const SELF_REGIME = argv.includes('--selfregime');
+// --selfand: 시장 레짐은 그대로 두고, hi120 진입에 "종목 자체도 UP"을 추가 요구(교집합=더 엄격)
+const SELF_AND = argv.includes('--selfand');
+// 2026-07-25 사용자 요청: DOWN 레짐 rsi2도 스킵(=rsi2를 UP에서만). 분해검증서 rsi2 단독 5/5 손실 확인 후 검토.
+const SKIP_DOWN_RSI = argv.includes('--skipdownrsi');
+// 2026-07-25: rsi2 추세필터 — 진단된 rsi2 실패원인("떨어지는 칼날": 60일 -85% 종목까지 과매도로 잡음) 직접 차단.
+//   --rsitrend N : rsi2 진입을 ret60 >= N% 인 종목으로 제한(0=off). 즉 "상승추세 종목의 눌림만" 매수.
+const RSI_TREND = Number(argOf('--rsitrend', 0));
+// 2026-07-25: rsi2 최대낙폭 필터 — 최근 20일 수익률이 -N% 이하로 붕괴한 종목 제외(구조적 하락 배제). 0=off.
+const RSI_MAXDD20 = Number(argOf('--rsimaxdd20', 0));
+// 2026-07-25 패배 forensic 가설A: 확신도 집중매수(현금50% 몰빵)를 rsi2엔 미적용(hi120만 허용).
+//   근거: rsi2/stop_loss 54건 평균 -28만(전체 패배평균 -14만의 2배), 최악거래 4건 전부 UP·RSI0·stop_loss
+//   = conviction(10-RSI)×1.0=10 ≥ threshold7 → 50% 몰빵 대상. rsi2 단독 CAGR -3.5%인데 몰빵 허용 구조.
+const NO_CONC_RSI2 = argv.includes('--noconc-rsi2');
+// 2026-07-25 판별자 가설C: 애널리스트 컨센서스 목표가 대비 여력 필터 (analyst-hist.json 필요).
+//   근거(in-sample 버킷): hi120 진입가>컨센서스 n=153 거래당 -4만 / 여력0~20% n=233 -2만
+//                        / 여력20~50% n=31 **+7만**(승률74%) / 여력50%+ n=23 **+10만**(승률70%) / 미커버 n=214 **+6만**(승률67%)
+//   --anup N : 커버된 종목은 컨센서스 여력 ≥ N% 일 때만 진입(미커버는 통과). 0=off
+//   --anup-nocov-skip : 미커버 종목도 제외(미커버 우위가 데이터 결함인지 확인용 대조군)
+const AN_UP = Number(argOf('--anup', 0));
+const AN_NOCOV_SKIP = argv.includes('--anup-nocov-skip');
+const AN_HIST = (() => {
+  if (!AN_UP && !AN_NOCOV_SKIP) return null;
+  try { return JSON.parse(readFileSync(join(__dirname, 'analyst-hist.json'), 'utf8')); }
+  catch { console.error('⚠️ analyst-hist.json 없음 — 애널리스트 필터 비활성'); return null; }
+})();
+const anRank = (o) => { const t = String(o ?? '').toLowerCase().replace(/\s/g, ''); if (!t || t.includes('notrated') || t === 'n/r') return null; if (/매도|sell|underperform|underweight/.test(t)) return 1; if (/중립|hold|neutral|marketperform/.test(t)) return 2; if (/매수|buy|outperform|overweight|적극/.test(t)) return 3; return null; };
+/** 진입일(day, YYYYMMDD) 이전 90일 리포트만으로 컨센서스 목표가 산출. null=커버리지 없음 */
+function anConsensus(code, day) {
+  const rows = AN_HIST?.[code]; if (!rows?.length) return null;
+  const d = String(day);
+  const cut = new Date(Date.UTC(+d.slice(0, 4), +d.slice(4, 6) - 1, +d.slice(6, 8)) - 90 * 86400000).toISOString().slice(0, 10).replace(/-/g, '');
+  const t = rows.filter(r => r.date < d && r.date >= cut && anRank(r.opinion) != null && r.targetPrice > 0).map(r => r.targetPrice).sort((a, b) => a - b);
+  return t.length ? t[Math.floor(t.length / 2)] : null;
+}
+// 2026-07-25 판별자 가설D: 수급(기관+외국인) 이탈 종목의 돌파 배제. krx-flows.json(pykrx 백필) 필요.
+//   근거(in-sample, 1064거래 전량): hi120 20일누적 -100억이하 n=73 거래당 **-6만·승률47%** / 100억+ n=307 **+4만·68%**
+//                                 5일 둘다순매도 n=75 -1만(유일 음수) / 둘다순매수 n=169 +3만·66%
+//   --flowout N : 20일 누적(기관+외국인) ≤ -N억 이면 hi120 진입 배제 (0=off)
+//   --flowsell  : 5일 기관·외국인 둘다 순매도면 hi120 진입 배제
+//   ※ 데이터 없는 종목은 통과(미수집=배제로 오분류 방지). 유니버스 전체 백필 후 쓸 것.
+const FLOW_OUT = Number(argOf('--flowout', 0));
+const FLOW_SELL = argv.includes('--flowsell');
+// 가설E(사용자 제안): 보유 중 수급 붕괴 시 청산. --flowexit N(억, 0허용) + --flowexitdays D(기본 5)
+const FLOW_EXIT = argv.includes('--flowexit') ? Number(argOf('--flowexit', 0)) : null;
+const FLOWEXIT_DAYS = Number(argOf('--flowexitdays', 5));
+// 2026-07-27: 수급붕괴 청산 적용 범위. hi120(배포본 기본) | rsi2 | both. --flowexitsub
+const FLOWEXIT_SUB = String(argOf('--flowexitsub', 'hi120'));
+const FLOWS = (() => {
+  if (!FLOW_OUT && !FLOW_SELL && FLOW_EXIT == null) return null;
+  try { return JSON.parse(readFileSync(join(__dirname, 'krx-flows.json'), 'utf8')); }
+  catch { console.error('⚠️ krx-flows.json 없음 — 수급 필터 비활성'); return null; }
+})();
+/** 진입일(YYYYMMDD) 이전 n거래일 수급 합(억). null=데이터 부족 */
+function flowSum(code, day, n) {
+  const rec = FLOWS?.[code]; if (!rec) return null;
+  const ks = Object.keys(rec).filter(k => k < day).sort().slice(-n);
+  if (ks.length < n) return null;
+  let org = 0, frg = 0;
+  for (const k of ks) { org += rec[k][0]; frg += rec[k][1]; }
+  return { org: org / 1e8, frg: frg / 1e8, both: (org + frg) / 1e8 };
+}
+// 2026-07-25 패배 forensic 가설B: live-parity에서 돌파폭 상한(기존 --maxbreak는 이 경로에 안 물림).
+//   근거: 거래당 평균수익이 돌파폭에 반비례(3-4%:7만 / 4-6%:5만 / 6-10%:2만 / 10%+:2만), 최악거래 14건 전부 돌파10%+
+const MAXBREAK_LIVE = Number(argOf('--maxbreaklive', 0));
+// 2026-07-22 사용자 가설: 상대손절 — 시장(005930 프록시) 대비 진입후 낙폭이 N배 이상이면 매도(상대약세 컷). "--relstop 2". 0=off.
+const RELSTOP = Number(argOf('--relstop', 0));
+// 2026-07-23: live-parity 유니버스 크기 오버라이드(위성 활동성 스윕용). 기본 LIVE_UNIVERSE_LIMIT(40). mcapUniverse=KOSPI+KOSDAQ 시총순.
+const LIVE_UNI = Number(argOf('--liveuni', LIVE_UNIVERSE_LIMIT));
 const TPFRAC = Number(argOf('--tpfrac', '0.5')); // 부분익절 매도비율 (0.5=절반, 0.333=1/3→러너↑ 꼬리포착↑)
 const MAXPOS = Number(argOf('--maxpos', '0')); // 총 종목수 상한 (0=무제한=현금기반 재투입, N=현행 live의 종목수 게이트 모사)
+const SECTORCAP = Number(argOf('--sectorcap', '0')); // 섹터당 최대 동시보유 종목수 (0=무제한). 금융 편중 완화 테스트용(2026-07-22).
+const LIVE_PARITY = argv.includes('--live-parity'); // 라이브 진입계약: 시총 top40 공통 유니버스·conviction 정렬·자본기반 사이징
+const NO_UP_RSI = argv.includes('--no-up-rsi');     // 실험 변수: UP 레짐 rsi2 후보만 제거
+STRATEGIES.hi120.slots = Number(argOf('--hislots', STRATEGIES.hi120.slots));
+const HI_REGIME = argOf('--hiregime', 'all');
+// 최약슬롯 교체(ROTATE, 2026-07-22): 현금 부족 + 신규 신호 시, 최약 laggard(수익≤rotmaxret·보유≥rotminhold·부분익절 미진행)를 팔아 자금 확보 후 신규 매수. 승자·트레일은 절대 안 건드림.
+const ROTATE = argv.includes('--rotate');
+const ROTATE_MAXRET = Number(argOf('--rotmaxret', '0')) / 100; // 자금원 후보 최대수익률(%). 0=플랫/손실만(승자 보호)
+const ROTATE_MINHOLD = Number(argOf('--rotminhold', '3'));     // 최소보유일(당일·조기 청산 방지)
 const ACTIVE = Object.entries(STRATEGIES).filter(([k]) => !ONLY.length || ONLY.includes(k));
 
 function tickSize(p) {
@@ -199,6 +289,22 @@ function momUniverse(day) {
   scored.sort((a, b) => b.ret60 - a.ret60);
   universeCache.set(wk, scored.slice(0, 30).map(s => s.code));
   return universeCache.get(wk);
+}
+
+const trendUniverseCache = new Map();
+function trendUniverse(day, lookback = 120) {
+  const key = `${weekKey(day)}:${lookback}`;
+  if (trendUniverseCache.has(key)) return trendUniverseCache.get(key);
+  const rows = [];
+  for (const code of mcapUniverse(day, LIVE_UNIVERSE_LIMIT)) {
+    const cd = candles.get(code);
+    const i = cd ? lastIndexBefore(cd, day) : -1;
+    if (i < lookback) continue;
+    rows.push({ code, momentum: cd.c[i] / cd.c[i - lookback] - 1 });
+  }
+  const leaders = selectMomentumLeaders(rows, 6).map(row => row.code);
+  trendUniverseCache.set(key, leaders);
+  return leaders;
 }
 
 // PIT 유동성 상위 30 (20일 평균 거래대금) — rsi2-pit용, 시총 lookahead 제거
@@ -380,9 +486,13 @@ const CAPS_SEL = argOf('--caps', 'A');
 // 레짐 MA 페어 (--regimema "20,60"): 빠른 스위치 vs 느린 스위치
 const REGIME_MAS = argOf('--regimema', '20,60').split(',').map(Number);
 const MCAP_TOP = Number(argOf('--rsiuni', '30'));
+// --volsurge "volMin,dayRetMin,closeLocMin,cap": 거래량급증 진입 sub 활성화(검증용, live-parity에서만). 미지정=off(라이브 동작 불변).
+const VOLSURGE_ARG = argOf('--volsurge', '');
+const VOLSURGE = VOLSURGE_ARG ? (() => { const [v, d, cl] = VOLSURGE_ARG.split(',').map(Number); return { volMin: v || 2, dayRetMin: Number.isFinite(d) ? d : 0, closeLocMin: Number.isFinite(cl) ? cl : 0 }; })() : null;
+const VOLSURGE_CAP = VOLSURGE_ARG ? (Number(VOLSURGE_ARG.split(',')[3]) || 3) : 0;
 
 // ── 포트폴리오 ───────────────────────────────────────────────
-function makeBook() { return { cash: CAPITAL, positions: {}, trades: [], peak: CAPITAL, maxDD: 0, monthly: new Map(), lastEq: CAPITAL }; }
+function makeBook() { return { cash: CAPITAL, positions: {}, trades: [], daily: [], peak: CAPITAL, maxDD: 0, monthly: new Map(), lastEq: CAPITAL }; }
 function equity(book, day) {
   let eq = book.cash;
   for (const [code, p] of Object.entries(book.positions)) {
@@ -485,7 +595,23 @@ for (const r of allRows) {
   const sh = (Number(r.market_cap_tril) * 1e12) / Number(r.current_price);
   if (Number.isFinite(sh) && sh > 0) sharesEst.set(r.stock_code, sh);
 }
-const largeCaps = (await dbQuery(`SELECT stock_code FROM stock_analysis WHERE current_price >= ${MIN_PRICE} AND avg_turnover_20d >= ${MIN_TURNOVER} ORDER BY market_cap_tril DESC LIMIT 30`)).map(r => r.stock_code);
+const RSI_UNI = Number(STRATEGIES['combo-v2'].rsiUni ?? argOf('--rsiuni', 30)); // rsi2 유니버스 크기(대형주 상위 N). 라이브 LIVE_RSI2_UNIVERSE_LIMIT=30 대응. 이전엔 하드코딩 30이라 --rsiuni가 죽어있었음(2026-07-22 배선).
+const largeCaps = (await dbQuery(`SELECT stock_code FROM stock_analysis WHERE current_price >= ${MIN_PRICE} AND avg_turnover_20d >= ${MIN_TURNOVER} ORDER BY market_cap_tril DESC LIMIT ${RSI_UNI}`)).map(r => r.stock_code);
+// 섹터 캡용 stock_code→sector 맵 (금융 편중 완화 테스트). sector NULL은 캡 미적용(카운트 0).
+const SECTOR = Object.fromEntries((await dbQuery(`SELECT stock_code, sector FROM stock_analysis`)).map(r => [r.stock_code, r.sector]));
+const countSector = (code, book) => { const s = SECTOR[code]; if (!s) return 0; let n = 0; for (const pc of Object.keys(book.positions)) if (SECTOR[pc] === s) n++; return n; };
+// ROTATE 자금원: 최약 laggard(ret≤ROTATE_MAXRET & holdDays≥ROTATE_MINHOLD & 부분익절 미진행) 중 최저 ret. 승자·트레일 보호(반환 안 함).
+function weakestLaggard(book, day) {
+  let worst = null, worstRet = Infinity;
+  for (const [code, p] of Object.entries(book.positions)) {
+    const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
+    if (i == null) continue;
+    const ret = cd.c[i] / p.entry - 1;
+    if (ret > ROTATE_MAXRET || p.holdDays < ROTATE_MINHOLD || p.halfDone) continue;
+    if (ret < worstRet) { worstRet = ret; worst = code; }
+  }
+  return worst;
+}
 await loadPool(allCodes);
 
 // MC (--seed N --subsample 0.8): 시드 기반 유니버스 무작위 표본 — 몬테카를로 강건성 검증용
@@ -513,7 +639,9 @@ const krx = candles.get('005930');
 const tradingDays = krx.d.filter(d => d >= FROM && d <= TO);
 console.log(`영업일 ${tradingDays.length}일 | 풀 ${candles.size}종목 (※ 현재 상장 기준 — 생존 편향 존재)`);
 
-const rankRows = await dbQuery(`SELECT rank_date, stock_code, rank FROM daily_rankings WHERE rank <= 20 ORDER BY rank_date, rank`);
+const rankRows = ACTIVE.some(([key]) => key === 'swing-rank')
+  ? await dbQuery(`SELECT rank_date, stock_code, rank FROM daily_rankings WHERE rank <= 20 ORDER BY rank_date, rank`)
+  : [];
 const rankByDay = new Map();
 for (const r of rankRows) {
   const d = String(r.rank_date).replace(/-/g, '');
@@ -536,7 +664,7 @@ for (let di = 0; di < tradingDays.length; di++) {
   for (const [k, cfg] of ACTIVE) {
     const book = books[k];
     const volMult = VOL_SHADOW && (k === 'combo' || k === 'combo-v2')
-      ? volatilityThrottleMultiplier(marketCloses, Math.min(di, marketCloses.length - 1), { volWindow: VOL_WINDOW, refLookback: VOL_REF_LOOKBACK })
+      ? volatilityThrottleMultiplier(marketCloses, marketSeriesIndex(krx.d, day), { volWindow: VOL_WINDOW, refLookback: VOL_REF_LOOKBACK })
       : 1;
     // MC3 I11 (--dynslot N): 자본 성장 시 슬롯 자동 확대 — 포지션당 예산을 N원 목표로,
     // slots ~ clamp(floor(equity/N), cfg.slots, 6). 소액일 땐 기존과 동일, 계좌 성장 시 집중 위험 축소
@@ -605,6 +733,23 @@ for (let di = 0; di < tradingDays.length; di++) {
         if (buy(book, day, code, cd.c[i], budget()))
           book.positions[code].exitAtOpen = 'overnight_exit';
       }
+    } else if (k === 'trend-cash') {
+      const proxy = candles.get('005930');
+      const proxyIndex = proxy ? indexOfDate(proxy, day) : null;
+      const trendOn = proxyIndex != null && absoluteTrendOn(proxy.c, proxyIndex, cfg.lookback);
+      const leaders = trendOn ? trendUniverse(day, cfg.lookback) : [];
+      const targets = new Set(leaders.slice(0, cfg.slots));
+      const keep = new Set(leaders);
+      for (const [code, position] of Object.entries(book.positions)) {
+        if (!trendOn || (isNewWeek && !keep.has(code))) position.exitAtOpen = trendOn ? 'rebalance' : 'trend_off';
+      }
+      if (trendOn && isNewWeek) {
+        for (const code of targets) {
+          if (book.positions[code] || Object.keys(book.positions).length >= cfg.slots) continue;
+          const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
+          if (i != null) buy(book, day, code, cd.c[i], budget(), { ctx: { sub: 'trend-cash', regime: 'UP' } });
+        }
+      }
     } else if (k === 'hi120') {
       for (const [code, p] of Object.entries(book.positions)) {
         const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
@@ -612,7 +757,7 @@ for (let di = 0; di < tradingDays.length; di++) {
         if (cd.c[i] <= p.hi * (1 - cfg.trailPct / 100)) p.exitAtOpen = 'trailing';
         else if (p.holdDays >= cfg.maxHold) p.exitAtOpen = 'max_hold';
       }
-      for (const code of mom) {
+      if (hi120RegimeAllows(marketRegime(day), HI_REGIME)) for (const code of mom) {
         if (book.positions[code] || Object.keys(book.positions).length >= cfg.slots) continue;
         const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
         if (i == null || i < cfg.lookback + 1) continue;
@@ -684,6 +829,14 @@ for (let di = 0; di < tradingDays.length; di++) {
       for (const [code, p] of Object.entries(book.positions)) {
         const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
         if (i == null) continue;
+        // 상대손절(--relstop N): 진입후 시장(005930) 대비 낙폭이 N배 이상이면 매도(상대약세 컷). 시장 하락구간·진입당일 제외.
+        if (RELSTOP > 0 && !p.exitAtOpen && p.holdDays >= 1 && krx) {
+          const ei = indexOfDate(krx, p.entryDay), ci = indexOfDate(krx, day);
+          if (ei != null && ci != null && ei >= 0 && ci >= 0) {
+            const mktRet = krx.c[ci] / krx.c[ei] - 1, posRet = cd.c[i] / p.entry - 1;
+            if (mktRet < 0 && posRet <= RELSTOP * mktRet) { p.exitAtOpen = 'rel_stop'; continue; }
+          }
+        }
         // H1/H4 (--intraday 1): 당일 장중 레벨 터치 시 즉시 청산 (level 또는 갭 시 시가, 전일 기준 레벨)
         if (cfg.intradayExit && !p.exitAtOpen && (cfg.intradayExit === 1 || p.sub === 'rsi2')) { // 2=rsi2 스톱만
           const level = p.sub === 'hi120'
@@ -696,6 +849,14 @@ for (let di = 0; di < tradingDays.length; di++) {
         }
         if (p.sub === 'hi120') {
           if (cfg.downFlat && regime === 'DOWN' && !p.exitAtOpen) { p.exitAtOpen = 'regime_flat'; continue; }
+          // 2026-07-25 사용자 제안(가설E, --flowexit N): 익절/손절 도달 전이라도 **수급 주체가 무너지면** 청산.
+          //   근거: 최대 손실덩어리가 hi120/trailing(-1,933만·339건) → 트레일 피격 전 수급붕괴로 선제 이탈.
+          //   진입 후에는 "진입 후 수급"이라는 새 정보가 생기므로, 진입시점엔 불가능한 승/패 구분이 가능할 수 있다.
+          //   N=0이면 순매도 전환만으로 청산, N>0이면 최근 FLOWEXIT_DAYS 누적 ≤ -N억일 때 청산.
+          if (FLOW_EXIT != null && FLOWEXIT_SUB !== 'rsi2' && !p.exitAtOpen && p.holdDays >= 1) {
+            const f = flowSum(code, day, FLOWEXIT_DAYS);
+            if (f && f.both <= -FLOW_EXIT) { p.exitAtOpen = 'flow_break'; continue; }
+          }
           // C26 (--breakfail 1): 돌파 실패 청산 — 종가가 돌파 기준선(직전 120일 고가) 아래 회귀 시 즉시 청산
           if (cfg.breakFail > 0 && !p.halfDone && p.breakLv > 0 && cd.c[i] < p.breakLv) { p.exitAtOpen = 'break_fail'; continue; }
           // H6 (--tp1r N): 진입가 +trailPct×N 도달 시 절반 익절 (잔량은 트레일링 지속)
@@ -720,6 +881,12 @@ for (let di = 0; di < tradingDays.length; di++) {
             }
           }
         } else {
+          // 2026-07-27: rsi2 보유분에도 동일 규칙 검증(--flowexitsub rsi2|both). hi120과 동일 우선순위(청산체인 최상단).
+          //   주의: rsi2는 ma회귀·maxHoldR=5로 이미 짧게 끝나므로 "더 짧게 끊을 여지" 자체가 작다 — 효과 없음이 기본 가설.
+          if (FLOW_EXIT != null && FLOWEXIT_SUB !== 'hi120' && !p.exitAtOpen && p.holdDays >= 1) {
+            const f = flowSum(code, day, FLOWEXIT_DAYS);
+            if (f && f.both <= -FLOW_EXIT) { p.exitAtOpen = 'flow_break'; continue; }
+          }
           const maN = cfg.rsiMa || 5;
           let ma5 = 0; const n = Math.min(maN, i + 1);
           for (let j = i - n + 1; j <= i; j++) ma5 += cd.c[j];
@@ -733,10 +900,121 @@ for (let di = 0; di < tradingDays.length; di++) {
         }
       }
       const countSub = (sub) => Object.values(book.positions).filter(p => p.sub === sub).length;
+      if (LIVE_PARITY) {
+        const signalRows = [];
+        for (const code of mcapUniverse(day, LIVE_UNI)) {
+          if (book.positions[code] || LIVE_EXCLUDE.has(code)) continue;
+          const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
+          if (i == null || i < cfg.lookback + 1) continue;
+          let prevHigh = 0;
+          for (let j = i - cfg.lookback; j < i; j++) prevHigh = Math.max(prevHigh, cd.h[j]);
+          // 확인필터용: 거래량비(당일/20일평균), 종가위치((c-l)/(h-l))
+          let avgVol = 0, nv = 0; for (let j = Math.max(0, i - 20); j < i; j++) { avgVol += cd.v[j]; nv++; }
+          avgVol = nv > 0 ? avgVol / nv : 0;
+          const volRatio = avgVol > 0 ? cd.v[i] / avgVol : 1;
+          const closeLoc = cd.h[i] > cd.l[i] ? (cd.c[i] - cd.l[i]) / (cd.h[i] - cd.l[i]) : 1;
+          signalRows.push({
+            code,
+            rsi: rsi2(cd, i),
+            breakoutPct: (cd.c[i] / prevHigh - 1) * 100,
+            breakLv: prevHigh,
+            price: cd.c[i],
+            sector: SECTOR[code],
+            volRatio,
+            closeLoc,
+            dayRet: i > 0 ? (cd.c[i] / cd.c[i - 1] - 1) * 100 : 0,
+            // 2026-07-27 사용자 제안(--selfregime): 레짐을 삼전 프록시가 아니라 **종목 자체** 추세로 판정.
+            //   판정식은 라이브 marketRegime과 동일(종가>MA20 && MA20>MA60 = UP / 종가<MA20 && 5일<-3% = DOWN / else NEUTRAL)
+            selfRegime: (() => {
+              if ((!SELF_REGIME && !SELF_AND) || i < 60) return null;
+              let ma20 = 0, ma60 = 0;
+              for (let j = i - 19; j <= i; j++) ma20 += cd.c[j];
+              for (let j = i - 59; j <= i; j++) ma60 += cd.c[j];
+              ma20 /= 20; ma60 /= 60;
+              const ret5 = i >= 5 ? (cd.c[i] / cd.c[i - 5] - 1) * 100 : 0;
+              if (cd.c[i] > ma20 && ma20 > ma60) return 'UP';
+              if (cd.c[i] < ma20 && ret5 < -3) return 'DOWN';
+              return 'NEUTRAL';
+            })(),
+          });
+        }
+        const candidates = buildLiveCandidates(signalRows, {
+          regime,
+          rsiMax: cfg.rsiMax,
+          minBreakout: cfg.minBreakout,
+          allowUpRsi: !NO_UP_RSI,
+          rsiVolMin: cfg.rsiVol > 0 ? cfg.rsiVol : 0,      // --rsivol N: rsi2 매수 시 거래량비 ≥ N 요구(투매 확인)
+          closeLocMin: cfg.closeLoc > 0 ? cfg.closeLoc : 0, // --closeloc N: rsi2 매수 시 종가위치 ≥ N 요구(강한 마감)
+          volSurge: VOLSURGE,                               // --volsurge "volMin,dayRetMin,closeLocMin,cap": 거래량급증 진입 sub(검증용)
+          regimeOf: SELF_REGIME ? (row) => row.selfRegime : null,  // --selfregime: 종목별 레짐
+        });
+        for (const candidate of candidates) {
+          if (book.positions[candidate.code]) continue;
+          const cReg = SELF_REGIME ? (candidate.selfRegime ?? regime) : regime; // 스킵 필터도 같은 기준으로
+          if (SKIP_NEUTRAL_RSI && cReg === 'NEUTRAL' && candidate.sub === 'rsi2') continue; // ICE#1: NEUTRAL rsi2 스킵 테스트
+          if (SKIP_DOWN_RSI && cReg === 'DOWN' && candidate.sub === 'rsi2') continue;
+          if (SELF_AND && candidate.sub === 'hi120' && candidate.selfRegime !== 'UP') continue; // 시장UP ∩ 종목UP
+          // 가설B(--maxbreaklive N): 과열 돌파 진입 제외
+          if (MAXBREAK_LIVE > 0 && candidate.sub === 'hi120' && Number(candidate.breakoutPct) > MAXBREAK_LIVE) continue;
+          // 가설D(--flowout N / --flowsell): 기관+외국인 이탈 종목의 돌파 배제. 데이터 없으면 통과.
+          if (FLOWS && candidate.sub === 'hi120') {
+            if (FLOW_OUT > 0) { const f = flowSum(candidate.code, day, 20); if (f && f.both <= -FLOW_OUT) continue; }
+            if (FLOW_SELL) { const f = flowSum(candidate.code, day, 5); if (f && f.org <= 0 && f.frg <= 0) continue; }
+          }
+          // 가설C(--anup N): 애널리스트 컨센서스 여력 필터. 커버된 종목만 심사(미커버는 통과, --anup-nocov-skip이면 제외)
+          if (AN_HIST && candidate.sub === 'hi120') {
+            const cons = anConsensus(candidate.code, day); // day = YYYYMMDD (analyst-hist의 date 형식과 동일)
+            if (cons == null) { if (AN_NOCOV_SKIP) continue; }
+            else if (AN_UP > 0 && (cons / candidate.price - 1) * 100 < AN_UP) continue;
+          }
+          // 2026-07-25: rsi2 추세/붕괴 필터 — 하락추세 종목의 과매도(떨어지는 칼날) 배제
+          if (candidate.sub === 'rsi2' && (RSI_TREND !== 0 || RSI_MAXDD20 !== 0)) {
+            const tcd = candles.get(candidate.code); const ti = tcd ? indexOfDate(tcd, day) : null;
+            if (ti == null || ti < 61) continue;
+            if (RSI_TREND !== 0 && (tcd.c[ti] / tcd.c[ti - 60] - 1) * 100 < RSI_TREND) continue;
+            if (RSI_MAXDD20 !== 0 && (tcd.c[ti] / tcd.c[ti - 20] - 1) * 100 < -RSI_MAXDD20) continue;
+          }
+          const subCap = candidate.sub === 'volsurge' ? VOLSURGE_CAP : caps[candidate.sub];
+          if (countSub(candidate.sub) >= subCap) continue;
+          if (SECTORCAP > 0 && countSector(candidate.code, book) >= SECTORCAP) continue;
+          const eq = equity(book, day);
+          // 레짐 노출 스로틀: effEq = 투자대상 자본(나머지는 현금). 약세일수록 effEq↓ → 자동으로 현금 더 보유.
+          const expFrac = REGIME_EXP ? (REGIME_EXP[regime] ?? 1) : 1;
+          const effEq = eq * expFrac;
+          const perSlot = Math.floor(effEq / cfg.slots);
+          const bigCount = Object.entries(book.positions).filter(([code, p]) => {
+            const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
+            const px = i == null ? p.entry : cd.c[i];
+            return px * p.qty >= perSlot * CAPITAL_DEPLOY.dustFraction;
+          }).length;
+          if (bigCount >= cfg.slots || book.cash < perSlot * CAPITAL_DEPLOY.minFillFraction) break;
+          // 변동성 사이징(--atrsize N): 후보 종목 ATR%가 목표(N%)보다 크면 작게, 작으면 크게(0.5~1.5배). atrSize 미설정 시 1.
+          const vcd = candles.get(candidate.code); const vci = vcd ? indexOfDate(vcd, day) : null;
+          const atrM = vci != null ? atrMult(vcd, vci, cfg) : 1;
+          const bgt = liveCandidateBudget({
+            cash: book.cash,
+            equity: effEq,
+            slots: cfg.slots,
+            // 가설A(--noconc-rsi2): rsi2는 확신도를 임계값 미달로 강제 → 집중(몰빵) 대신 균등분산
+            conviction: (NO_CONC_RSI2 && candidate.sub === 'rsi2') ? 0 : candidate.conviction,
+            strongThreshold: CONVICTION_SIZING.strongThreshold,
+            strongFraction: CONVICTION_SIZING.strongFraction,
+            exposureMultiplier: volMult * atrM,
+          });
+          if (candidate.price >= bgt) continue;
+          const ctx = candidate.sub === 'hi120'
+            ? { sub: 'hi120', regime, breakoutPct: candidate.breakoutPct.toFixed(1), conviction: candidate.conviction.toFixed(1) }
+            : candidate.sub === 'volsurge'
+            ? { sub: 'volsurge', regime, volRatio: Number(candidate.volRatio).toFixed(2), dayRet: Number(candidate.dayRet).toFixed(1), conviction: candidate.conviction.toFixed(1) }
+            : { sub: 'rsi2', regime, rsi: candidate.rsi.toFixed(0), conviction: candidate.conviction.toFixed(1) };
+          buy(book, day, candidate.code, candidate.price, bgt, { sub: candidate.sub, ctx, breakLv: candidate.breakLv });
+        }
+      } else {
       // hi120 서브 진입 (모멘텀 유니버스 신고가 돌파)
       for (const code of mom) {
         if (MAXPOS > 0 && Object.keys(book.positions).length >= MAXPOS) break; // 총 종목수 상한(현행 live 모사)
         if (countSub('hi120') >= caps.hi120 || book.positions[code]) continue;
+        if (SECTORCAP > 0 && countSector(code, book) >= SECTORCAP) continue; // 섹터 캡
         const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
         if (i == null || i < cfg.lookback + 1) continue;
         let prevHigh = 0;
@@ -758,7 +1036,9 @@ for (let di = 0; di < tradingDays.length; di++) {
           const am = atrMult(cd, i, cfg) * hedgeBudgetMult(day);  // 시그널 시점 ATR 사이징 (라이브 liveAtrMult와 동일 시점)
           // I16: entryOpen 시 atrM·breakLv를 시그널 시점 값으로 보존 → 익일 시가 체결에 적용 (라이브 충실)
           if (cfg.entryOpen) (book.pendingBuys ??= []).push({ code, ctx: ctxE, breakLv: prevHigh, atrM: am, sigClose: cd.c[i] });
-          else buy(book, day, code, cd.c[i], Math.floor(budget() * am), { sub: 'hi120', ctx: ctxE, breakLv: prevHigh });
+          else { const bgt = Math.floor(budget() * am);
+            if (ROTATE && book.cash < bgt * 0.5) { const w = weakestLaggard(book, day); if (w && w !== code) { const cw = candles.get(w), iw = cw ? indexOfDate(cw, day) : null; if (iw != null) sell(book, day, w, cw.c[iw], 'rotate'); } }
+            buy(book, day, code, cd.c[i], bgt, { sub: 'hi120', ctx: ctxE, breakLv: prevHigh }); }
         }
       }
       // rsi2 서브 진입 (PIT 시총 상위 + 20일 평균 거래대금 30억 이상)
@@ -766,6 +1046,7 @@ for (let di = 0; di < tradingDays.length; di++) {
       for (const code of rsiPool) {
         if (MAXPOS > 0 && Object.keys(book.positions).length >= MAXPOS) break; // 총 종목수 상한(현행 live 모사)
         if (countSub('rsi2') >= caps.rsi2 || book.positions[code]) continue;
+        if (SECTORCAP > 0 && countSector(code, book) >= SECTORCAP) continue; // 섹터 캡
         const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
         if (i == null || i < 4) continue;
         const r = rsi2(cd, i);
@@ -783,8 +1064,11 @@ for (let di = 0; di < tradingDays.length; di++) {
         if (r < cfg.rsiMax && daysOk && rvOk) {
           // H2: DOWN 레짐 사이즈 축소 (--downsize 0.5)
           const sizeMult = (regime === 'DOWN' && cfg.downSize > 0) ? cfg.downSize : 1;
-          buy(book, day, code, cd.c[i], Math.floor(budget() * sizeMult * atrMult(cd, i, cfg)), { sub: 'rsi2', ctx: { sub: 'rsi2', regime, rsi: r.toFixed(0) } });
+          { const bgt = Math.floor(budget() * sizeMult * atrMult(cd, i, cfg));
+            if (ROTATE && book.cash < bgt * 0.5) { const w = weakestLaggard(book, day); if (w && w !== code) { const cw = candles.get(w), iw = cw ? indexOfDate(cw, day) : null; if (iw != null) sell(book, day, w, cw.c[iw], 'rotate'); } }
+            buy(book, day, code, cd.c[i], bgt, { sub: 'rsi2', ctx: { sub: 'rsi2', regime, rsi: r.toFixed(0) } }); }
         }
+      }
       }
     } else if (k === 'rsi2' || k === 'rsi2-pit' || k === 'rsi2-mcap') {
       const uni = k === 'rsi2' ? largeCaps : k === 'rsi2-pit' ? liqUniverse(day) : mcapUniverse(day);
@@ -906,6 +1190,7 @@ for (let di = 0; di < tradingDays.length; di++) {
     if (!book.monthly.has(mon)) book.monthly.set(mon, { start: book.lastEq, end: eq });
     book.monthly.get(mon).end = eq;
     book.lastEq = eq;
+    recordDailyEquity(book, day, eq);
   }
   if ((di + 1) % 60 === 0) console.log(`[${di + 1}/${tradingDays.length}] ${fmtDay(day)} | ` + ACTIVE.map(([k]) => `${k}:${((equity(books[k], day) / CAPITAL - 1) * 100).toFixed(0)}%`).join(' '));
 }
@@ -918,6 +1203,7 @@ for (const [k] of ACTIVE) {
     const i = cd ? indexOfDate(cd, lastDay) ?? lastIndexBefore(cd, lastDay) : null;
     sell(book, lastDay, code, i != null && i >= 0 ? cd.c[i] : book.positions[code].entry, 'eov');
   }
+  if (book.daily.length) book.daily[book.daily.length - 1].equity = book.cash;
 }
 
 // ── 요약: 복리 안정성 관점 ────────────────────────────────────
@@ -1011,7 +1297,17 @@ console.log(`\n비용: 수수료 ${FEE_BPS}bp×2 + 거래세 ${TAX_BPS}bp + 슬�
 if (DUMP) {
   const { writeFileSync } = await import('fs');
   const out = {};
-  for (const [k] of ACTIVE) out[k] = { cash: books[k].cash, maxDD: books[k].maxDD, trades: books[k].trades };
-  writeFileSync(DUMP, JSON.stringify({ from: FROM, to: TO, params: STRATEGIES['combo-v2'], books: out }));
+  for (const [k] of ACTIVE) out[k] = serializeResearchBook(books[k]);
+  writeFileSync(DUMP, JSON.stringify({
+    from: FROM,
+    to: TO,
+    capital: CAPITAL,
+    seed: MC_SEED,
+    subsample: SUBSAMPLE,
+    stress: STRESS,
+    universe: { kind: 'current-listed', size: candles.size, survivorshipBias: true },
+    params: Object.fromEntries(ACTIVE.map(([key, cfg]) => [key, cfg])),
+    books: out,
+  }));
   console.log(`덤프 저장: ${DUMP}`);
 }
