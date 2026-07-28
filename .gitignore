@@ -44,3 +44,29 @@ candles-daily.jsonl
 forecast-bear-days.json
 .kis-token.json
 flow-snapshot-log.txt
+
+# ── 런타임 상태·로그 (봇이 매 사이클 덮어씀 — 영구 dirty 방지, 2026-07-28) ──
+stock-live-log.txt
+stock-live-state.json
+stock-live-journal.json
+ai-shadow-log.txt
+*.log.txt
+
+# 하네스 상태·로그 (도구가 자동 생성)
+.omx/
+.codex/
+
+# 백테·리서치 출력물 (재생성 가능)
+bt-*/
+data-1m/
+optimize*-result.txt
+backtest-1m-result.txt
+codex-tt100-result*.txt
+validation-latest.json
+candles-1m-smoketest.json
+
+# 대용량 데이터 캐시 (재수집 가능)
+analyst-hist.json
+krx-flows.json
+cv2-dump.json
+universe-codes.json
