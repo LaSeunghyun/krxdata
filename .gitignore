@@ -70,3 +70,7 @@ analyst-hist.json
 krx-flows.json
 cv2-dump.json
 universe-codes.json
+candles-1m.jsonl
+dtest-tmp.json
+research-smoke.json
+research-results/*/raw/

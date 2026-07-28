@@ -1,0 +1,725 @@
+{
+  "generatedAt": "2026-07-22T06:26:58.173Z",
+  "assumptions": {
+    "initialCapital": 6000000,
+    "targetCapital": 100000000,
+    "targetYears": 5,
+    "requiredCagr": 75.53743576132639,
+    "coreWeight": 0.6666666666666666,
+    "satelliteWeight": 0.3333333333333333,
+    "mcSeeds": 1,
+    "subsample": 0.8,
+    "blockSize": 20,
+    "leverage": false,
+    "monthlyContribution": 0
+  },
+  "dataQuality": {
+    "start": "20210929",
+    "end": "20260612",
+    "evaluationStart": "20250102",
+    "evaluationEnd": "20250331",
+    "pointInTimeUniverse": false,
+    "includesDelisted": false,
+    "survivorshipBias": true
+  },
+  "candidates": [
+    {
+      "id": "A1",
+      "name": "live-parity combo-v2",
+      "family": "tournament",
+      "role": "core",
+      "strategy": "combo-v2",
+      "args": [
+        "--strategies",
+        "combo-v2",
+        "--live-parity",
+        "--slots",
+        "3",
+        "--sectorcap",
+        "1",
+        "--rsiuni",
+        "40",
+        "--tp1r",
+        "0.5",
+        "--tp2r",
+        "1"
+      ],
+      "grade": "SHADOW_ONLY",
+      "base": {
+        "finalCapital": 6331517,
+        "cagr": 25.008880743970053,
+        "mdd": 6.3578577030752665,
+        "years": 0.24093581661498867,
+        "profitFactor": 1.2554775687855642,
+        "trades": 79,
+        "winRate": 58.22784810126582,
+        "yearReturns": {
+          "2025": 5.639232852503562
+        },
+        "regimeStats": {
+          "NEUTRAL": {
+            "trades": 53,
+            "wins": 35,
+            "pnl": 564744
+          },
+          "DOWN": {
+            "trades": 8,
+            "wins": 4,
+            "pnl": 219768
+          },
+          "UP": {
+            "trades": 18,
+            "wins": 7,
+            "pnl": -452990
+          }
+        }
+      },
+      "mc": {
+        "medianMdd": 10.061797350616148,
+        "worstMdd": 10.061797350616148,
+        "medianCagr": -18.240881936303122,
+        "worstCagr": -18.240881936303122,
+        "ruinSeeds": 0,
+        "universe": {
+          "medianMdd": 10.011300908008595,
+          "worstMdd": 10.011300908008595,
+          "medianCagr": -18.240881936303122,
+          "worstCagr": -18.240881936303122,
+          "ruinSeeds": 0
+        },
+        "block": {
+          "medianMdd": 10.061797350616148,
+          "worstMdd": 10.061797350616148,
+          "medianCagr": 29.114683458462753,
+          "worstCagr": 29.114683458462753,
+          "ruinSeeds": 0
+        }
+      },
+      "stress": {
+        "finalCapital": 6049947,
+        "cagr": 3.500647202654128,
+        "mdd": 6.713941268741603,
+        "years": 0.24093581661498867
+      },
+      "reachProbability": 0,
+      "medianFiveYearCapital": 21526075.462609924,
+      "limitations": [
+        "current-listed universe",
+        "2023-2026 evaluation reused in prior research",
+        "no forward shadow days"
+      ]
+    },
+    {
+      "id": "A2",
+      "name": "medium trend/cash",
+      "family": "tournament",
+      "role": "core",
+      "strategy": "trend-cash",
+      "args": [
+        "--strategies",
+        "trend-cash"
+      ],
+      "grade": "REJECTED",
+      "base": {
+        "finalCapital": 5343193,
+        "cagr": -38.195290540401295,
+        "mdd": 12.776058374428425,
+        "years": 0.24093581661498867,
+        "profitFactor": 0,
+        "trades": 4,
+        "winRate": 0,
+        "yearReturns": {
+          "2025": -10.946783333333332
+        },
+        "regimeStats": {
+          "UP": {
+            "trades": 4,
+            "wins": 0,
+            "pnl": -656808
+          }
+        }
+      },
+      "mc": {
+        "medianMdd": 68.27228273743475,
+        "worstMdd": 68.27228273743475,
+        "medianCagr": -34.45742078693337,
+        "worstCagr": -34.45742078693337,
+        "ruinSeeds": 0,
+        "universe": {
+          "medianMdd": 13.002963667014654,
+          "worstMdd": 13.002963667014654,
+          "medianCagr": -34.45742078693337,
+          "worstCagr": -34.45742078693337,
+          "ruinSeeds": 0
+        },
+        "block": {
+          "medianMdd": 68.27228273743475,
+          "worstMdd": 68.27228273743475,
+          "medianCagr": -20.185986211770746,
+          "worstCagr": -20.185986211770746,
+          "ruinSeeds": 0
+        }
+      },
+      "stress": {
+        "finalCapital": 5324593,
+        "cagr": -39.08336676031998,
+        "mdd": 12.974691923205286,
+        "years": 0.24093581661498867
+      },
+      "reachProbability": 0,
+      "medianFiveYearCapital": 1943586.9742169187,
+      "limitations": [
+        "current-listed universe",
+        "2023-2026 evaluation reused in prior research",
+        "no forward shadow days"
+      ]
+    },
+    {
+      "id": "A3",
+      "name": "point-in-time quality momentum",
+      "family": "tournament",
+      "role": "core",
+      "unavailable": "point-in-time fundamentals unavailable",
+      "grade": "REJECTED"
+    },
+    {
+      "id": "B2",
+      "name": "combo-v2 volatility throttle",
+      "family": "combo-improvement",
+      "role": "core",
+      "strategy": "combo-v2",
+      "args": [
+        "--strategies",
+        "combo-v2",
+        "--live-parity",
+        "--slots",
+        "3",
+        "--sectorcap",
+        "1",
+        "--rsiuni",
+        "40",
+        "--tp1r",
+        "0.5",
+        "--tp2r",
+        "1",
+        "--volshadow",
+        "1"
+      ],
+      "grade": "SHADOW_ONLY",
+      "base": {
+        "finalCapital": 6331517,
+        "cagr": 25.008880743970053,
+        "mdd": 6.3578577030752665,
+        "years": 0.24093581661498867,
+        "profitFactor": 1.2554775687855642,
+        "trades": 79,
+        "winRate": 58.22784810126582,
+        "yearReturns": {
+          "2025": 5.639232852503562
+        },
+        "regimeStats": {
+          "NEUTRAL": {
+            "trades": 53,
+            "wins": 35,
+            "pnl": 564744
+          },
+          "DOWN": {
+            "trades": 8,
+            "wins": 4,
+            "pnl": 219768
+          },
+          "UP": {
+            "trades": 18,
+            "wins": 7,
+            "pnl": -452990
+          }
+        }
+      },
+      "mc": {
+        "medianMdd": 10.061797350616148,
+        "worstMdd": 10.061797350616148,
+        "medianCagr": -18.240881936303122,
+        "worstCagr": -18.240881936303122,
+        "ruinSeeds": 0,
+        "universe": {
+          "medianMdd": 10.011300908008595,
+          "worstMdd": 10.011300908008595,
+          "medianCagr": -18.240881936303122,
+          "worstCagr": -18.240881936303122,
+          "ruinSeeds": 0
+        },
+        "block": {
+          "medianMdd": 10.061797350616148,
+          "worstMdd": 10.061797350616148,
+          "medianCagr": 29.114683458462753,
+          "worstCagr": 29.114683458462753,
+          "ruinSeeds": 0
+        }
+      },
+      "stress": {
+        "finalCapital": 6049947,
+        "cagr": 3.500647202654128,
+        "mdd": 6.713941268741603,
+        "years": 0.24093581661498867
+      },
+      "reachProbability": 0,
+      "medianFiveYearCapital": 21526075.462609924,
+      "limitations": [
+        "current-listed universe",
+        "2023-2026 evaluation reused in prior research",
+        "no forward shadow days"
+      ]
+    },
+    {
+      "id": "B3",
+      "name": "combo-v2 faster time exits",
+      "family": "combo-improvement",
+      "role": "core",
+      "strategy": "combo-v2",
+      "args": [
+        "--strategies",
+        "combo-v2",
+        "--live-parity",
+        "--slots",
+        "3",
+        "--sectorcap",
+        "1",
+        "--rsiuni",
+        "40",
+        "--tp1r",
+        "0.5",
+        "--tp2r",
+        "1",
+        "--maxholdr",
+        "3",
+        "--maxholdh",
+        "40"
+      ],
+      "grade": "REJECTED",
+      "base": {
+        "finalCapital": 5813067,
+        "cagr": -12.310461231966263,
+        "mdd": 16.14124634627885,
+        "years": 0.24093581661498867,
+        "profitFactor": 0.8956858639795228,
+        "trades": 73,
+        "winRate": 54.794520547945204,
+        "yearReturns": {
+          "2025": -3.0109311243728287
+        },
+        "regimeStats": {
+          "NEUTRAL": {
+            "trades": 42,
+            "wins": 27,
+            "pnl": 689341
+          },
+          "DOWN": {
+            "trades": 12,
+            "wins": 8,
+            "pnl": 260723
+          },
+          "UP": {
+            "trades": 19,
+            "wins": 5,
+            "pnl": -1136999
+          }
+        }
+      },
+      "mc": {
+        "medianMdd": 26.04315404673938,
+        "worstMdd": 26.04315404673938,
+        "medianCagr": -34.93667026217092,
+        "worstCagr": -34.93667026217092,
+        "ruinSeeds": 0,
+        "universe": {
+          "medianMdd": 17.14114606268308,
+          "worstMdd": 17.14114606268308,
+          "medianCagr": -34.93667026217092,
+          "worstCagr": -34.93667026217092,
+          "ruinSeeds": 0
+        },
+        "block": {
+          "medianMdd": 26.04315404673938,
+          "worstMdd": 26.04315404673938,
+          "medianCagr": 27.75804486998421,
+          "worstCagr": 27.75804486998421,
+          "ruinSeeds": 0
+        }
+      },
+      "stress": {
+        "finalCapital": 5612471,
+        "cagr": -24.20372495390558,
+        "mdd": 16.841760424207745,
+        "years": 0.24093581661498867
+      },
+      "reachProbability": 0,
+      "medianFiveYearCapital": 20418819.882497504,
+      "limitations": [
+        "current-listed universe",
+        "2023-2026 evaluation reused in prior research",
+        "no forward shadow days"
+      ]
+    },
+    {
+      "id": "C1",
+      "name": "two-slot hi120 momentum",
+      "family": "aggressive-control",
+      "role": "satellite",
+      "strategy": "hi120",
+      "args": [
+        "--strategies",
+        "hi120",
+        "--hislots",
+        "2",
+        "--hiregime",
+        "all"
+      ],
+      "grade": "REJECTED",
+      "base": {
+        "finalCapital": 6253800,
+        "cagr": 18.76228678435441,
+        "mdd": 28.912732416421477,
+        "years": 0.24093581661498867,
+        "profitFactor": 1.0737138508813457,
+        "trades": 19,
+        "winRate": 31.57894736842105,
+        "yearReturns": {
+          "2025": 4.406900091054267
+        },
+        "regimeStats": {
+          "UNKNOWN": {
+            "trades": 19,
+            "wins": 6,
+            "pnl": 253799
+          }
+        }
+      },
+      "mc": {
+        "medianMdd": 82.66473387734152,
+        "worstMdd": 82.66473387734152,
+        "medianCagr": -84.22127946439039,
+        "worstCagr": -84.22127946439039,
+        "ruinSeeds": 1,
+        "universe": {
+          "medianMdd": 39.32280970445233,
+          "worstMdd": 39.32280970445233,
+          "medianCagr": -84.22127946439039,
+          "worstCagr": -84.22127946439039,
+          "ruinSeeds": 0
+        },
+        "block": {
+          "medianMdd": 82.66473387734152,
+          "worstMdd": 82.66473387734152,
+          "medianCagr": -18.514786645291082,
+          "worstCagr": -18.514786645291082,
+          "ruinSeeds": 1
+        }
+      },
+      "stress": {
+        "finalCapital": 6061088,
+        "cagr": 4.294013864045509,
+        "mdd": 30.152323574084015,
+        "years": 0.24093581661498867
+      },
+      "reachProbability": 0,
+      "medianFiveYearCapital": 2155743.17712962,
+      "limitations": [
+        "current-listed universe",
+        "2023-2026 evaluation reused in prior research",
+        "no forward shadow days"
+      ]
+    },
+    {
+      "id": "C2",
+      "name": "UP-gated two-slot hi120",
+      "family": "aggressive-control",
+      "role": "satellite",
+      "strategy": "hi120",
+      "args": [
+        "--strategies",
+        "hi120",
+        "--hislots",
+        "2",
+        "--hiregime",
+        "up"
+      ],
+      "grade": "REJECTED",
+      "base": {
+        "finalCapital": 5028211,
+        "cagr": -51.97125381357681,
+        "mdd": 21.794437497278164,
+        "years": 0.24093581661498867,
+        "profitFactor": 0.23967984477322338,
+        "trades": 5,
+        "winRate": 20,
+        "yearReturns": {
+          "2025": -16.196483333333333
+        },
+        "regimeStats": {
+          "UNKNOWN": {
+            "trades": 5,
+            "wins": 1,
+            "pnl": -971788
+          }
+        }
+      },
+      "mc": {
+        "medianMdd": 77.19223709061008,
+        "worstMdd": 77.19223709061008,
+        "medianCagr": -52.97629560290331,
+        "worstCagr": -52.97629560290331,
+        "ruinSeeds": 0,
+        "universe": {
+          "medianMdd": 21.358542459639445,
+          "worstMdd": 21.358542459639445,
+          "medianCagr": -52.97629560290331,
+          "worstCagr": -52.97629560290331,
+          "ruinSeeds": 0
+        },
+        "block": {
+          "medianMdd": 77.19223709061008,
+          "worstMdd": 77.19223709061008,
+          "medianCagr": -23.681552680644234,
+          "worstCagr": -23.681552680644234,
+          "ruinSeeds": 0
+        }
+      },
+      "stress": {
+        "finalCapital": 4986417,
+        "cagr": -53.60660372824515,
+        "mdd": 22.248544348147703,
+        "years": 0.24093581661498867
+      },
+      "reachProbability": 0,
+      "medianFiveYearCapital": 1553700.0080242623,
+      "limitations": [
+        "current-listed universe",
+        "2023-2026 evaluation reused in prior research",
+        "no forward shadow days"
+      ]
+    },
+    {
+      "id": "C3",
+      "name": "UP-gated hi120 with 35% sleeve stop",
+      "family": "aggressive-control",
+      "role": "satellite",
+      "derivedFrom": "C2",
+      "satelliteStopMdd": 35,
+      "grade": "REJECTED",
+      "base": {
+        "finalCapital": 5028211,
+        "cagr": -51.97125381357681,
+        "mdd": 21.794437497278164,
+        "years": 0.24093581661498867,
+        "profitFactor": 0,
+        "trades": 0,
+        "winRate": 0,
+        "yearReturns": {
+          "2025": -16.196483333333333
+        },
+        "regimeStats": {}
+      },
+      "mc": {
+        "medianMdd": 77.19223709061008,
+        "worstMdd": 77.19223709061008,
+        "medianCagr": -52.97629560290331,
+        "worstCagr": -52.97629560290331,
+        "ruinSeeds": 0,
+        "universe": {
+          "medianMdd": 21.358542459639445,
+          "worstMdd": 21.358542459639445,
+          "medianCagr": -52.97629560290331,
+          "worstCagr": -52.97629560290331,
+          "ruinSeeds": 0
+        },
+        "block": {
+          "medianMdd": 77.19223709061008,
+          "worstMdd": 77.19223709061008,
+          "medianCagr": -23.681552680644234,
+          "worstCagr": -23.681552680644234,
+          "ruinSeeds": 0
+        }
+      },
+      "stress": {
+        "finalCapital": 4986417,
+        "cagr": -53.60660372824515,
+        "mdd": 22.248544348147703,
+        "years": 0.24093581661498867
+      },
+      "reachProbability": 0,
+      "medianFiveYearCapital": 1553700.0080242623,
+      "limitations": [
+        "current-listed universe",
+        "2023-2026 evaluation reused in prior research",
+        "no forward shadow days"
+      ]
+    }
+  ],
+  "portfolios": [
+    {
+      "id": "P1",
+      "name": "baseline barbell",
+      "core": "A1",
+      "satellite": "C1",
+      "satelliteStopMdd": null,
+      "grade": "REJECTED",
+      "base": {
+        "finalCapital": 6313707.315921229,
+        "cagr": 23.555888732444743,
+        "mdd": 12.272502024026826,
+        "years": 0.24093581661498867,
+        "profitFactor": 0,
+        "trades": 0,
+        "winRate": 0,
+        "yearReturns": {
+          "2025": 5.228455265353826
+        },
+        "regimeStats": {}
+      },
+      "mc": {
+        "medianMdd": 26.615225324971586,
+        "worstMdd": 26.615225324971586,
+        "medianCagr": -49.15360999858003,
+        "worstCagr": -49.15360999858003,
+        "ruinSeeds": 0,
+        "universe": {
+          "medianMdd": 18.553154560181532,
+          "worstMdd": 18.553154560181532,
+          "medianCagr": -49.15360999858003,
+          "worstCagr": -49.15360999858003,
+          "ruinSeeds": 0
+        },
+        "block": {
+          "medianMdd": 26.615225324971586,
+          "worstMdd": 26.615225324971586,
+          "medianCagr": 9.927517056220925,
+          "worstCagr": 9.927517056220925,
+          "ruinSeeds": 0
+        }
+      },
+      "stress": {
+        "finalCapital": 6069909.333153516,
+        "cagr": 4.925461320062641,
+        "mdd": 14.356322593959161,
+        "years": 0.24093581661498867
+      },
+      "satelliteStopped": false,
+      "reachProbability": 0,
+      "medianFiveYearCapital": 9630734.881257653,
+      "components": {
+        "core": "SHADOW_ONLY",
+        "satellite": "REJECTED"
+      }
+    },
+    {
+      "id": "P2",
+      "name": "throttled gated barbell",
+      "core": "B2",
+      "satellite": "C2",
+      "satelliteStopMdd": null,
+      "grade": "REJECTED",
+      "base": {
+        "finalCapital": 5901639.6474334765,
+        "cagr": -6.630399743535453,
+        "mdd": 9.35931221517805,
+        "years": 0.24093581661498867,
+        "profitFactor": 0,
+        "trades": 0,
+        "winRate": 0,
+        "yearReturns": {
+          "2025": -1.639339209442059
+        },
+        "regimeStats": {}
+      },
+      "mc": {
+        "medianMdd": 19.16486952393214,
+        "worstMdd": 19.16486952393214,
+        "medianCagr": -31.242637746455458,
+        "worstCagr": -31.242637746455458,
+        "ruinSeeds": 0,
+        "universe": {
+          "medianMdd": 12.130568792099101,
+          "worstMdd": 12.130568792099101,
+          "medianCagr": -31.242637746455458,
+          "worstCagr": -31.242637746455458,
+          "ruinSeeds": 0
+        },
+        "block": {
+          "medianMdd": 19.16486952393214,
+          "worstMdd": 19.16486952393214,
+          "medianCagr": 10.172002102642663,
+          "worstCagr": 10.172002102642663,
+          "ruinSeeds": 0
+        }
+      },
+      "stress": {
+        "finalCapital": 5704891.650866164,
+        "cagr": -18.887377189877608,
+        "mdd": 10.14619028058657,
+        "years": 0.24093581661498867
+      },
+      "satelliteStopped": false,
+      "reachProbability": 0,
+      "medianFiveYearCapital": 9738296.241340883,
+      "components": {
+        "core": "SHADOW_ONLY",
+        "satellite": "REJECTED"
+      }
+    },
+    {
+      "id": "P3",
+      "name": "defensive trend barbell",
+      "core": "A2",
+      "satellite": "C2",
+      "satelliteStopMdd": 35,
+      "grade": "REJECTED",
+      "base": {
+        "finalCapital": 5238199,
+        "cagr": -43.08206914870535,
+        "mdd": 14.731196973544561,
+        "years": 0.24093581661498867,
+        "profitFactor": 0,
+        "trades": 0,
+        "winRate": 0,
+        "yearReturns": {
+          "2025": -12.696683333333336
+        },
+        "regimeStats": {}
+      },
+      "mc": {
+        "medianMdd": 70.96719037713098,
+        "worstMdd": 70.96719037713098,
+        "medianCagr": -41.152923952884905,
+        "worstCagr": -41.152923952884905,
+        "ruinSeeds": 0,
+        "universe": {
+          "medianMdd": 14.541303390712933,
+          "worstMdd": 14.541303390712933,
+          "medianCagr": -41.152923952884905,
+          "worstCagr": -41.152923952884905,
+          "ruinSeeds": 0
+        },
+        "block": {
+          "medianMdd": 70.96719037713098,
+          "worstMdd": 70.96719037713098,
+          "medianCagr": -21.237479336115005,
+          "worstCagr": -21.237479336115005,
+          "ruinSeeds": 0
+        }
+      },
+      "stress": {
+        "finalCapital": 5211867.666666667,
+        "cagr": -44.26021337337562,
+        "mdd": 15.085173862035866,
+        "years": 0.24093581661498867
+      },
+      "satelliteStopped": false,
+      "reachProbability": 0,
+      "medianFiveYearCapital": 1818903.2753281116,
+      "components": {
+        "core": "REJECTED",
+        "satellite": "REJECTED"
+      }
+    }
+  ]
+}

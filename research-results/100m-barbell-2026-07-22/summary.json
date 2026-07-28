@@ -1,0 +1,861 @@
+{
+  "generatedAt": "2026-07-22T06:47:47.067Z",
+  "assumptions": {
+    "initialCapital": 6000000,
+    "targetCapital": 100000000,
+    "targetYears": 5,
+    "requiredCagr": 75.53743576132639,
+    "coreWeight": 0.6666666666666666,
+    "satelliteWeight": 0.3333333333333333,
+    "mcSeeds": 20,
+    "subsample": 0.8,
+    "blockSize": 20,
+    "leverage": false,
+    "monthlyContribution": 0
+  },
+  "dataQuality": {
+    "start": "20210929",
+    "end": "20260612",
+    "evaluationStart": "20230102",
+    "evaluationEnd": "20260611",
+    "pointInTimeUniverse": false,
+    "includesDelisted": false,
+    "survivorshipBias": true
+  },
+  "candidates": [
+    {
+      "id": "A1",
+      "name": "live-parity combo-v2",
+      "family": "tournament",
+      "role": "core",
+      "strategy": "combo-v2",
+      "args": [
+        "--strategies",
+        "combo-v2",
+        "--live-parity",
+        "--slots",
+        "3",
+        "--sectorcap",
+        "1",
+        "--rsiuni",
+        "40",
+        "--tp1r",
+        "0.5",
+        "--tp2r",
+        "1"
+      ],
+      "grade": "REJECTED",
+      "failureReasons": [
+        "CAGR 75.54% 미달",
+        "MC MDD 중앙값 20% 초과",
+        "MC 최악 MDD 30% 초과",
+        "비용 스트레스 원금 미보전",
+        "point-in-time 유니버스 미충족",
+        "상장폐지 종목 미포함",
+        "2016년 이전 데이터 미확보",
+        "shadow 60거래일 미충족"
+      ],
+      "base": {
+        "finalCapital": 8635835,
+        "cagr": 11.170773569981773,
+        "mdd": 27.04438298891213,
+        "years": 3.4388112007775655,
+        "profitFactor": 1.1212192187554684,
+        "trades": 953,
+        "winRate": 60.8604407135362,
+        "yearReturns": {
+          "2023": 26.459883196657685,
+          "2024": -20.95322750617089,
+          "2025": 26.1940773348605,
+          "2026": 7.034783622869445
+        },
+        "regimeStats": {
+          "DOWN": {
+            "trades": 107,
+            "wins": 68,
+            "pnl": 733982
+          },
+          "NEUTRAL": {
+            "trades": 411,
+            "wins": 235,
+            "pnl": -742781
+          },
+          "UP": {
+            "trades": 435,
+            "wins": 277,
+            "pnl": 2644664
+          }
+        }
+      },
+      "mc": {
+        "medianMdd": 28.180937522393563,
+        "worstMdd": 48.904065374827326,
+        "medianCagr": 10.361103562486262,
+        "worstCagr": -10.758198255775353,
+        "ruinSeeds": 0,
+        "universe": {
+          "medianMdd": 24.53814756095464,
+          "worstMdd": 35.006752169458466,
+          "medianCagr": 14.13335292648451,
+          "worstCagr": -3.8740732155513324,
+          "ruinSeeds": 0
+        },
+        "block": {
+          "medianMdd": 28.180937522393563,
+          "worstMdd": 48.904065374827326,
+          "medianCagr": 10.361103562486262,
+          "worstCagr": -10.758198255775353,
+          "ruinSeeds": 0
+        }
+      },
+      "stress": {
+        "finalCapital": 5727453,
+        "cagr": -1.342781393546988,
+        "mdd": 33.57602724824302,
+        "years": 3.4388112007775655
+      },
+      "reachProbability": 0,
+      "medianFiveYearCapital": 9954718.55034476,
+      "limitations": [
+        "current-listed universe",
+        "2023-2026 evaluation reused in prior research",
+        "no forward shadow days"
+      ]
+    },
+    {
+      "id": "A2",
+      "name": "medium trend/cash",
+      "family": "tournament",
+      "role": "core",
+      "strategy": "trend-cash",
+      "args": [
+        "--strategies",
+        "trend-cash"
+      ],
+      "grade": "REJECTED",
+      "failureReasons": [
+        "CAGR 75.54% 미달",
+        "MC MDD 중앙값 20% 초과",
+        "MC 최악 MDD 30% 초과",
+        "비용 스트레스 MDD 35% 초과",
+        "point-in-time 유니버스 미충족",
+        "상장폐지 종목 미포함",
+        "2016년 이전 데이터 미확보",
+        "shadow 60거래일 미충족"
+      ],
+      "base": {
+        "finalCapital": 21185673,
+        "cagr": 44.31972865531786,
+        "mdd": 59.95615777181349,
+        "years": 3.4388112007775655,
+        "profitFactor": 2.863923820297068,
+        "trades": 61,
+        "winRate": 44.26229508196721,
+        "yearReturns": {
+          "2023": 42.418166666666664,
+          "2024": -22.680255577718633,
+          "2025": 35.47446020923029,
+          "2026": 132.52642221856857
+        },
+        "regimeStats": {
+          "UP": {
+            "trades": 61,
+            "wins": 27,
+            "pnl": 15185680
+          }
+        }
+      },
+      "mc": {
+        "medianMdd": 55.02704941866337,
+        "worstMdd": 68.72624845687602,
+        "medianCagr": 39.72198780634124,
+        "worstCagr": -16.361116545016895,
+        "ruinSeeds": 0,
+        "universe": {
+          "medianMdd": 52.16889871187138,
+          "worstMdd": 64.88303562673552,
+          "medianCagr": 50.76926131741264,
+          "worstCagr": 32.27165961895058,
+          "ruinSeeds": 0
+        },
+        "block": {
+          "medianMdd": 55.02704941866337,
+          "worstMdd": 68.72624845687602,
+          "medianCagr": 39.72198780634124,
+          "worstCagr": -16.361116545016895,
+          "ruinSeeds": 0
+        }
+      },
+      "stress": {
+        "finalCapital": 20726999,
+        "cagr": 43.404052148315444,
+        "mdd": 61.024623961156564,
+        "years": 3.4388112007775655
+      },
+      "reachProbability": 5,
+      "medianFiveYearCapital": 32084967.261047076,
+      "limitations": [
+        "current-listed universe",
+        "2023-2026 evaluation reused in prior research",
+        "no forward shadow days"
+      ]
+    },
+    {
+      "id": "A3",
+      "name": "point-in-time quality momentum",
+      "family": "tournament",
+      "role": "core",
+      "unavailable": "point-in-time fundamentals unavailable",
+      "grade": "REJECTED",
+      "failureReasons": [
+        "point-in-time fundamentals unavailable"
+      ]
+    },
+    {
+      "id": "B2",
+      "name": "combo-v2 volatility throttle",
+      "family": "combo-improvement",
+      "role": "core",
+      "strategy": "combo-v2",
+      "args": [
+        "--strategies",
+        "combo-v2",
+        "--live-parity",
+        "--slots",
+        "3",
+        "--sectorcap",
+        "1",
+        "--rsiuni",
+        "40",
+        "--tp1r",
+        "0.5",
+        "--tp2r",
+        "1",
+        "--volshadow",
+        "1"
+      ],
+      "grade": "REJECTED",
+      "failureReasons": [
+        "CAGR 75.54% 미달",
+        "MC MDD 중앙값 20% 초과",
+        "MC 최악 MDD 30% 초과",
+        "point-in-time 유니버스 미충족",
+        "상장폐지 종목 미포함",
+        "2016년 이전 데이터 미확보",
+        "shadow 60거래일 미충족"
+      ],
+      "base": {
+        "finalCapital": 7788365,
+        "cagr": 7.88125547152172,
+        "mdd": 32.45732832627877,
+        "years": 3.4388112007775655,
+        "profitFactor": 1.1028163911173579,
+        "trades": 1065,
+        "winRate": 60.281690140845065,
+        "yearReturns": {
+          "2023": 18.630813611916697,
+          "2024": -27.502067307077695,
+          "2025": 21.651308357691267,
+          "2026": 16.94901994466955
+        },
+        "regimeStats": {
+          "DOWN": {
+            "trades": 110,
+            "wins": 65,
+            "pnl": -298473
+          },
+          "NEUTRAL": {
+            "trades": 486,
+            "wins": 282,
+            "pnl": 281774
+          },
+          "UP": {
+            "trades": 469,
+            "wins": 295,
+            "pnl": 1805098
+          }
+        }
+      },
+      "mc": {
+        "medianMdd": 29.196560055205673,
+        "worstMdd": 53.888112299652406,
+        "medianCagr": 3.8368223827019543,
+        "worstCagr": -12.108857066633972,
+        "ruinSeeds": 0,
+        "universe": {
+          "medianMdd": 22.70540385280635,
+          "worstMdd": 37.38571427746596,
+          "medianCagr": 15.888135500429469,
+          "worstCagr": 1.2169286216689335,
+          "ruinSeeds": 0
+        },
+        "block": {
+          "medianMdd": 29.196560055205673,
+          "worstMdd": 53.888112299652406,
+          "medianCagr": 3.8368223827019543,
+          "worstCagr": -12.108857066633972,
+          "ruinSeeds": 0
+        }
+      },
+      "stress": {
+        "finalCapital": 6849324,
+        "cagr": 3.924959833122843,
+        "mdd": 33.411604977588965,
+        "years": 3.4388112007775655
+      },
+      "reachProbability": 0,
+      "medianFiveYearCapital": 7282999.855126912,
+      "limitations": [
+        "current-listed universe",
+        "2023-2026 evaluation reused in prior research",
+        "no forward shadow days"
+      ]
+    },
+    {
+      "id": "B3",
+      "name": "combo-v2 faster time exits",
+      "family": "combo-improvement",
+      "role": "core",
+      "strategy": "combo-v2",
+      "args": [
+        "--strategies",
+        "combo-v2",
+        "--live-parity",
+        "--slots",
+        "3",
+        "--sectorcap",
+        "1",
+        "--rsiuni",
+        "40",
+        "--tp1r",
+        "0.5",
+        "--tp2r",
+        "1",
+        "--maxholdr",
+        "3",
+        "--maxholdh",
+        "40"
+      ],
+      "grade": "REJECTED",
+      "failureReasons": [
+        "CAGR 75.54% 미달",
+        "MC MDD 중앙값 20% 초과",
+        "MC 최악 MDD 30% 초과",
+        "비용 스트레스 원금 미보전",
+        "비용 스트레스 MDD 35% 초과",
+        "point-in-time 유니버스 미충족",
+        "상장폐지 종목 미포함",
+        "2016년 이전 데이터 미확보",
+        "shadow 60거래일 미충족"
+      ],
+      "base": {
+        "finalCapital": 9547255,
+        "cagr": 14.462155818535006,
+        "mdd": 20.444145661713232,
+        "years": 3.4388112007775655,
+        "profitFactor": 1.132052908139579,
+        "trades": 1018,
+        "winRate": 58.64440078585462,
+        "yearReturns": {
+          "2023": 24.74614319610349,
+          "2024": -4.285392473769889,
+          "2025": 26.047943651130346,
+          "2026": 1.490435523403777
+        },
+        "regimeStats": {
+          "DOWN": {
+            "trades": 134,
+            "wins": 84,
+            "pnl": 681608
+          },
+          "NEUTRAL": {
+            "trades": 410,
+            "wins": 224,
+            "pnl": 124944
+          },
+          "UP": {
+            "trades": 474,
+            "wins": 289,
+            "pnl": 2740717
+          }
+        }
+      },
+      "mc": {
+        "medianMdd": 30.062969804784977,
+        "worstMdd": 56.15149761750716,
+        "medianCagr": 8.206911723262744,
+        "worstCagr": -6.031929927570423,
+        "ruinSeeds": 0,
+        "universe": {
+          "medianMdd": 30.062969804784977,
+          "worstMdd": 39.82260450702393,
+          "medianCagr": 8.206911723262744,
+          "worstCagr": -2.2627514193309883,
+          "ruinSeeds": 0
+        },
+        "block": {
+          "medianMdd": 26.689032219704323,
+          "worstMdd": 56.15149761750716,
+          "medianCagr": 21.714391137856524,
+          "worstCagr": -6.031929927570423,
+          "ruinSeeds": 0
+        }
+      },
+      "stress": {
+        "finalCapital": 5915371,
+        "cagr": -0.41223409601288674,
+        "mdd": 40.28417917983407,
+        "years": 3.4388112007775655
+      },
+      "reachProbability": 0,
+      "medianFiveYearCapital": 16445698.087741401,
+      "limitations": [
+        "current-listed universe",
+        "2023-2026 evaluation reused in prior research",
+        "no forward shadow days"
+      ]
+    },
+    {
+      "id": "C1",
+      "name": "two-slot hi120 momentum",
+      "family": "aggressive-control",
+      "role": "satellite",
+      "strategy": "hi120",
+      "args": [
+        "--strategies",
+        "hi120",
+        "--hislots",
+        "2",
+        "--hiregime",
+        "all"
+      ],
+      "grade": "REJECTED",
+      "failureReasons": [
+        "CAGR 75.54% 미달",
+        "MC MDD 중앙값 20% 초과",
+        "MC 최악 MDD 30% 초과",
+        "비용 스트레스 원금 미보전",
+        "비용 스트레스 MDD 35% 초과",
+        "파산 시드 발생",
+        "point-in-time 유니버스 미충족",
+        "상장폐지 종목 미포함",
+        "2016년 이전 데이터 미확보",
+        "shadow 60거래일 미충족"
+      ],
+      "base": {
+        "finalCapital": 3037320,
+        "cagr": -17.96061242238387,
+        "mdd": 93.12187802260411,
+        "years": 3.4388112007775655,
+        "profitFactor": 0.8419802359153855,
+        "trades": 272,
+        "winRate": 36.39705882352941,
+        "yearReturns": {
+          "2023": -82.07224784793999,
+          "2024": -57.59900284072366,
+          "2025": 267.84809738649227,
+          "2026": 65.52558509609227
+        },
+        "regimeStats": {
+          "UNKNOWN": {
+            "trades": 272,
+            "wins": 99,
+            "pnl": -2962674
+          }
+        }
+      },
+      "mc": {
+        "medianMdd": 93.28010653125213,
+        "worstMdd": 98.87459662606284,
+        "medianCagr": -21.027848875623313,
+        "worstCagr": -50.44679851478755,
+        "ruinSeeds": 20,
+        "universe": {
+          "medianMdd": 91.9384878520246,
+          "worstMdd": 95.73145062111314,
+          "medianCagr": -19.607993609431045,
+          "worstCagr": -46.93213261649074,
+          "ruinSeeds": 20
+        },
+        "block": {
+          "medianMdd": 93.28010653125213,
+          "worstMdd": 98.87459662606284,
+          "medianCagr": -21.027848875623313,
+          "worstCagr": -50.44679851478755,
+          "ruinSeeds": 15
+        }
+      },
+      "stress": {
+        "finalCapital": 1337820,
+        "cagr": -35.364478607581184,
+        "mdd": 95.17658353501682,
+        "years": 3.4388112007775655
+      },
+      "reachProbability": 5,
+      "medianFiveYearCapital": 2153142.2656527497,
+      "limitations": [
+        "current-listed universe",
+        "2023-2026 evaluation reused in prior research",
+        "no forward shadow days"
+      ]
+    },
+    {
+      "id": "C2",
+      "name": "UP-gated two-slot hi120",
+      "family": "aggressive-control",
+      "role": "satellite",
+      "strategy": "hi120",
+      "args": [
+        "--strategies",
+        "hi120",
+        "--hislots",
+        "2",
+        "--hiregime",
+        "up"
+      ],
+      "grade": "REJECTED",
+      "failureReasons": [
+        "CAGR 75.54% 미달",
+        "MC MDD 중앙값 20% 초과",
+        "MC 최악 MDD 30% 초과",
+        "비용 스트레스 MDD 35% 초과",
+        "파산 시드 발생",
+        "point-in-time 유니버스 미충족",
+        "상장폐지 종목 미포함",
+        "2016년 이전 데이터 미확보",
+        "shadow 60거래일 미충족"
+      ],
+      "base": {
+        "finalCapital": 34806963,
+        "cagr": 66.73575073608234,
+        "mdd": 46.767914756855355,
+        "years": 3.4388112007775655,
+        "profitFactor": 1.3369402613318329,
+        "trades": 146,
+        "winRate": 44.52054794520548,
+        "yearReturns": {
+          "2023": 40.05896666666666,
+          "2024": 20.012434607958784,
+          "2025": 157.97079092236558,
+          "2026": 17.69879754490198
+        },
+        "regimeStats": {
+          "UNKNOWN": {
+            "trades": 146,
+            "wins": 65,
+            "pnl": 28806959
+          }
+        }
+      },
+      "mc": {
+        "medianMdd": 55.44408802843536,
+        "worstMdd": 81.63881644468933,
+        "medianCagr": 46.28150234539379,
+        "worstCagr": -5.561446612856258,
+        "ruinSeeds": 1,
+        "universe": {
+          "medianMdd": 44.776874697642484,
+          "worstMdd": 65.73826389973246,
+          "medianCagr": 46.28150234539379,
+          "worstCagr": -4.879161889767481,
+          "ruinSeeds": 0
+        },
+        "block": {
+          "medianMdd": 55.44408802843536,
+          "worstMdd": 81.63881644468933,
+          "medianCagr": 89.71681335123621,
+          "worstCagr": -5.561446612856258,
+          "ruinSeeds": 1
+        }
+      },
+      "stress": {
+        "finalCapital": 28781545,
+        "cagr": 57.769391543851526,
+        "mdd": 47.904495712904094,
+        "years": 3.4388112007775655
+      },
+      "reachProbability": 60,
+      "medianFiveYearCapital": 153541474.63543049,
+      "limitations": [
+        "current-listed universe",
+        "2023-2026 evaluation reused in prior research",
+        "no forward shadow days"
+      ]
+    },
+    {
+      "id": "C3",
+      "name": "UP-gated hi120 with 35% sleeve stop",
+      "family": "aggressive-control",
+      "role": "satellite",
+      "derivedFrom": "C2",
+      "satelliteStopMdd": 35,
+      "grade": "REJECTED",
+      "failureReasons": [
+        "CAGR 75.54% 미달",
+        "MC MDD 중앙값 20% 초과",
+        "MC 최악 MDD 30% 초과",
+        "비용 스트레스 MDD 35% 초과",
+        "point-in-time 유니버스 미충족",
+        "상장폐지 종목 미포함",
+        "2016년 이전 데이터 미확보",
+        "shadow 60거래일 미충족"
+      ],
+      "base": {
+        "finalCapital": 9177707,
+        "cagr": 13.155685630372883,
+        "mdd": 37.348297041902825,
+        "years": 3.4388112007775655,
+        "profitFactor": 0,
+        "trades": 0,
+        "winRate": 0,
+        "yearReturns": {
+          "2023": 40.05896666666666,
+          "2024": 20.012434607958784,
+          "2025": -12.551832892251324,
+          "2026": 0
+        },
+        "regimeStats": {}
+      },
+      "mc": {
+        "medianMdd": 52.33899756491533,
+        "worstMdd": 72.59394213449067,
+        "medianCagr": 2.719355589589967,
+        "worstCagr": -9.806341836985533,
+        "ruinSeeds": 0,
+        "universe": {
+          "medianMdd": 36.216298440417,
+          "worstMdd": 38.803542098930976,
+          "medianCagr": 2.719355589589967,
+          "worstCagr": -9.806341836985533,
+          "ruinSeeds": 0
+        },
+        "block": {
+          "medianMdd": 52.33899756491533,
+          "worstMdd": 72.59394213449067,
+          "medianCagr": 19.484414296300745,
+          "worstCagr": -6.967337115376237,
+          "ruinSeeds": 0
+        }
+      },
+      "stress": {
+        "finalCapital": 8522976,
+        "cagr": 10.746313198020019,
+        "mdd": 37.722991847629515,
+        "years": 3.4388112007775655
+      },
+      "reachProbability": 0,
+      "medianFiveYearCapital": 15022089.96025019,
+      "limitations": [
+        "current-listed universe",
+        "2023-2026 evaluation reused in prior research",
+        "no forward shadow days"
+      ]
+    }
+  ],
+  "portfolios": [
+    {
+      "id": "P1",
+      "name": "baseline barbell",
+      "core": "A1",
+      "satellite": "C1",
+      "satelliteStopMdd": null,
+      "grade": "REJECTED",
+      "failureReasons": [
+        "CAGR 75.54% 미달",
+        "MC MDD 중앙값 20% 초과",
+        "MC 최악 MDD 30% 초과",
+        "비용 스트레스 원금 미보전",
+        "비용 스트레스 MDD 35% 초과",
+        "point-in-time 유니버스 미충족",
+        "상장폐지 종목 미포함",
+        "2016년 이전 데이터 미확보",
+        "shadow 60거래일 미충족"
+      ],
+      "base": {
+        "finalCapital": 8562744.853765182,
+        "cagr": 10.896335382080347,
+        "mdd": 51.85023187149298,
+        "years": 3.4388112007775655,
+        "profitFactor": 0,
+        "trades": 0,
+        "winRate": 0,
+        "yearReturns": {
+          "2023": -21.338999774729896,
+          "2024": -34.32126471000642,
+          "2025": 97.12080423464018,
+          "2026": 28.0692184690851
+        },
+        "regimeStats": {}
+      },
+      "mc": {
+        "medianMdd": 51.077166280221654,
+        "worstMdd": 68.43275658659603,
+        "medianCagr": 13.286169070321352,
+        "worstCagr": -12.408189127257241,
+        "ruinSeeds": 0,
+        "universe": {
+          "medianMdd": 51.077166280221654,
+          "worstMdd": 60.33459844108289,
+          "medianCagr": 14.26680456182481,
+          "worstCagr": -12.408189127257241,
+          "ruinSeeds": 0
+        },
+        "block": {
+          "medianMdd": 41.07027187481468,
+          "worstMdd": 68.43275658659603,
+          "medianCagr": 13.286169070321352,
+          "worstCagr": -10.34709651434833,
+          "ruinSeeds": 0
+        }
+      },
+      "stress": {
+        "finalCapital": 5062647.003603614,
+        "cagr": -4.81976533175782,
+        "mdd": 65.22866643893688,
+        "years": 3.4388112007775655
+      },
+      "satelliteStopped": false,
+      "reachProbability": 0,
+      "medianFiveYearCapital": 12277868.330826962,
+      "components": {
+        "core": "REJECTED",
+        "satellite": "REJECTED"
+      }
+    },
+    {
+      "id": "P2",
+      "name": "throttled gated barbell",
+      "core": "B2",
+      "satellite": "C2",
+      "satelliteStopMdd": null,
+      "grade": "REJECTED",
+      "failureReasons": [
+        "CAGR 75.54% 미달",
+        "MC MDD 중앙값 20% 초과",
+        "MC 최악 MDD 30% 초과",
+        "point-in-time 유니버스 미충족",
+        "상장폐지 종목 미포함",
+        "2016년 이전 데이터 미확보",
+        "shadow 60거래일 미충족"
+      ],
+      "base": {
+        "finalCapital": 15106227.042652555,
+        "cagr": 30.801115908238728,
+        "mdd": 29.214593373103398,
+        "years": 3.4388112007775655,
+        "profitFactor": 0,
+        "trades": 0,
+        "winRate": 0,
+        "yearReturns": {
+          "2023": 27.57759181010848,
+          "2024": -12.333017858347972,
+          "2025": 67.11807725037731,
+          "2026": 22.397584269198244
+        },
+        "regimeStats": {}
+      },
+      "mc": {
+        "medianMdd": 26.470485488916072,
+        "worstMdd": 50.8309568887111,
+        "medianCagr": 28.58960018064476,
+        "worstCagr": 1.5436648037368883,
+        "ruinSeeds": 0,
+        "universe": {
+          "medianMdd": 23.125323653942036,
+          "worstMdd": 36.798032277558825,
+          "medianCagr": 28.955774700631196,
+          "worstCagr": 7.875779147460338,
+          "ruinSeeds": 0
+        },
+        "block": {
+          "medianMdd": 26.470485488916072,
+          "worstMdd": 50.8309568887111,
+          "medianCagr": 28.58960018064476,
+          "worstCagr": 1.5436648037368883,
+          "ruinSeeds": 0
+        }
+      },
+      "stress": {
+        "finalCapital": 13005180.253744505,
+        "cagr": 25.227019250606308,
+        "mdd": 26.997882454227796,
+        "years": 3.4388112007775655
+      },
+      "satelliteStopped": false,
+      "reachProbability": 0,
+      "medianFiveYearCapital": 23097882.072090533,
+      "components": {
+        "core": "REJECTED",
+        "satellite": "REJECTED"
+      }
+    },
+    {
+      "id": "P3",
+      "name": "defensive trend barbell",
+      "core": "A2",
+      "satellite": "C2",
+      "satelliteStopMdd": 35,
+      "grade": "REJECTED",
+      "failureReasons": [
+        "CAGR 75.54% 미달",
+        "MC MDD 중앙값 20% 초과",
+        "MC 최악 MDD 30% 초과",
+        "비용 스트레스 MDD 35% 초과",
+        "point-in-time 유니버스 미충족",
+        "상장폐지 종목 미포함",
+        "2016년 이전 데이터 미확보",
+        "shadow 60거래일 미충족"
+      ],
+      "base": {
+        "finalCapital": 30963717.85893885,
+        "cagr": 61.1581944927591,
+        "mdd": 40.41122346310687,
+        "years": 3.4388112007775655,
+        "profitFactor": 0,
+        "trades": 0,
+        "winRate": 0,
+        "yearReturns": {
+          "2023": 43.77676348591217,
+          "2024": -7.355547120883332,
+          "2025": 73.93374548780464,
+          "2026": 109.34773551017436
+        },
+        "regimeStats": {}
+      },
+      "mc": {
+        "medianMdd": 38.33769215695422,
+        "worstMdd": 56.45274511995332,
+        "medianCagr": 54.026562207569384,
+        "worstCagr": 22.000254055483403,
+        "ruinSeeds": 0,
+        "universe": {
+          "medianMdd": 38.33769215695422,
+          "worstMdd": 56.45274511995332,
+          "medianCagr": 54.026562207569384,
+          "worstCagr": 27.450173762487438,
+          "ruinSeeds": 0
+        },
+        "block": {
+          "medianMdd": 34.342456407703054,
+          "worstMdd": 50.074724258742386,
+          "medianCagr": 62.92046560655389,
+          "worstCagr": 22.000254055483403,
+          "ruinSeeds": 0
+        }
+      },
+      "stress": {
+        "finalCapital": 29696525.129856672,
+        "cagr": 59.21175989335741,
+        "mdd": 42.27632805058282,
+        "years": 3.4388112007775655
+      },
+      "satelliteStopped": true,
+      "reachProbability": 10,
+      "medianFiveYearCapital": 69449205.98790213,
+      "components": {
+        "core": "REJECTED",
+        "satellite": "REJECTED"
+      }
+    }
+  ]
+}
