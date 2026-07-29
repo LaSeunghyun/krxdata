@@ -89,7 +89,13 @@ for (const [flag, key] of [['--trail', 'trailPct'], ['--minbreak', 'minBreakout'
   //   백테의 검증된 rsi2 청산은 하드손절 -7%·MA5회귀·maxHoldR 만기뿐 — 트레일이 아예 없다.
   //   07-29 청산 15건 중 12건이 rsi2 트레일손절(전부 진입 2시간 내)이라 이 괴리가 실손실을 내고 있는지 판정해야 한다.
   //   N=0(기본)이면 현행 검증 동작. N>0이면 rsi2에 트레일 N% 적용.
-  ['--rsitrail', 'rsiTrail'], ['--rsitp1', 'rsiTp1']]) {
+  ['--rsitrail', 'rsiTrail'], ['--rsitp1', 'rsiTp1'],
+  // 2026-07-29 사용자 제안: 고정 % 대신 추세선 기반 청산
+  //   --matrail N     hi120 트레일을 "종가 < MA(N)" 으로 대체 (0=기존 고정%)
+  //   --rsilowstop N  rsi2 하드손절 -7%를 "종가 < 직전 N일 최저가" 로 대체 (0=기존 고정%)
+  //     ※ rsi2에 MA 손절은 못 쓴다 — 과매도 진입이라 정의상 이미 모든 MA 아래여서 즉시 발동한다.
+  //       그래서 추세선 대안은 구조적 지지선(직전 저가)이다.
+  ['--matrail', 'maTrail'], ['--rsilowstop', 'rsiLowStop']]) {
   const v = argOf(flag, null);
   if (v != null) STRATEGIES['combo-v2'][key] = Number(v);
 }
@@ -121,6 +127,17 @@ const SKIP_DOWN_RSI = argv.includes('--skipdownrsi');
 const RSI_TREND = Number(argOf('--rsitrend', 0));
 // 2026-07-25: rsi2 최대낙폭 필터 — 최근 20일 수익률이 -N% 이하로 붕괴한 종목 제외(구조적 하락 배제). 0=off.
 const RSI_MAXDD20 = Number(argOf('--rsimaxdd20', 0));
+/**
+ * ★ 2026-07-29 사용자 제안(--rsimindist N): rsi2 진입 시 **익절목표까지의 거리**를 요구한다.
+ *   rsi2의 익절은 "종가 > MA(rsiMa)" 이고 손절은 진입 -stopPct% 고정이다. 그런데 진입 시점에
+ *   MA가 종가 바로 위에 있으면 7%를 걸고 1%를 벌려는 거래가 된다(손익비 0.14).
+ *   실거래 07-29 실측: 5종목의 MA3 거리가 +1.0%(카카오) ~ +21.8%(하이브)로 벌어졌다.
+ *   ※ 이 지표의 가치: 폭락장에서 RSI2(전원 0.0)·확신도(전원 5.0)가 **포화돼 서열이 안 되는데
+ *     MA 거리는 20배 차이로 벌어진다** = 판별력이 살아있는 유일한 축. 로테이션 랭킹 신호 후보.
+ *   룩어헤드 없음: 진입일 종가까지의 MA는 그 시점에 계산 가능하고 청산은 이후 날짜 종가다.
+ *   N=0(기본)이면 필터 없음(현행 동작).
+ */
+const RSI_MIN_DIST = Number(argOf('--rsimindist', 0));
 // 2026-07-25 패배 forensic 가설A: 확신도 집중매수(현금50% 몰빵)를 rsi2엔 미적용(hi120만 허용).
 //   근거: rsi2/stop_loss 54건 평균 -28만(전체 패배평균 -14만의 2배), 최악거래 4건 전부 UP·RSI0·stop_loss
 //   = conviction(10-RSI)×1.0=10 ≥ threshold7 → 50% 몰빵 대상. rsi2 단독 CAGR -3.5%인데 몰빵 허용 구조.
@@ -542,6 +559,11 @@ function atrMult(cd, i, cfg) {
   return Math.min(1.5, Math.max(0.5, cfg.atrSize / atrPct));
 }
 
+/** 단순이동평균 (종가 i 포함, n일) — --matrail / --rsilowstop 용 */
+function maAt(c, i, n) { let s = 0, k = Math.min(n, i + 1); for (let j = i - k + 1; j <= i; j++) s += c[j]; return s / k; }
+/** 직전 n일 최저가 (당일 제외) — rsi2 구조적 지지선 */
+function lowN(cd, i, n) { let lo = Infinity; for (let j = Math.max(0, i - n); j < i; j++) if (cd.l[j] < lo) lo = cd.l[j]; return lo; }
+
 function rsi2(cd, i) {
   if (i < 2) return 50;
   let up = 0, dn = 0;
@@ -875,7 +897,14 @@ for (let di = 0; di < tradingDays.length; di++) {
             p.exitAtOpen = 'tp_quarter'; p.exitQty = Math.floor(p.qty * TPFRAC); p.qtrDone = true;
           }
           // C15 (--trailwide N): 절반익절 후 잔량 트레일링 폭 확대 (러너 추세 보존)
-          else if (cd.c[i] <= p.hi * (1 - (p.halfDone && cfg.trailWide > 0 ? cfg.trailWide : cfg.trailPct) / 100)) p.exitAtOpen = 'trailing';
+          // ★ 2026-07-29 사용자 제안(--matrail N): 고점대비 고정 %가 아니라 **추세선(이동평균)** 이탈로 청산.
+          //   근거: hi120/trailing이 전략 최대 손실 버킷(n=303 승률41% -1,701만). 돌파주는 이미 MA 위에 있으므로
+          //   "종가 < MA(N)"이 자연스러운 추세종료 신호이고, 폭이 시장 상태에 따라 스스로 조절된다.
+          //   ATR 기반(변동성 적응)은 별개 축으로 이미 기각됨 — 이건 가격수준 적응이다.
+          //   N=0(기본)이면 기존 고정% 트레일. 0보다 크면 그것을 **대체**한다(하드손절·부분익절은 유지).
+          else if (cfg.maTrail > 0
+            ? (i >= cfg.maTrail && cd.c[i] < maAt(cd.c, i, cfg.maTrail))
+            : cd.c[i] <= p.hi * (1 - (p.halfDone && cfg.trailWide > 0 ? cfg.trailWide : cfg.trailPct) / 100)) p.exitAtOpen = 'trailing';
           else if (p.holdDays >= cfg.maxHoldH) p.exitAtOpen = 'max_hold';
           // C28 (--pyramid 1): 1R 절반익절 확인 종목이 추가 신고가 갱신 시 1회 증액 (추세 검증된 종목에 집중)
           else if (cfg.pyramid > 0 && p.halfDone && !p.pyrDone && cd.c[i] > (p.hiPrev ?? p.entry)) {
@@ -898,7 +927,11 @@ for (let di = 0; di < tradingDays.length; di++) {
           let ma5 = 0; const n = Math.min(maN, i + 1);
           for (let j = i - n + 1; j <= i; j++) ma5 += cd.c[j];
           ma5 /= n;
-          if (cd.c[i] <= p.entry * (1 - cfg.stopPct / 100)) p.exitAtOpen = 'stop_loss';
+          // ★ 2026-07-29 (--rsilowstop N): 진입가 대비 고정 -7% 대신 **직전 N일 최저가 이탈**로 손절.
+          //   구조적 지지선이라 종목 변동성·가격대에 따라 폭이 스스로 조절된다.
+          if (cfg.rsiLowStop > 0
+            ? cd.c[i] < lowN(cd, i, cfg.rsiLowStop)
+            : cd.c[i] <= p.entry * (1 - cfg.stopPct / 100)) p.exitAtOpen = 'stop_loss';
           // ★ 2026-07-29 (--rsitp1 N): 라이브가 rsi2에도 걸고 있는 부분익절 +N% 절반 (백테엔 hi120만 있었다)
           else if (cfg.rsiTp1 > 0 && !p.halfDone && cd.c[i] >= p.entry * (1 + cfg.rsiTp1 / 100) && Math.floor(p.qty * TPFRAC) >= 1) {
             p.exitAtOpen = 'tp_half'; p.exitQty = Math.floor(p.qty * TPFRAC); p.halfDone = true;
@@ -968,6 +1001,14 @@ for (let di = 0; di < tradingDays.length; di++) {
           const cReg = SELF_REGIME ? (candidate.selfRegime ?? regime) : regime; // 스킵 필터도 같은 기준으로
           if (SKIP_NEUTRAL_RSI && cReg === 'NEUTRAL' && candidate.sub === 'rsi2') continue; // ICE#1: NEUTRAL rsi2 스킵 테스트
           if (SKIP_DOWN_RSI && cReg === 'DOWN' && candidate.sub === 'rsi2') continue;
+          // ★ --rsimindist N: 익절목표(MA rsiMa)까지 N% 미만이면 손익비가 깨져 진입 안 함
+          if (RSI_MIN_DIST > 0 && candidate.sub === 'rsi2') {
+            const cdR = candles.get(candidate.code);
+            const iR = cdR ? indexOfDate(cdR, day) : null;
+            if (iR == null || iR < (cfg.rsiMa || 5)) continue;
+            const maR = maAt(cdR.c, iR, cfg.rsiMa || 5);
+            if ((maR / cdR.c[iR] - 1) * 100 < RSI_MIN_DIST) continue;
+          }
           if (SELF_AND && candidate.sub === 'hi120' && candidate.selfRegime !== 'UP') continue; // 시장UP ∩ 종목UP
           // 가설B(--maxbreaklive N): 과열 돌파 진입 제외
           if (MAXBREAK_LIVE > 0 && candidate.sub === 'hi120' && Number(candidate.breakoutPct) > MAXBREAK_LIVE) continue;
@@ -1021,7 +1062,10 @@ for (let di = 0; di < tradingDays.length; di++) {
             ? { sub: 'hi120', regime, breakoutPct: candidate.breakoutPct.toFixed(1), conviction: candidate.conviction.toFixed(1) }
             : candidate.sub === 'volsurge'
             ? { sub: 'volsurge', regime, volRatio: Number(candidate.volRatio).toFixed(2), dayRet: Number(candidate.dayRet).toFixed(1), conviction: candidate.conviction.toFixed(1) }
-            : { sub: 'rsi2', regime, rsi: candidate.rsi.toFixed(0), conviction: candidate.conviction.toFixed(1) };
+            // ★ 2026-07-29: maDist = 진입 시점 익절목표(MA rsiMa)까지의 거리 %. 버킷 분석으로
+            //   "이 값이 결과를 예측하는가"(= 랭킹 신호로 쓸 수 있는가)를 본다. 필터 통과 여부와 별개 질문.
+            : { sub: 'rsi2', regime, rsi: candidate.rsi.toFixed(0), conviction: candidate.conviction.toFixed(1),
+              maDist: (vci != null && vci >= (cfg.rsiMa || 5)) ? ((maAt(vcd.c, vci, cfg.rsiMa || 5) / vcd.c[vci] - 1) * 100).toFixed(1) : null };
           buy(book, day, candidate.code, candidate.price, bgt, { sub: candidate.sub, ctx, breakLv: candidate.breakLv });
         }
       } else {
@@ -1290,6 +1334,10 @@ for (const comboKey of ['combo', 'combo-v2']) {
       `${t.ctx.sub} × 청산 ${t.reason}`,
       t.ctx.sub === 'rsi2' ? `rsi2 × RSI ${t.ctx.rsi <= 5 ? '0~5(극단)' : '5~10'}` : `hi120 × 돌파폭 ${Number(t.ctx.breakoutPct) >= 3 ? '3%+(갭성)' : '0~3%'}`,
       `${t.ctx.sub} × 보유 ${t.hold <= 3 ? '1~3일' : t.hold <= 10 ? '4~10일' : '11일+'}`,
+      // ★ 2026-07-29: rsi2 진입 시 익절목표까지 거리 버킷. 이 축이 결과를 가르면 랭킹 신호로 쓸 수 있다.
+      ...(t.ctx.sub === 'rsi2' && t.ctx.maDist != null
+        ? [`rsi2 × 목표거리 ${Number(t.ctx.maDist) < 2 ? '0~2%(손익비 나쁨)' : Number(t.ctx.maDist) < 5 ? '2~5%' : Number(t.ctx.maDist) < 10 ? '5~10%' : '10%+(대폭락)'}`]
+        : []),
     ]) {
       if (!groups.has(key)) groups.set(key, { n: 0, w: 0, pnl: 0 });
       const g = groups.get(key);
