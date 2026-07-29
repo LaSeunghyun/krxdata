@@ -16,6 +16,9 @@ import { appendFileSync } from 'fs';
 import { assembleSignals } from './ai-signals.mjs';
 import { judgeCandidate } from './ai-judge.mjs';
 import { classifyDisclosure } from './ai-events.mjs';
+// ★ 2026-07-29: 진입가를 판단 시점 실제 가격으로 잡기 위해 KIS를 쓴다.
+//   KIS는 라이브봇(Toss)과 다른 API라 **토큰 경합이 없다**(Toss 토큰은 단일 인스턴스).
+import { getMinuteBars } from './kis-api.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: join(__dirname, '.env') });
 
@@ -58,32 +61,87 @@ async function ensureTables() {
       target_pct NUMERIC, stop_pct NUMERIC, horizon_days INT, thesis_break JSONB,
       conviction INT, catalyst TEXT, thesis JSONB,
       status TEXT DEFAULT 'open', close_price NUMERIC, closed_at TIMESTAMPTZ, close_reason TEXT, pnl_pct NUMERIC);
+    -- ★ 2026-07-29: 진입가 출처 감사 + 벤치마크 청산 트랙(AI 청산과 병행 기록).
+    --   AI가 정한 target/stop/horizon과 고정규칙을 동시에 굴려 "선택"과 "청산"의 기여를 분리한다.
+    ALTER TABLE ai_shadow_positions ADD COLUMN IF NOT EXISTS entry_src TEXT;
+    ALTER TABLE ai_shadow_positions ADD COLUMN IF NOT EXISTS bench_status TEXT DEFAULT 'open';
+    ALTER TABLE ai_shadow_positions ADD COLUMN IF NOT EXISTS bench_hi NUMERIC;
+    ALTER TABLE ai_shadow_positions ADD COLUMN IF NOT EXISTS bench_close_price NUMERIC;
+    ALTER TABLE ai_shadow_positions ADD COLUMN IF NOT EXISTS bench_closed_at TIMESTAMPTZ;
+    ALTER TABLE ai_shadow_positions ADD COLUMN IF NOT EXISTS bench_reason TEXT;
+    ALTER TABLE ai_shadow_positions ADD COLUMN IF NOT EXISTS bench_pnl_pct NUMERIC;
     SELECT 1;`);
 }
 
 const lastClose = async (code) => { const r = await q(`SELECT close FROM stock_prices WHERE stock_code='${esc(code)}' ORDER BY date DESC LIMIT 1`); return r[0] ? Number(r[0].close) : null; };
 
+/**
+ * ★ 2026-07-29 신규 — 판단 시점의 **실제 체결 가능 가격**.
+ *   기존엔 진입가를 `sig.price || lastClose()`로 잡았는데 둘 다 일봉 스냅샷이라 08:47에 낼 수 없는 값이었다.
+ *   실측(6건): 기록가와 진입일 시가의 차이 평균 -0.50%(비관 편향) — 크지는 않지만 벤치마크와 비교하려면
+ *   가격 규약이 같아야 한다. combo-v2 라이브는 장중 실시간가로 사므로 여기도 실시간가를 쓴다.
+ *   반환: { px, src } — src는 감사용('kis_1m' | 'sig' | 'lastclose')
+ */
+async function tradablePrice(code, sigPrice) {
+  try {
+    const r = await getMinuteBars(code);
+    const px = Number(r?.now) || Number(r?.bars?.at(-1)?.c) || 0;
+    if (px > 0) return { px, src: 'kis_1m' };
+  } catch { /* 장전·휴장·레이트리밋 → 폴백 */ }
+  if (Number(sigPrice) > 0) return { px: Number(sigPrice), src: 'sig' };
+  const lc = await lastClose(code);
+  return lc ? { px: lc, src: 'lastclose' } : { px: 0, src: 'none' };
+}
+
+/** 벤치마크 청산 규칙 (combo-v2 hi120과 동일 파라미터). AI가 정한 target/stop/horizon과 **병행 기록**해
+ *  AI의 기여를 "종목 선택"만으로 분리 측정한다. AI 파라미터는 지우지 않는다(정보 보존). */
+const BENCH = { trail: 6, hard: 7, tp1: 6, tp2: 12, maxHold: 20 };
+
 // 보유 가상포지션 mark-to-market + 청산
 async function markPositions() {
-  const open = await q(`SELECT * FROM ai_shadow_positions WHERE status='open'`);
-  let closed = 0, held = 0;
+  // 벤치마크 트랙이 아직 열려 있는 건도 계속 평가해야 하므로 status='open' 만으로 거르지 않는다.
+  const open = await q(`SELECT * FROM ai_shadow_positions WHERE status='open' OR bench_status='open'`);
+  let closed = 0, held = 0, bClosed = 0;
   for (const p of open) {
     const px = await lastClose(p.stock_code);
     if (px == null) { held++; continue; }
-    const ret = (px / Number(p.entry_price) - 1) * 100;
+    const entry = Number(p.entry_price);
+    const ret = (px / entry - 1) * 100;
     const heldDays = Math.floor((Date.parse(kstDate()) - Date.parse(p.opened_date)) / 86400000);
-    let reason = null;
-    if (ret >= Number(p.target_pct)) reason = 'target';
-    else if (ret <= -Number(p.stop_pct)) reason = 'stop';
-    else if (heldDays >= Number(p.horizon_days)) reason = 'time';
-    if (reason) {
-      await q(`UPDATE ai_shadow_positions SET status='closed', close_price=${px}, closed_at=NOW(),
-        close_reason='${reason}', pnl_pct=${ret.toFixed(2)} WHERE id=${p.id}`);
-      log(`  청산 ${p.name}(${p.stock_code}) ${ret >= 0 ? '+' : ''}${ret.toFixed(1)}% [${reason}] ${heldDays}일보유`);
-      closed++;
-    } else held++;
+
+    // ── AI 트랙 (AI가 정한 target/stop/horizon) ──
+    if (p.status === 'open') {
+      let reason = null;
+      if (ret >= Number(p.target_pct)) reason = 'target';
+      else if (ret <= -Number(p.stop_pct)) reason = 'stop';
+      else if (heldDays >= Number(p.horizon_days)) reason = 'time';
+      if (reason) {
+        await q(`UPDATE ai_shadow_positions SET status='closed', close_price=${px}, closed_at=NOW(),
+          close_reason='${reason}', pnl_pct=${ret.toFixed(2)} WHERE id=${p.id}`);
+        log(`  청산[AI] ${p.name}(${p.stock_code}) ${ret >= 0 ? '+' : ''}${ret.toFixed(1)}% [${reason}] ${heldDays}일보유`);
+        closed++;
+      } else held++;
+    }
+
+    // ── 벤치마크 트랙 (고정규칙: 트레일 6% / 하드 -7% / 만기 20일. 부분익절은 미적용 — 단일 손익 추적) ──
+    //   AI 청산과 **독립적으로** 굴린다. AI가 이미 팔았어도 벤치마크는 계속 들고 간다.
+    if ((p.bench_status ?? 'open') === 'open') {
+      const bhi = Math.max(Number(p.bench_hi ?? entry), px);
+      let br = null;
+      if (ret <= -BENCH.hard) br = 'hard';
+      else if (px <= bhi * (1 - BENCH.trail / 100)) br = `trail(고점${Math.round(bhi).toLocaleString()})`;
+      else if (heldDays >= BENCH.maxHold) br = 'time';
+      if (br) {
+        await q(`UPDATE ai_shadow_positions SET bench_status='closed', bench_close_price=${px}, bench_closed_at=NOW(),
+          bench_reason='${esc(br)}', bench_pnl_pct=${ret.toFixed(2)}, bench_hi=${bhi} WHERE id=${p.id}`);
+        log(`  청산[벤치] ${p.name}(${p.stock_code}) ${ret >= 0 ? '+' : ''}${ret.toFixed(1)}% [${br}] ${heldDays}일보유`);
+        bClosed++;
+      } else {
+        await q(`UPDATE ai_shadow_positions SET bench_hi=${bhi} WHERE id=${p.id}`);
+      }
+    }
   }
-  return { closed, held };
+  return { closed, held, bClosed };
 }
 
 async function main() {
@@ -95,7 +153,7 @@ async function main() {
   const openCodesRows = await q(`SELECT stock_code FROM ai_shadow_positions WHERE status='open'`);
   const openCodes = new Set(openCodesRows.map(r => r.stock_code));
   let openCount = openCodes.size;
-  log(`보유 정산: 청산 ${mk.closed} / 유지 ${mk.held} (현재 오픈 ${openCount}/${SLOTS})`);
+  log(`보유 정산: AI청산 ${mk.closed} / 벤치청산 ${mk.bClosed} / 유지 ${mk.held} (현재 오픈 ${openCount}/${SLOTS})`);
 
   // 2) 촉매 후보 수집 (유동성 유니버스, 최근 DAYS일 공시)
   const rows = await q(`SELECT d.stock_code, d.report_nm, a.corp_name, a.total_score
@@ -131,14 +189,14 @@ async function main() {
         '${dec.decision}',${dec.conviction},'${esc(dec.catalyst)}',${jesc(dec.thesis)},${jesc(dec.strategy)},${jesc(dec.supporting)},${jesc(dec.opposing)},'${esc(dec.news_check || '')}',${jesc(sig.events.map(e => ({ d: e.date, t: e.type, p: e.polarity })))},'${esc(dec.analyst_check || '')}',${jesc(sig.analyst)})`);
       if (dec.decision === 'buy') {
         if (openCount >= SLOTS) { log(`  ${sig.name} BUY(확신${dec.conviction}) but 슬롯 만석 → 미오픈`); skips++; continue; }
-        const px = Number(sig.price) || (await lastClose(cd.code));
+        const { px, src: pxSrc } = await tradablePrice(cd.code, sig.price);
         const qty = px ? Math.floor(PER / px) : 0;
         if (qty < 1) { log(`  ${sig.name} BUY but 수량0 → 미오픈`); continue; }
         const s = dec.strategy;
         await q(`INSERT INTO ai_shadow_positions (opened_date,stock_code,name,entry_price,qty,budget,target_pct,stop_pct,horizon_days,thesis_break,conviction,catalyst,thesis)
           VALUES ('${kstDate()}','${esc(cd.code)}','${esc(sig.name)}',${px},${qty},${qty * px},${s.target_pct},${s.stop_pct},${s.horizon_days},${jesc(s.thesis_break)},${dec.conviction},'${esc(dec.catalyst)}',${jesc(dec.thesis)})`);
         openCount++; buys++;
-        log(`  ✅ BUY ${sig.name}(${cd.code}) ${qty}주 @${px.toLocaleString()} 확신${dec.conviction} 목표+${s.target_pct}%/손절-${s.stop_pct}%/${s.horizon_days}일 | ${dec.catalyst.slice(0, 50)}`);
+        log(`  ✅ BUY ${sig.name}(${cd.code}) ${qty}주 @${px.toLocaleString()}[${pxSrc}] 확신${dec.conviction} 목표+${s.target_pct}%/손절-${s.stop_pct}%/${s.horizon_days}일 | ${dec.catalyst.slice(0, 50)}`);
       } else { skips++; log(`  skip ${sig.name}(${cd.code}) 확신${dec.conviction} — ${(dec.opposing[0] || dec.catalyst).slice(0, 60)}`); }
     } catch (e) { errs++; log(`  ${cd.name}(${cd.code}) 오류: ${String(e.message).slice(0, 80)}`); }
   }
