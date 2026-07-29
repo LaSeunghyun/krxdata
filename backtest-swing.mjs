@@ -402,6 +402,43 @@ function mcapUniverse(day, top = MCAP_TOP) {
   return mcapCache.get(wk);
 }
 
+/**
+ * ★ 2026-07-29 설계 재검토 (--uni turnover): **완전 PIT 유니버스**.
+ *
+ * 기존 mcapUniverse의 결함: 과거 시총을 `sharesEst(현재 발행주식수) × 과거 종가`로 계산한다.
+ *   그 사이 분할·증자·감자를 한 종목은 과거 시총이 왜곡돼 top-N 편입 여부가 틀린다(아나크로니즘).
+ *   더 심한 건 largeCaps(696행) — `stock_analysis ORDER BY market_cap_tril DESC`로 **현재 시총 정적 리스트**를
+ *   2023년에도 그대로 쓴다. 날짜 인자가 아예 없다 = 완전 lookahead.
+ *
+ * 거래대금은 `과거 종가 × 과거 거래량`이라 **발행주식수가 필요 없고 전부 그 시점 값**이다.
+ *   → 아나크로니즘이 구조적으로 사라진다. 유동성 기준이라 실제 체결 가능성과도 더 잘 맞는다.
+ *
+ * ※ 남는 편향: candles 자체가 현재 상장분(생존편향). 이건 폐지종목 가격이력이 없어 제거 불가.
+ *   공시 테이블은 3개월치뿐이라 보정도 불가. **절대 수치는 여전히 낙관**임을 전제로 읽어야 한다.
+ */
+const turnoverCache = new Map();
+function turnoverUniverse(day, top) {
+  const wk = weekKey(day) + ':t' + top;
+  if (turnoverCache.has(wk)) return turnoverCache.get(wk);
+  const scored = [];
+  for (const [code, cd] of candles) {
+    const i = lastIndexBefore(cd, day);
+    if (i < 20 || cd.c[i] < MIN_PRICE) continue;
+    let t = 0;
+    for (let j = i - 19; j <= i; j++) t += cd.c[j] * cd.v[j];
+    const avg = t / 20;
+    if (avg < MIN_TURNOVER) continue;
+    scored.push({ code, t: avg });
+  }
+  scored.sort((a, b) => b.t - a.t);
+  const out = scored.slice(0, top).map(s => s.code);
+  turnoverCache.set(wk, out);
+  return out;
+}
+// --uni mcap(기본, 기존 동작) | turnover(완전 PIT)
+const UNI_MODE = String(argOf('--uni', 'mcap'));
+const pickUniverse = (day, top) => (UNI_MODE === 'turnover' ? turnoverUniverse(day, top) : mcapUniverse(day, top));
+
 // C23 (--regimemode breadth): 시장 breadth(MA 위 비율)로 레짐 판정
 //   --breadthma N    : breadth MA 윈도우 (기본 20 = 단기, 200 = 고전적 장기 breadth)
 //   --breadthuni X   : large=시총 top30(기본) | all=전체 상장 유니버스
@@ -1030,7 +1067,7 @@ for (let di = 0; di < tradingDays.length; di++) {
       const countSub = (sub) => Object.values(book.positions).filter(p => p.sub === sub).length;
       if (LIVE_PARITY) {
         const signalRows = [];
-        for (const code of mcapUniverse(day, LIVE_UNI)) {
+        for (const code of pickUniverse(day, LIVE_UNI)) {
           if (book.positions[code] || LIVE_EXCLUDE.has(code)) continue;
           const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
           if (i == null || i < cfg.lookback + 1) continue;
@@ -1081,6 +1118,11 @@ for (let di = 0; di < tradingDays.length; di++) {
           const cReg = SELF_REGIME ? (candidate.selfRegime ?? regime) : regime; // 스킵 필터도 같은 기준으로
           if (SKIP_NEUTRAL_RSI && cReg === 'NEUTRAL' && candidate.sub === 'rsi2') continue; // ICE#1: NEUTRAL rsi2 스킵 테스트
           if (SKIP_DOWN_RSI && cReg === 'DOWN' && candidate.sub === 'rsi2') continue;
+          // ★ 2026-07-29 (--cooldown N): 손절 후 N거래일 재진입 금지. **live-parity 경로엔 이 검사가 없었다**
+          //   (sell()에서 book.cool은 설정되는데 비파리티 rsi2 경로에서만 검사됨) → 플래그가 무동작이었다.
+          //   근거: 07-28~29 실거래 청산 16건 중 손실의 53%가 두산퓨얼셀 단일 종목 4회 휩소.
+          //   그 증거로 라이브엔 "당일 재진입 금지"를 이미 배포했다. 백테판을 이제 검증한다.
+          if (COOLDOWN > 0 && (book.cool?.[candidate.code] ?? -1) > di) continue;
           // ★ --rsiflow N: rsi2 진입에 수급 조건. 최근 D일 누적(기관+외국인) < N억이면 진입 안 함.
           //   데이터 부족 종목은 통과시킨다(백테의 "데이터 없으면 룰 미적용" 관례와 동일).
           if (RSI_FLOW != null && candidate.sub === 'rsi2' && FLOWS) {
