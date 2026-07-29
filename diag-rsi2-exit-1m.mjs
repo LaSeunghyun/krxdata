@@ -144,7 +144,7 @@ function exitValidated(days, si, entry, j, jIdx, exec) {
 // ── 종목 순회 ────────────────────────────────────────────────────────────────
 const files = readdirSync(DIR).filter(f => f.endsWith('.jsonl'));
 const L = [], V = [], Vc = [], Vl = [];
-let nSig = 0, nPair = 0, sameDayL = 0;
+let nSig = 0, nPair = 0, sameDayL = 0, nSkipStock = 0;
 const whyL = {}, whyV = {}, whyVl = {};
 const gapNextOpen = [];      // 익일시가 − 판정종가 (진입가 대비 %p) — 갭 손익 실측
 
@@ -168,6 +168,23 @@ for (const f of files) {
   const days = [...dmap.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([day, bars]) => ({ day, bars }));
   const dayIdx = new Map(days.map((d, i) => [d.day, i]));
   const jIdx = new Map(j.d.map((d, i) => [d, i]));        // 일봉 날짜 → 인덱스 (정렬용)
+
+  // ★ 데이터 품질 게이트 (2026-07-29). 진입가는 분봉(Toss), 판정 종가는 일봉 캐시에서 온다.
+  //   두 데이터의 **수정주가 기준이 다른 종목**이 있다(액면분할·감자 반영 시점 차이).
+  //   234종목 중 6종목이 그랬고(327260 비율 0.501=2:1분할, 484870 0.333=3:1 등),
+  //   이들이 만든 -212%p급 허수가 갭 손익 합계의 77%를 차지해 평균을 완전히 뒤집었다.
+  //   일자별 마지막 분봉 종가 ÷ 일봉 종가가 1에서 벗어나는 날이 5% 넘으면 종목 자체를 버린다.
+  {
+    let n = 0, mism = 0;
+    for (const dd of days) {
+      const k = jIdx.get(dd.day);
+      if (k == null) continue;
+      const r = dd.bars.at(-1).c / j.c[k];
+      n++;
+      if (r < 0.95 || r > 1.05) mism++;
+    }
+    if (n < 10 || mism / n > 0.05) { nSkipStock++; continue; }
+  }
 
   // 일봉에서 rsi2 신호일을 찾고, 그 **다음 거래일**에 진입 (라이브는 전일종가 기준 신호로 당일 매수)
   for (let i = 200; i < j.c.length - 1; i++) {
@@ -207,7 +224,8 @@ const avg = (a) => (a.length ? a.reduce((s, v) => s + v, 0) / a.length : 0);
 const med = (a) => { if (!a.length) return 0; const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
 const win = (a) => (a.length ? a.filter(v => v > 0).length / a.length * 100 : 0);
 
-console.log(`\nrsi2 신호 ${nSig.toLocaleString()}건 → 분봉·일봉 둘 다 있는 대조쌍 ${nPair.toLocaleString()}건`);
+console.log(`\n수정주가 불일치로 제외한 종목 ${nSkipStock}건 (분봉 종가 ÷ 일봉 종가가 1에서 벗어나는 날이 5% 초과)`);
+console.log(`rsi2 신호 ${nSig.toLocaleString()}건 → 분봉·일봉 둘 다 있는 대조쌍 ${nPair.toLocaleString()}건`);
 console.log(`진입 ${ENTRY_HM} · maxHold ${MAXHOLD}일 · 비용 ${COST}%p · 두 정책 동일 진입\n`);
 console.log('정책                                  평균      중앙     승률    표본');
 console.log('─'.repeat(70));
@@ -235,7 +253,9 @@ const pair = (a, b, na, nb) => {
 };
 console.log(`\n쌍별 비교 (표본 ${L.length})`);
 pair(L, V, 'L승', 'V1승');
+pair(L, Vl, 'L승', 'V3승');
 pair(V, Vc, 'V1승', 'V2승');
+pair(V, Vl, 'V1승', 'V3승');
 pair(Vc, Vl, 'V2승', 'V3승');
 
 // ── 꼬리 집중도: 평균차가 소수 극단값에서 오는지 (평균 -1.54 vs 중앙 +0.17 모순 규명) ──
