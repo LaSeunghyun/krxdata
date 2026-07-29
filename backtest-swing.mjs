@@ -495,6 +495,12 @@ const COMBO_CAPS_V2 = LIVE_COMBO_CAPS;
 // 슬롯 배분 프리셋 (--caps A|B|C): A=현행, B=추세 공격형, C=역추세 수비형
 const CAPS_PRESETS = {
   A: COMBO_CAPS_V2,
+  // ★ 2026-07-29 (--caps R): hi120 전면 차단 = rsi2 단독. 16기법 IS/OOS 비교에서 나온 가설.
+  //   근거: 양쪽 구간 플러스인 6개 전략이 **전부 평균회귀를 핵심으로** 갖고, 순수 추세추종 8개는
+  //   양쪽 플러스가 하나도 없다(hi120은 IS -12.1% → OOS +18.1%로 부호가 뒤집힘 = 국면 의존).
+  //   기본 파라미터 rsi2 단독은 IS +25.1% / OOS +40.8%로 튜닝 없이 양쪽 강세인데,
+  //   combo-v2는 IS +2.0%다 → hi120이 IS를 끌어내렸다는 가설.
+  R: { UP: { hi120: 0, rsi2: 99 }, NEUTRAL: { hi120: 0, rsi2: 99 }, DOWN: { hi120: 0, rsi2: 99 } },
   B: { UP: { hi120: 8, rsi2: 2 }, NEUTRAL: { hi120: 3, rsi2: 7 }, DOWN: { hi120: 0, rsi2: 5 } },
   C: { UP: { hi120: 5, rsi2: 5 }, NEUTRAL: { hi120: 2, rsi2: 8 }, DOWN: { hi120: 0, rsi2: 6 } },
   // C19: NEUTRAL hi120 무수익(전기간 +18k/46건) → rsi2로 재배분 — 기각 (Train 악화)
@@ -1335,8 +1341,10 @@ for (const comboKey of ['combo', 'combo-v2']) {
       t.ctx.sub === 'rsi2' ? `rsi2 × RSI ${t.ctx.rsi <= 5 ? '0~5(극단)' : '5~10'}` : `hi120 × 돌파폭 ${Number(t.ctx.breakoutPct) >= 3 ? '3%+(갭성)' : '0~3%'}`,
       `${t.ctx.sub} × 보유 ${t.hold <= 3 ? '1~3일' : t.hold <= 10 ? '4~10일' : '11일+'}`,
       // ★ 2026-07-29: rsi2 진입 시 익절목표까지 거리 버킷. 이 축이 결과를 가르면 랭킹 신호로 쓸 수 있다.
+      // ★ 1% 단위 — 손실 구간의 경계가 진짜 2%인지, 내가 2%로 끊어서 그렇게 보이는지 가른다.
+      //   임계를 내가 고른 것이 아니라 데이터가 정하는지 확인하는 절차다.
       ...(t.ctx.sub === 'rsi2' && t.ctx.maDist != null
-        ? [`rsi2 × 목표거리 ${Number(t.ctx.maDist) < 2 ? '0~2%(손익비 나쁨)' : Number(t.ctx.maDist) < 5 ? '2~5%' : Number(t.ctx.maDist) < 10 ? '5~10%' : '10%+(대폭락)'}`]
+        ? [`rsi2 × 거리 ${(() => { const d = Number(t.ctx.maDist); return d < 0.5 ? 'a 0.0~0.5%' : d < 1 ? 'b 0.5~1%' : d < 1.5 ? 'c 1~1.5%' : d < 2 ? 'd 1.5~2%' : d < 3 ? 'e 2~3%' : d < 4 ? 'f 3~4%' : d < 5 ? 'g 4~5%' : d < 7 ? 'h 5~7%' : 'i 7%+'; })()}`]
         : []),
     ]) {
       if (!groups.has(key)) groups.set(key, { n: 0, w: 0, pnl: 0 });
