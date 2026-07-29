@@ -817,11 +817,14 @@ const krx = candles.get('005930');
  *   SCEN_BY_DAY를 G1/G2/G3로 채우면 --scenpolicy 배선이 그대로 작동한다.
  */
 const GAP_AXIS = argv.includes('--gapaxis');
+// 경계는 결과 보기 전 ±0.5%로 고정했다(순환논증 방지). --gapbound는 **민감도 검사 전용**이다 —
+// 값을 바꿔가며 최적을 찾으려는 게 아니라 "0.5가 봉우리인지 아니면 어느 값이나 되는지"를 보려는 것.
+const GAP_BOUND = Number(argOf('--gapbound', 0.5));
 const gapBinOf = (i) => {
   if (i < 1) return null;
   const g = (krx.o[i] / krx.c[i - 1] - 1) * 100;
   if (!Number.isFinite(g)) return null;
-  return g < -0.5 ? 'G1' : g < 0.5 ? 'G2' : 'G3';   // 경계는 결과 보기 전 고정(순환논증 방지)
+  return g < -GAP_BOUND ? 'G1' : g < GAP_BOUND ? 'G2' : 'G3';
 };
 // 시나리오 태깅 사전계산 (진입일 기준·PIT — classify는 i까지의 데이터만 사용)
 if (SCENDUMP || SCENPOLICY) for (let i = 0; i < krx.d.length; i++) {

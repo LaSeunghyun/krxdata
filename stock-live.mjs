@@ -63,6 +63,52 @@ const dbQuery = async (sql) => {
 };
 function rsi2(c) { const i = c.length - 1; if (i < 2) return 50; let up = 0, dn = 0; for (let j = i - 1; j <= i; j++) { const ch = c[j] - c[j - 1]; if (ch > 0) up += ch; else dn -= ch; } return up + dn === 0 ? 50 : (up / (up + dn)) * 100; }
 
+/**
+ * ★ 2026-07-29 배포: 당일 시가 갭 조건부 청산폭 (사용자 제안 "장 30분 보고 전략 고르기")
+ *
+ * 갭 ↔ 30분수익률 상관 0.865(005930 1분봉 83일) → 갭이 30분의 대용. 일봉 시가로 868일 검증.
+ * 정책: G1 갭하락(<-0.5%) · G2 보통 → trail 10%/tp1 +10%/tp2 +20%. G3 갭상승(>+0.5%) → 현행 유지.
+ *
+ * 검증 (사전 선언 기준 전부 통과 — 07-29 45+변종 중 유일):
+ *   IS  MC Calmar 1.19→1.77(+49%) 시드 8승2패 · MDD 16.22→16.03
+ *   OOS MC Calmar 2.87→4.67(+63%) 시드 9승1패 · MDD 18.43→17.48
+ *   이웃값 trail8 실패(1.12) < trail10 최고 < trail12 통과(1.60) = 봉우리
+ *   구조   G1만 적용 실패(6승4패/5승5패) → G1+G2 둘 다 필요
+ *   워크포워드 9개 독립 창 6승2패1동 · CAGR 98.5→133.4% · MDD 동일
+ *   경계민감도 ±0.2/0.3/0.5/0.8 **전부 OOS 통과**(Calmar 4.31~4.73·시드 9~10승) = 경계에 안 끼워졌다
+ *
+ * 왜 갭상승만 현행인가: 전역 trail10은 07-29 아침에 기각됐다(OOS MDD 14.7→34.3%). 그 낙폭의 출처가
+ *   갭상승 날이었다(G3에서 IS -10,786 vs 기준 +2,152 — 이미 오른 걸 사니 되돌림을 다 맞는다).
+ *   G1은 +16,692/+70,339, G2는 +11,170/+27,361. 전역 적용이 둘을 섞어 상쇄했고 조건부로 살아났다.
+ *
+ * ★ 적용 범위: **hi120 청산에만** 작용한다(rsi2는 하드손절·MA3·만기라 트레일이 없다).
+ *   hi120 캡이 UP 6/NEUTRAL 0/DOWN 0이므로 **레짐 UP일 때만 효과**. 배포 시점 레짐 DOWN → 즉시 노출 0.
+ * ★ 의미론: 진입 시점 갭으로 결정해 **포지션 메타에 고정 저장**한다. 장중 스위칭이 아니다(검증 런과 동일).
+ *   meta 유실 시 `?? 전역값` 폴백으로 현행 동작에 안전하게 복귀한다.
+ */
+const GAP_BOUND = 0.5;
+let gapCache = { day: null, params: null };
+async function gapPolicyToday(today) {
+  if (gapCache.day === today) return gapCache.params;
+  const dflt = { trailPct: TRAIL_PCT, tp1Pct: PARTIAL_TP.tp1Pct, tp2Pct: PARTIAL_TP.tp2Pct, bin: null };
+  try {
+    const cd = (await getDailyCandles('005930', 3)).reverse();   // newest-first → reverse
+    if (!Array.isArray(cd) || cd.length < 2) return dflt;
+    const last = cd.at(-1), prev = cd.at(-2);
+    // 당일 봉이 아니면 판단 불가 → 현행 폴백 (추측 금지)
+    if (barDay(last.timestamp) !== today.replace(/-/g, '')) { gapCache = { day: today, params: dflt }; return dflt; }
+    const g = (Number(last.open) / Number(prev.close) - 1) * 100;
+    if (!Number.isFinite(g)) return dflt;
+    const bin = g < -GAP_BOUND ? 'G1' : g < GAP_BOUND ? 'G2' : 'G3';
+    const p = (bin === 'G3')
+      ? { ...dflt, bin, gapPct: g }
+      : { trailPct: 10, tp1Pct: 10, tp2Pct: 20, bin, gapPct: g };
+    gapCache = { day: today, params: p };
+    log(`갭정책 ${today} 시가갭 ${(g >= 0 ? '+' : '') + g.toFixed(2)}% → ${bin} · trail ${p.trailPct}% · tp ${p.tp1Pct}/${p.tp2Pct}%${bin === 'G3' ? ' (현행 유지)' : ' ★오버라이드'}`);
+    return p;
+  } catch (e) { log(`갭정책 조회 실패(현행 사용): ${String(e.message).slice(0, 60)}`); return dflt; }
+}
+
 async function regimeOf() {
   // 2026-07-23: HMA(30) 실험 롤백 — SMA20/60 복원. HMA는 slots=10 백테선 우위였으나 진짜 live 설정
   //   (slots=3·tp+4/8) MC 5시드 재검증서 SMA가 CAGR +2.9%p 우위(4/5)·MDD 동률 → HMA 검증 실패(설정 아티팩트).
@@ -370,9 +416,11 @@ async function judgeExitsAtClose(items, state, today) {
       //   hi120엔 백테상 하드손절이 없다(트레일이 진입 -TRAIL%에서 시작해 먼저 걸린다) → 넣지 않는다.
       const hiD = Math.max(Number(m.hi ?? closeToday), closeToday);
       m.hi = hiD;
-      if (PARTIAL_TP.enabled && !m.tp1 && ret >= PARTIAL_TP.tp1Pct) { why = `부분익절 tp1 +${PARTIAL_TP.tp1Pct}%`; frac = 0.5; }
-      else if (PARTIAL_TP.enabled && m.tp1 && !m.tp2 && ret >= PARTIAL_TP.tp2Pct) { why = `부분익절 tp2 +${PARTIAL_TP.tp2Pct}%`; frac = 0.5; }
-      else if (closeToday <= hiD * (1 - TRAIL_PCT / 100)) why = `트레일 -${TRAIL_PCT}%(고점 ${Math.round(hiD).toLocaleString()})`;
+      // ★ 갭정책: 진입 시점에 고정 저장된 값을 쓴다. 없으면 전역값 폴백(현행 동작).
+      const tp1P = m.tp1Pct ?? PARTIAL_TP.tp1Pct, tp2P = m.tp2Pct ?? PARTIAL_TP.tp2Pct, trP = m.trailPct ?? TRAIL_PCT;
+      if (PARTIAL_TP.enabled && !m.tp1 && ret >= tp1P) { why = `부분익절 tp1 +${tp1P}%`; frac = 0.5; }
+      else if (PARTIAL_TP.enabled && m.tp1 && !m.tp2 && ret >= tp2P) { why = `부분익절 tp2 +${tp2P}%`; frac = 0.5; }
+      else if (closeToday <= hiD * (1 - trP / 100)) why = `트레일 -${trP}%(고점 ${Math.round(hiD).toLocaleString()})`;
       else if (holdDays >= MAX_HOLD_H) why = `만기 ${MAX_HOLD_H}거래일`;
       extra = ` / 고점 ${Math.round(hiD).toLocaleString()}`;
     }
@@ -761,10 +809,16 @@ while (true) {
           //   지정가(lpx)는 크로싱 상한선일 뿐이고 실측으로 체결가가 0.47~0.56% 낮았다.
           //   lpx를 쓰면 (a) 손익이 과대 손실로 기록되고 (b) 트레일선·손절선이 실제보다 높게 걸린다.
           const fpx = filled.fillPx ?? lpx;
-          state.meta[pick.code] = { hi: fpx, entry: fpx, sub: pick.sub, boughtAt: now() };
+          // ★ 갭정책: 진입 시점 갭으로 청산폭을 결정해 **포지션에 고정 저장**한다(장중 스위칭 아님).
+          //   hi120에만 의미가 있지만(rsi2는 트레일 없음) 감사 목적으로 둘 다 기록한다.
+          const gp = await gapPolicyToday(today);
+          state.meta[pick.code] = {
+            hi: fpx, entry: fpx, sub: pick.sub, boughtAt: now(),
+            trailPct: gp.trailPct, tp1Pct: gp.tp1Pct, tp2Pct: gp.tp2Pct, gapBin: gp.bin ?? null,
+          };
           if (state.orderErr) delete state.orderErr[pick.code];   // 체결됐으면 거부 카운트 초기화
           const size = strong ? `집중 ${Math.round(CONVICTION_SIZING.strongFraction * 100)}%몰빵` : `분산 1/${remainingSlots}`;
-          log(`매수 ${pick.name}(${pick.code}) ${qty}주 @${fpx.toLocaleString()}${filled.fillPx ? '' : '(지정가)'} [${pick.sub}, 레짐 ${regime}, 확신도 ${pick.conviction.toFixed(1)}, ${size}${pick.rsi2 != null ? ', RSI2 ' + pick.rsi2.toFixed(1) : ', 돌파 ' + pick.breakout?.toFixed(1) + '%'}]`);
+          log(`매수 ${pick.name}(${pick.code}) ${qty}주 @${fpx.toLocaleString()}${filled.fillPx ? '' : '(지정가)'} [${pick.sub}${gp.bin ? '/' + gp.bin + ' trail' + gp.trailPct : ''}, 레짐 ${regime}, 확신도 ${pick.conviction.toFixed(1)}, ${size}${pick.rsi2 != null ? ', RSI2 ' + pick.rsi2.toFixed(1) : ', 돌파 ' + pick.breakout?.toFixed(1) + '%'}]`);
           recordTrade({ ts: now(), code: pick.code, name: pick.name, side: 'BUY', px: fpx, limitPx: lpx, fillSrc: filled.fillPx ? 'actual' : 'limit', qty, sub: pick.sub, regime, conviction: Number(pick.conviction.toFixed(1)), sizing: strong ? 'concentrate' : 'diversify' });
           // signalCache는 더 이상 여기서 비우지 않음(2026-07-24) — signalScanLoop가 독립적으로 계속 갱신하므로
           // 비우면 다음 백그라운드 스캔 완료까지 후보가 빈 채로 대기하게 돼 불필요하게 매수 기회를 놓침.
