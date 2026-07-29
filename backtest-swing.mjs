@@ -807,8 +807,25 @@ if (EXCLUDE) {
 }
 
 const krx = candles.get('005930');
+/**
+ * ★ 2026-07-29 (--gapaxis): 시나리오 축을 **당일 시가 갭**으로 교체 (사용자 제안 "장 30분 보고 판단").
+ *   근거: 005930 1분봉 83일에서 **갭 ↔ 30분수익률 상관 0.865** → 갭이 30분의 대용이고,
+ *   일봉 시가를 쓰면 표본이 84일 → 868일로 10배가 된다.
+ *   ★ 기존 5×4 시나리오 대비 결정적 이점: 3구간 전부 IS·OOS 양쪽에 100일+ 표본이 있다
+ *     (5×4 격자는 양쪽 검증가능이 6/20뿐이었다 — 두 축이 상관돼 비대각이 비어서).
+ *   갭은 **그날 시가에서 관측**되므로 진입 결정 전에 알 수 있다 = lookahead 없음.
+ *   SCEN_BY_DAY를 G1/G2/G3로 채우면 --scenpolicy 배선이 그대로 작동한다.
+ */
+const GAP_AXIS = argv.includes('--gapaxis');
+const gapBinOf = (i) => {
+  if (i < 1) return null;
+  const g = (krx.o[i] / krx.c[i - 1] - 1) * 100;
+  if (!Number.isFinite(g)) return null;
+  return g < -0.5 ? 'G1' : g < 0.5 ? 'G2' : 'G3';   // 경계는 결과 보기 전 고정(순환논증 방지)
+};
 // 시나리오 태깅 사전계산 (진입일 기준·PIT — classify는 i까지의 데이터만 사용)
 if (SCENDUMP || SCENPOLICY) for (let i = 0; i < krx.d.length; i++) {
+  if (GAP_AXIS) { SCEN_BY_DAY.set(krx.d[i], gapBinOf(i)); continue; }
   const s = classifyScenario(krx, i);
   SCEN_BY_DAY.set(krx.d[i], s ? s.key : null);
 }
