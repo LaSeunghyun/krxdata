@@ -105,13 +105,24 @@ function ma5At(c, i) { let s = 0, n = Math.min(5, i + 1); for (let k = i - n + 1
  *   두 데이터셋의 거래일 집합이 다르면(한쪽에 빠진 날) 인덱스가 어긋나 전혀 다른 날짜의 시가를
  *   집행가로 썼다 → 갭 -212%p 같은 실재 불가능한 값이 나왔다. **날짜 문자열로 정렬**한다.
  */
-function exitValidated(days, si, entry, j, jIdx, exec) {
+function exitValidated(days, si, bi, entry, j, jIdx, exec, opts = {}) {
+  const { istop = false, skipEntry = false, openHM = 0 } = opts;
   for (let d = 0; d < MAXHOLD; d++) {
     const di = si + d;
     if (di >= days.length) return null;
     const cdi = jIdx.get(days[di].day);                    // ★ 날짜로 조회
     if (cdi == null || cdi < 5) return null;               // 양쪽에 다 있는 날만
     const bars = days[di].bars;
+
+    // ★ 선택지 ②: 장중 실시간 하드손절 -7%. 종가 판정과 별개로 분 단위 감시.
+    //   "백테보다 공격적으로 판정하면 망가진다"가 트레일에서 확인됐으니 손절선에서도 측정한다.
+    if (istop) {
+      const stop = entry * (1 - HARD / 100);
+      for (const b of bars) {
+        if (d === 0 && b.hm <= bars[bi]?.hm) continue;      // 진입 분 이전 제외
+        if (b.l <= stop) return { ret: (Math.min(stop, b.o) / entry - 1) * 100 - COST, day: d, why: 'hard_intra' };
+      }
+    }
 
     if (exec === 'limit') {
       // 지정가: 목표가 MA5(전일까지 종가 — 장중 사용이므로 당일 종가 금지) / 손절가 진입×(1-7%)
@@ -126,6 +137,10 @@ function exitValidated(days, si, entry, j, jIdx, exec) {
       continue;
     }
 
+    // ★ 선택지 ③: 진입일 종가 판정을 건너뛸지. 백테는 종가매수라 진입일 판정이 없다(청산루프가 매수루프보다 먼저).
+    //   라이브는 장중 매수라 같은 날 15:40에 판정할 수 있다 — 어느 쪽이 나은지 측정한다.
+    if (skipEntry && d === 0) continue;
+
     const close = j.c[cdi];
     const hit = close <= entry * (1 - HARD / 100) ? 'hard'
       : close > ma5At(j.c, cdi) ? 'ma5'
@@ -135,7 +150,13 @@ function exitValidated(days, si, entry, j, jIdx, exec) {
       const nxt = days[di + 1];                            // nextopen — 분봉 기준 바로 다음 거래일
       if (!nxt) return null;                               // 다음 거래일 분봉이 없으면 판정 불가(추정 금지)
       if (jIdx.get(nxt.day) !== cdi + 1) return null;      // ★ 일봉에서도 연속한 날인지 확인
-      return { ret: (nxt.bars[0].o / entry - 1) * 100 - COST, day: d, why: hit };
+      // ★ 2026-07-29 사용자 지적: "익일 개장"은 08시(NXT 프리마켓)일 수도 있다.
+      //   openHM=0 → 그날 첫 봉(=08시). openHM=900 → 09시 이후 첫 봉(KRX 개장).
+      //   실측: 일봉 시가는 88.9%가 08시 첫봉과 일치 → 일봉 데이터가 KRX+NXT 통합이다.
+      const eb = openHM > 0 ? nxt.bars.find(b => b.hm >= openHM) : nxt.bars[0];
+      if (!eb) return null;
+      execVol.push(eb.v > 0 ? 1 : 0);
+      return { ret: (eb.o / entry - 1) * 100 - COST, day: d, why: hit };
     }
   }
   return null;
@@ -143,7 +164,9 @@ function exitValidated(days, si, entry, j, jIdx, exec) {
 
 // ── 종목 순회 ────────────────────────────────────────────────────────────────
 const files = readdirSync(DIR).filter(f => f.endsWith('.jsonl'));
-const L = [], V = [], Vc = [], Vl = [];
+const L = [], V = [], Vc = [], Vl = [], Vs = [], Vk = [], V9 = [];
+const whyVs = {};
+let execVol = [];
 let nSig = 0, nPair = 0, sameDayL = 0, nSkipStock = 0;
 const whyL = {}, whyV = {}, whyVl = {};
 const gapNextOpen = [];      // 익일시가 − 판정종가 (진입가 대비 %p) — 갭 손익 실측
@@ -163,7 +186,7 @@ for (const f of files) {
     const d = dayOf(t[i]);
     let a = dmap.get(d);
     if (!a) dmap.set(d, a = []);
-    a.push({ hm: hmOf(t[i]), o: op[i], h: h[i], l: l[i], c: c[i] });
+    a.push({ hm: hmOf(t[i]), o: op[i], h: h[i], l: l[i], c: c[i], v: (o.v?.[i] ?? 0) });
   }
   const days = [...dmap.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([day, bars]) => ({ day, bars }));
   const dayIdx = new Map(days.map((d, i) => [d.day, i]));
@@ -206,12 +229,16 @@ for (const f of files) {
     if (!(entry > 0)) continue;
 
     const rl = exitLive(days, si, bi, entry);
-    const rv = exitValidated(days, si, entry, j, jIdx, 'nextopen');
-    const rvc = exitValidated(days, si, entry, j, jIdx, 'close');
-    const rvl = exitValidated(days, si, entry, j, jIdx, 'limit');
-    if (!rl || !rv || !rvc || !rvl) continue;
+    const rv = exitValidated(days, si, bi, entry, j, jIdx, 'nextopen');
+    const rvc = exitValidated(days, si, bi, entry, j, jIdx, 'close');
+    const rvl = exitValidated(days, si, bi, entry, j, jIdx, 'limit');
+    const rvs = exitValidated(days, si, bi, entry, j, jIdx, 'nextopen', { istop: true });
+    const rvk = exitValidated(days, si, bi, entry, j, jIdx, 'nextopen', { skipEntry: true });
+    const rv9 = exitValidated(days, si, bi, entry, j, jIdx, 'nextopen', { openHM: 900 });
+    if (!rl || !rv || !rvc || !rvl || !rvs || !rvk || !rv9) continue;
     nPair++;
-    L.push(rl.ret); V.push(rv.ret); Vc.push(rvc.ret); Vl.push(rvl.ret);
+    L.push(rl.ret); V.push(rv.ret); Vc.push(rvc.ret); Vl.push(rvl.ret); Vs.push(rvs.ret); Vk.push(rvk.ret); V9.push(rv9.ret);
+    whyVs[rvs.why] = (whyVs[rvs.why] ?? 0) + 1;
     gapNextOpen.push(rv.ret - rvc.ret);      // 익일시가 집행이 종가 집행보다 얼마나 유리/불리했나
     if (rl.day === 0) sameDayL++;
     whyL[rl.why] = (whyL[rl.why] ?? 0) + 1;
@@ -231,6 +258,9 @@ console.log('정책                                  평균      중앙     승�
 console.log('─'.repeat(70));
 const row = (n, a) => `${n.padEnd(34)} ${((avg(a) >= 0 ? '+' : '') + avg(a).toFixed(2) + '%').padStart(8)} ${((med(a) >= 0 ? '+' : '') + med(a).toFixed(2) + '%').padStart(8)} ${(win(a).toFixed(1) + '%').padStart(7)}  ${a.length}`;
 console.log(row('V1 판정=종가 · 집행=익일시가 (백테)', V));
+console.log(row('V1@09 집행=익일 09시(KRX 개장)', V9));
+ console.log(row('V1s V1 + 장중 실시간 -7% 손절', Vs));
+console.log(row('V1k V1 − 진입일 판정 생략', Vk));
 console.log(row('V2 판정=종가 · 집행=당일종가', Vc));
 console.log(row('V3 지정가 (목표 MA5 / 손절 -7%)', Vl));
 console.log(row('L  라이브 (트레일6+익절6/12)', L));
@@ -253,10 +283,12 @@ const pair = (a, b, na, nb) => {
 };
 console.log(`\n쌍별 비교 (표본 ${L.length})`);
 pair(L, V, 'L승', 'V1승');
-pair(L, Vl, 'L승', 'V3승');
+pair(V, V9, 'V1@08승', 'V1@09승');
+  pair(V, Vs, 'V1승', 'V1s승');
+pair(V, Vk, 'V1승', 'V1k승');
 pair(V, Vc, 'V1승', 'V2승');
 pair(V, Vl, 'V1승', 'V3승');
-pair(Vc, Vl, 'V2승', 'V3승');
+console.log(`\nV1s 청산사유: ${Object.entries(whyVs).map(([k, v]) => k + ' ' + v).join(' · ')}`);
 
 // ── 꼬리 집중도: 평균차가 소수 극단값에서 오는지 (평균 -1.54 vs 중앙 +0.17 모순 규명) ──
 const g = [...gapNextOpen].sort((a, b) => a - b);      // 오름차순: 앞쪽 = 익일시가가 크게 불리했던 건

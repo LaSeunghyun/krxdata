@@ -28,6 +28,7 @@ import { volatilityThrottleMultiplier } from './volatility-throttle.mjs';
 import { absoluteTrendOn, hi120RegimeAllows, marketSeriesIndex, selectMomentumLeaders } from './research-strategies.mjs';
 import { recordDailyEquity, serializeResearchBook } from './research-backtest-output.mjs';
 import { ensureCandlesFresh } from './ensure-candles-fresh.mjs';
+import { classify as classifyScenario } from './scenario-def.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: join(__dirname, '.env') });
@@ -112,6 +113,16 @@ for (const [flag, key] of [['--bbperiod', 'period'], ['--bbmult', 'mult']]) {
   if (v != null) { STRATEGIES['hma-turn'].period = Number(v); STRATEGIES['hma-dip'].period = Number(v); }
 }
 const DUMP = argOf('--dump', null);
+// ★ 2026-07-29 (--scendump FILE): 진입일의 시장 시나리오(scenario-def.mjs 5×4)를 거래별로 태깅해
+//   시나리오별 집계가 가능한 per-trade JSON을 출력. 구성 1회 실행으로 20 시나리오 결과가 한꺼번에 나온다.
+const SCENDUMP = argOf('--scendump', null);
+// ★ 2026-07-29 (--scenpolicy FILE): 시나리오 조건부 파라미터 오버라이드 (scenario-policy.mjs 검증용).
+//   FILE = { "T3V1": { "trailPct": 10 }, "T2V4": { "rsiVolMin": 1.25 }, ... }
+//   의미론(측정과 동일해야 함): rsiVolMin은 진입일 필터, trailPct는 **진입일 시나리오로 포지션에 고정**
+//   (tp1/tp2 부분익절 레벨 = trailPct×tp1R/tp2R 도 함께 스케일 — trail 스윕 런과 동일).
+const SCENPOLICY_FILE = argOf('--scenpolicy', null);
+const SCENPOLICY = SCENPOLICY_FILE ? JSON.parse(readFileSync(SCENPOLICY_FILE, 'utf8')) : null;
+const SCEN_BY_DAY = new Map(); // day(YYYYMMDD) → 시나리오 키(T?V?) 또는 null. krx 로드 후 채움.
 const COOLDOWN = Number(argOf('--cooldown', 0));
 const DYNSLOT = Number(argOf('--dynslot', 0)); // MC3 I11: 포지션당 목표 예산(원), 0=비활성
 // 레짐 노출 스로틀(2026-07-22 사용자 가설): 레짐별 총 투자비율. 나머지는 현금 보유. "--regimeexp 1.0,0.7,0.5"(UP,NEUTRAL,DOWN). null=현행(풀투자). live-parity 진입에만 적용.
@@ -631,7 +642,7 @@ function buy(book, day, code, price, budget, meta = {}) {
   const qty = Math.floor(Math.min(budget, book.cash) / unitCost);
   if (qty < 1) return false;
   book.cash -= calcBuyCashImpact({ fill, qty, feeBps: FEE_BPS });
-  book.positions[code] = { qty, entry: fill, entryDay: day, hi: fill, holdDays: 0, ...meta };
+  book.positions[code] = { qty, entry: fill, entryDay: day, hi: fill, holdDays: 0, scen: SCEN_BY_DAY.get(day) ?? null, ...meta };
   return true;
 }
 // C18 (--cooldown N): stop_loss 청산 종목 N영업일 재진입 금지
@@ -643,7 +654,7 @@ function sell(book, day, code, price, reason, qtyArg) {
   const fill = tickDn(price);
   const pnl = netPnl(p.entry, fill, qty);
   book.cash += calcSellCashImpact({ fill, qty, feeBps: FEE_BPS, taxBps: getSellTaxBps('KOSPI') });
-  book.trades.push({ day: fmtDay(day), code, entry: p.entry, exit: fill, qty, pnl, hold: p.holdDays, reason, ctx: p.ctx });
+  book.trades.push({ day: fmtDay(day), code, entry: p.entry, exit: fill, qty, pnl, hold: p.holdDays, reason, ctx: p.ctx, scen: p.scen ?? null, sub: p.sub ?? null, eday: p.entryDay });
   if (reason === 'stop_loss' && COOLDOWN > 0) (book.cool ??= {})[code] = CUR_DI + COOLDOWN;
   p.qty -= qty;
   if (p.qty < 1) delete book.positions[code];
@@ -796,6 +807,11 @@ if (EXCLUDE) {
 }
 
 const krx = candles.get('005930');
+// 시나리오 태깅 사전계산 (진입일 기준·PIT — classify는 i까지의 데이터만 사용)
+if (SCENDUMP || SCENPOLICY) for (let i = 0; i < krx.d.length; i++) {
+  const s = classifyScenario(krx, i);
+  SCEN_BY_DAY.set(krx.d[i], s ? s.key : null);
+}
 const tradingDays = krx.d.filter(d => d >= FROM && d <= TO);
 console.log(`영업일 ${tradingDays.length}일 | 풀 ${candles.size}종목 (※ 현재 상장 기준 — 생존 편향 존재)`);
 
@@ -972,6 +988,8 @@ for (let di = 0; di < tradingDays.length; di++) {
       }
     } else if (k === 'combo' || k === 'combo-v2') {
       const regime = marketRegime(day);
+      // --scenpolicy: 오늘 시나리오의 파라미터 오버라이드 (없으면 null → 현행 기본값 그대로)
+      const scenPol = SCENPOLICY ? (SCENPOLICY[SCEN_BY_DAY.get(day)] ?? null) : null;
       const caps = (cfg.v2 ? (CAPS_PRESETS[CAPS_SEL] ?? COMBO_CAPS_V2) : COMBO_CAPS)[regime];
       // H9 (--entryopen): 전일 돌파 시그널을 당일 시가에 진입
       if (cfg.entryOpen && book.pendingBuys?.length) {
@@ -994,11 +1012,11 @@ for (let di = 0; di < tradingDays.length; di++) {
           const eiB = indexOfDate(cd, p.entryDay);
           p.bands = eiB != null ? atrExitBands(cd, eiB, ATR_EXIT) : null;
         }
-        const trailP = p.bands?.trail ?? cfg.trailPct;   // 트레일 폭
+        const trailP = p.bands?.trail ?? p.scenTrail ?? cfg.trailPct;   // 트레일 폭 (scenTrail = 진입일 시나리오 고정 오버라이드)
         const stopP = p.bands?.stop ?? cfg.stopPct;      // 하드손절 폭
-        // 부분익절 임계: ATR 모드면 절대% 사용, 아니면 기존 trailPct×tp1R/tp2R
-        const tp1Lv = p.bands ? p.bands.tp1 : cfg.trailPct * cfg.tp1R;
-        const tp2Lv = p.bands ? p.bands.tp2 : cfg.trailPct * cfg.tp2R;
+        // 부분익절 임계: ATR 모드면 절대% 사용, 아니면 기존 trailPct×tp1R/tp2R (scenTrail 시 함께 스케일 — trail 스윕 런과 동일 의미론)
+        const tp1Lv = p.bands ? p.bands.tp1 : (p.scenTrail ?? cfg.trailPct) * cfg.tp1R;
+        const tp2Lv = p.bands ? p.bands.tp2 : (p.scenTrail ?? cfg.trailPct) * cfg.tp2R;
         // 상대손절(--relstop N): 진입후 시장(005930) 대비 낙폭이 N배 이상이면 매도(상대약세 컷). 시장 하락구간·진입당일 제외.
         if (RELSTOP > 0 && !p.exitAtOpen && p.holdDays >= 1 && krx) {
           const ei = indexOfDate(krx, p.entryDay), ci = indexOfDate(krx, day);
@@ -1134,7 +1152,7 @@ for (let di = 0; di < tradingDays.length; di++) {
           rsiMax: cfg.rsiMax,
           minBreakout: cfg.minBreakout,
           allowUpRsi: !NO_UP_RSI,
-          rsiVolMin: cfg.rsiVol > 0 ? cfg.rsiVol : 0,      // --rsivol N: rsi2 매수 시 거래량비 ≥ N 요구(투매 확인)
+          rsiVolMin: scenPol?.rsiVolMin ?? (cfg.rsiVol > 0 ? cfg.rsiVol : 0), // --rsivol N: rsi2 매수 시 거래량비 ≥ N 요구(투매 확인). scenpolicy가 시나리오 조건부 오버라이드.
           closeLocMin: cfg.closeLoc > 0 ? cfg.closeLoc : 0, // --closeloc N: rsi2 매수 시 종가위치 ≥ N 요구(강한 마감)
           volSurge: VOLSURGE,                               // --volsurge "volMin,dayRetMin,closeLocMin,cap": 거래량급증 진입 sub(검증용)
           regimeOf: SELF_REGIME ? (row) => row.selfRegime : null,  // --selfregime: 종목별 레짐
@@ -1244,7 +1262,7 @@ for (let di = 0; di < tradingDays.length; di++) {
             //   "이 값이 결과를 예측하는가"(= 랭킹 신호로 쓸 수 있는가)를 본다. 필터 통과 여부와 별개 질문.
             : { sub: 'rsi2', regime, rsi: candidate.rsi.toFixed(0), conviction: candidate.conviction.toFixed(1),
               maDist: (vci != null && vci >= (cfg.rsiMa || 5)) ? ((maAt(vcd.c, vci, cfg.rsiMa || 5) / vcd.c[vci] - 1) * 100).toFixed(1) : null };
-          buy(book, day, candidate.code, candidate.price, bgt, { sub: candidate.sub, ctx, breakLv: candidate.breakLv });
+          buy(book, day, candidate.code, candidate.price, bgt, { sub: candidate.sub, ctx, breakLv: candidate.breakLv, ...(scenPol?.trailPct > 0 ? { scenTrail: scenPol.trailPct } : {}) });
         }
       } else {
       // hi120 서브 진입 (모멘텀 유니버스 신고가 돌파)
@@ -1553,4 +1571,25 @@ if (DUMP) {
     books: out,
   }));
   console.log(`덤프 저장: ${DUMP}`);
+}
+
+// 시나리오 태깅 덤프 (--scendump path) — 진입일 시나리오별 거래 원장 (집계는 분석 스크립트에서)
+if (SCENDUMP) {
+  const { writeFileSync } = await import('fs');
+  const trades = {};
+  for (const [k] of ACTIVE) {
+    trades[k] = books[k].trades.map(t => ({
+      eday: t.eday ?? null, day: t.day, code: t.code, scen: t.scen, sub: t.sub,
+      reason: t.reason, entry: t.entry, exit: t.exit, qty: t.qty, pnl: t.pnl, hold: t.hold,
+    }));
+  }
+  writeFileSync(SCENDUMP, JSON.stringify({
+    from: FROM, to: TO, seed: MC_SEED, subsample: SUBSAMPLE,
+    argv: argv.join(' '),
+    params: Object.fromEntries(ACTIVE.map(([key, cfg]) => [key, cfg])),
+    finalCash: Object.fromEntries(ACTIVE.map(([key]) => [key, books[key].cash])),
+    maxDD: Object.fromEntries(ACTIVE.map(([key]) => [key, books[key].maxDD])),
+    trades,
+  }));
+  console.log(`시나리오 덤프 저장: ${SCENDUMP}`);
 }
