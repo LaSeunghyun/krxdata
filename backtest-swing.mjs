@@ -143,6 +143,32 @@ const RSI_MIN_DIST = Number(argOf('--rsimindist', 0));
 // --atrexit K: 청산폭(트레일·하드손절·부분익절)을 진입시점 ATR(14)%에 비례. 0=고정폭(현행). 상세는 atrExitBands 주석.
 const ATR_EXIT = Number(argOf('--atrexit', 0));
 /**
+ * ★ 2026-07-29 IC 연구 결과 (--rsiatrmax N): **rsi2 진입 시 ATR% 상한**.
+ *
+ * 근거(research-ic.mjs, 횡단면 예측력 2,576종목 868일):
+ *   atrPct 20일 IC **-0.1744 (t=-39.3)** · vol20 IC -0.1702 (t=-41.7) — 2위권을 두 배 앞선 1위.
+ *   20일 십분위 스프레드 -3.58~-3.93% · **4년 부호 전부 일관**.
+ *   저변동성 프리미엄은 전세계 주식에서 가장 견고한 인자 중 하나이고 여기서도 그렇게 나왔다.
+ *
+ * 왜 지금 전략에 없나: rsi2는 폭락 종목을 사고 그건 정의상 고변동성이다 → 가장 강한 인자를 거스른다.
+ * 왜 이 축이 특별한가: 확신도(폭락장 전원 5.0)·RSI2(전원 0.0)는 **포화돼 서열이 안 되는데**
+ *   atrPct는 후보마다 연속적으로 다르다 = 오늘 로테이션·사이징이 막혔던 "랭킹 신호 없음"의 해답 후보.
+ * ★ 생존편향이 이번엔 유리한 방향: 폐지 종목은 대부분 고변동성 → 빠져 있으면 고변동성 십분위가
+ *   실제보다 좋게 나온다 → **측정된 저변동성 프리미엄은 과소평가**다.
+ *
+ * N=0(기본)이면 필터 없음(현행). N>0이면 ATR(14)% <= N 인 후보만 매수.
+ */
+const RSI_ATR_MAX = Number(argOf('--rsiatrmax', 0));
+/**
+ * ★ 2026-07-29 (--rsiatrrank 1): ATR을 **하드 필터가 아니라 순위**로 쓴다.
+ *   오늘 두 번 확인된 교훈: volRatio(IC +0.035)·atrPct(IC -0.174) 둘 다 **예측력은 있는데
+ *   하드컷으로 쓰면 갈린다.** 원인은 공통 — 좁은 후보 풀을 더 깎아 분산을 파괴하기 때문이다.
+ *   순위로 쓰면 **후보 수는 그대로고 어느 종목이 슬롯을 차지하는지만 바뀐다.**
+ *   적용 지점: 확신도 동률(폭락장에서 rsi2 전원 5.0으로 포화 → 지금은 순서가 사실상 임의) 내
+ *   ATR% 오름차순. 저변동성 프리미엄(IC t=-39.3, 4년 일관)을 분산 손실 없이 쓰는 형태.
+ */
+const RSI_ATR_RANK = argv.includes('--rsiatrrank');
+/**
  * ★ 2026-07-29 (--rsiflow N --rsiflowdays D): **rsi2 진입에 수급 조건**을 요구한다.
  *   지금 --flowout/--flowsell은 hi120 전용이라 rsi2엔 수급 조건이 아예 없다.
  *   논리: rsi2는 폭락 종목을 사고 논리가 평균회귀인데, 기관·외국인이 아직 순매도 중이면
@@ -1113,11 +1139,35 @@ for (let di = 0; di < tradingDays.length; di++) {
           volSurge: VOLSURGE,                               // --volsurge "volMin,dayRetMin,closeLocMin,cap": 거래량급증 진입 sub(검증용)
           regimeOf: SELF_REGIME ? (row) => row.selfRegime : null,  // --selfregime: 종목별 레짐
         });
+        // ★ --rsiatrrank: 확신도 동률 내 ATR 오름차순 재정렬 (풀을 깎지 않고 순서만 바꾼다)
+        if (RSI_ATR_RANK) {
+          const atrOf = new Map();
+          for (const c of candidates) {
+            if (c.sub !== 'rsi2') continue;
+            const cdR = candles.get(c.code); const iR = cdR ? indexOfDate(cdR, day) : null;
+            atrOf.set(c.code, iR != null ? (atrPctAt(cdR, iR) ?? 99) : 99);
+          }
+          candidates.sort((a, b) => {
+            const cv = b.conviction - a.conviction;
+            if (cv) return cv;
+            if (a.sub !== b.sub) return a.sub === 'hi120' ? -1 : 1;
+            if (a.sub === 'rsi2') return (atrOf.get(a.code) ?? 99) - (atrOf.get(b.code) ?? 99);
+            return 0;
+          });
+        }
         for (const candidate of candidates) {
           if (book.positions[candidate.code]) continue;
           const cReg = SELF_REGIME ? (candidate.selfRegime ?? regime) : regime; // 스킵 필터도 같은 기준으로
           if (SKIP_NEUTRAL_RSI && cReg === 'NEUTRAL' && candidate.sub === 'rsi2') continue; // ICE#1: NEUTRAL rsi2 스킵 테스트
           if (SKIP_DOWN_RSI && cReg === 'DOWN' && candidate.sub === 'rsi2') continue;
+          // ★ --rsiatrmax N: rsi2 진입 시 ATR(14)% 상한 (저변동성 프리미엄, IC t=-39.3)
+          if (RSI_ATR_MAX > 0 && candidate.sub === 'rsi2') {
+            const cdA = candles.get(candidate.code);
+            const iA = cdA ? indexOfDate(cdA, day) : null;
+            if (iA == null) continue;
+            const a = atrPctAt(cdA, iA);
+            if (a == null || a > RSI_ATR_MAX) continue;
+          }
           // ★ 2026-07-29 (--cooldown N): 손절 후 N거래일 재진입 금지. **live-parity 경로엔 이 검사가 없었다**
           //   (sell()에서 book.cool은 설정되는데 비파리티 rsi2 경로에서만 검사됨) → 플래그가 무동작이었다.
           //   근거: 07-28~29 실거래 청산 16건 중 손실의 53%가 두산퓨얼셀 단일 종목 4회 휩소.
