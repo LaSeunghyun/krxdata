@@ -31,6 +31,11 @@ const TRAIL_PCT = 6, HARD_STOP_PCT = 7;   // 승자 태우기: 고점 -6% 트레
 const RSI_MAX = 10, MIN_TURNOVER = 3e9, MIN_PRICE = 2_000;
 // rsi2 만기 (백테 combo-v2 maxHoldR과 동일). 종가판정에서 holdDays >= 이 값이면 청산 예약.
 const MAX_HOLD_R = 5;
+// ★ rsi2 익절 이동평균 일수 = 백테 combo-v2 `rsiMa: 3`. **MA3이지 MA5가 아니다.**
+//   2026-07-29 최초 배포에서 MA5로 잘못 넣었다. 하락 계열에서 MA5는 오래된 고가를 물고 있어
+//   현재가보다 12~14% 위에 떠 버리고 익절이 사실상 발동하지 않는다(실측: 5종목 전원).
+//   10시드 MC(1승9패)·이웃값 검사는 전부 rsiMa=3으로 돌린 결과이므로 라이브도 3이어야 한다.
+const RSI_MA_N = 3;
 const RSI2_JUDGE_HHMM = 1535;   // 종가 판정 시각 — KRX 종가 동시호가(15:20~15:30) 종료 후
 // 동일 종목 매수가 4xx로 연속 거부되면 당일 후보에서 제외 (07-28 프리마켓 31회 낭비 방지). 매도엔 미적용.
 const ORDER_ERR_MAX = 3;
@@ -300,10 +305,10 @@ async function judgeRsi2AtClose(items, state, today) {
     const livePx = Number(it.lastPrice);
     const closeToday = hasToday ? Number(newest.close) : livePx;
     if (!(closeToday > 0)) continue;
-    // MA5 = 당일 종가 + 직전 4일 종가. hasToday면 최신봉이 당일이므로 그 앞 4개를 쓴다.
+    // MA(RSI_MA_N) = 당일 종가 + 직전 (N-1)일 종가. hasToday면 최신봉이 당일이므로 그 앞을 쓴다.
     const prior = (hasToday ? cd.slice(0, -1) : cd).map(b => Number(b.close)).filter(v => v > 0);
-    if (prior.length < 4) continue;
-    const ma5 = (closeToday + prior.slice(-4).reduce((a, b) => a + b, 0)) / 5;
+    if (prior.length < RSI_MA_N - 1) continue;
+    const ma = (closeToday + prior.slice(-(RSI_MA_N - 1)).reduce((a, b) => a + b, 0)) / RSI_MA_N;
 
     const entry = Number(m.entry ?? it.averagePurchasePrice);
     const bDay = String(m.boughtAt ?? '').slice(0, 10).replace(/-/g, '');
@@ -313,10 +318,10 @@ async function judgeRsi2AtClose(items, state, today) {
     const ret = (closeToday / entry - 1) * 100;
     let why = null;
     if (closeToday <= entry * (1 - HARD_STOP_PCT / 100)) why = `손절 -${HARD_STOP_PCT}%`;
-    else if (closeToday > ma5) why = 'MA5회귀 익절';
+    else if (closeToday > ma) why = `MA${RSI_MA_N}회귀 익절`;
     else if (holdDays >= MAX_HOLD_R) why = `만기 ${MAX_HOLD_R}거래일`;
     if (why) { m.exitAt = why; m.exitDay = today; }
-    log(`종가판정 ${it.name}(${it.symbol}) 종가 ${closeToday.toLocaleString()}${hasToday ? '(일봉)' : '(현재가대체)'} / MA5 ${Math.round(ma5).toLocaleString()} / ${ret.toFixed(1)}% / ${holdDays}일차 → ${why ? '★예약 ' + why : '보유 유지'}`);
+    log(`종가판정 ${it.name}(${it.symbol}) 종가 ${closeToday.toLocaleString()}${hasToday ? '(일봉)' : '(현재가대체)'} / MA${RSI_MA_N} ${Math.round(ma).toLocaleString()} / ${ret.toFixed(1)}% / ${holdDays}일차 → ${why ? '★예약 ' + why : '보유 유지'}`);
   }
   writeFileSync(STATE, JSON.stringify(state, null, 1));
 }
