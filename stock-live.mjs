@@ -29,6 +29,8 @@ const argv = process.argv.slice(2);
 const POLL_MS = 30_000;
 const TRAIL_PCT = 6, HARD_STOP_PCT = 7;   // 승자 태우기: 고점 -6% 트레일(2026-07-24 uni420 재조정) / 진입 -7% 하드손절
 const RSI_MAX = 10, MIN_TURNOVER = 3e9, MIN_PRICE = 2_000;
+// 동일 종목 매수가 4xx로 연속 거부되면 당일 후보에서 제외 (07-28 프리마켓 31회 낭비 방지). 매도엔 미적용.
+const ORDER_ERR_MAX = 3;
 const STATE = join(__dirname, 'stock-live-state.json');
 const JOURNAL = join(__dirname, 'stock-live-journal.json');
 const LOG = join(__dirname, 'stock-live-log.txt');
@@ -371,6 +373,17 @@ while (true) {
     }
     if (purged) log(`meta 고아 정리 ${purged}건 (미보유 3사이클 연속) → 남은 ${Object.keys(state.meta).length}건`);
   }
+  // 당일 재진입 금지 목록은 날이 바뀌면 정리 (파일 무한 증가 방지)
+  if (state.soldToday) {
+    for (const [c, d] of Object.entries(state.soldToday)) if (d !== today) delete state.soldToday[c];
+  }
+  // ★ 주문거부 백오프 목록도 날이 바뀌면 정리 (2026-07-29)
+  //   근거: 07-28 08:14~08:32 NXT 프리마켓에서 322000 매수를 35초 간격 31회 던져 31회 전부 422 거부.
+  //   현금 609만·슬롯 0/5로 실탄이 충분했는데 18분을 같은 거부에 소모하고 프리마켓 매수 0건으로 끝났다.
+  //   거래소가 거부하는 주문은 재시도로 뚫리지 않는다 → 동일 종목 N회 연속 거부면 당일 후보에서 제외.
+  if (state.orderErr) {
+    for (const [c, v] of Object.entries(state.orderErr)) if (v?.day !== today) delete state.orderErr[c];
+  }
   try { await emitSellSignals(holdings, readBotExclude(), today); } catch (e) { log(`매도사인 오류: ${String(e.message).slice(0, 80)}`); } // 수동픽 목표/손절 도달 시 텔레그램 매도사인(자동매도 X)
   try { const ne = await processOrderQueue(seq); if (ne > 0) cash = Number((await getBuyingPower(seq, { currency: 'KRW' }))?.cashBuyingPower ?? cash); } catch (e) { log(`주문큐 오류: ${String(e.message).slice(0, 80)}`); } // 큐 집행 후 현금 재조회(M3)
 
@@ -419,6 +432,7 @@ while (true) {
           log(`매도 ${it.name}(${it.symbol}) ${qty}주 @${lpx.toLocaleString()} (${rsn}, ${ret.toFixed(1)}%)`);
           recordTrade({ ts: now(), code: it.symbol, name: it.name, side: 'SELL', px: lpx, entry, ret: Number(ret.toFixed(1)), reason: rsn });
           delete state.meta[it.symbol];
+          (state.soldToday ??= {})[it.symbol] = today;   // 당일 재진입 금지
           writeFileSync(STATE, JSON.stringify(state, null, 1));
           continue;
         }
@@ -479,8 +493,11 @@ while (true) {
           log(`매도 ${it.name}(${it.symbol}) ${qty}주 @${lpx.toLocaleString()} (${reason})`);
           recordTrade({ ts: now(), code: it.symbol, name: it.name, side: 'SELL', px: lpx, entry, ret: Number(ret.toFixed(1)), reason, forecast: harvest ? fc : undefined });
           delete state.meta[it.symbol];
+          (state.soldToday ??= {})[it.symbol] = today;   // 당일 재진입 금지(아래 진입 루프에서 스킵)
         }
-      } catch (e) { log(`매도 오류 ${it.symbol}: ${e.message.slice(0, 80)}`); }
+        // ★ 매도는 백오프를 걸지 않는다 (2026-07-29). 청산을 막으면 손실이 무한정 열린다 —
+        //   매수와 달리 재시도 낭비보다 미청산 리스크가 크다. 오류 전문만 300자로 늘린다.
+      } catch (e) { log(`매도 오류 ${it.name}(${it.symbol}): ${String(e.message).slice(0, 300)}`); }
     }
   }
   writeFileSync(STATE, JSON.stringify(state, null, 1));
@@ -512,12 +529,23 @@ while (true) {
     const { regime, cands } = signalCache ?? { regime: null, cands: [] }; // 재시작 직후 첫 스캔 완료 전 = 빈 후보로 안전 대기
     // 진입대기 가시성(2026-07-27): 후보 0건이면 아무 로그도 안 남아 "왜 안 사는지"를 매번 수동확인해야 했음.
     //   레짐 변경·후보 유무 반전 시, 그리고 최소 10분마다 1줄. (5초 스캔마다 찍으면 로그 폭발)
-    logGate(`진입대기: 레짐 ${regime ?? '스캔중'} · 후보 ${cands?.length ?? 0}건 · 현금 ${Math.round(cash / 10000).toLocaleString()}만 · 슬롯 ${bigCount}/${LIVE_SLOTS}`,
+    const blockedToday = Object.values(state.soldToday ?? {}).filter(d => d === today).length;
+    logGate(`진입대기: 레짐 ${regime ?? '스캔중'} · 후보 ${cands?.length ?? 0}건 · 현금 ${Math.round(cash / 10000).toLocaleString()}만 · 슬롯 ${bigCount}/${LIVE_SLOTS}${blockedToday ? ` · 당일재진입금지 ${blockedToday}종목` : ''}`,
       `${regime ?? '스캔중'}|${(cands?.length ?? 0) > 0 ? 'cand' : 'none'}`);
 
     // 확신도순으로 훑어 각 후보의 예산(집중 or 분산)에 맞는 첫 종목 1건 매수
+    // ★ 당일 재진입 금지 (2026-07-29 사용자 승인). 폭락장 휩소 대응.
+    //   실측 근거: 07-28~29 청산 16건 중 승 3건(19%)·합계 -40.5%p인데 그 **53%가 두산퓨얼셀 단일 종목 4회 휩소**
+    //   (26,200 → 24,300 → 22,950 → 20,550 계단식 하락에 매번 재진입해 매번 -3~6% 손절).
+    //   일봉 백테는 하루 1회만 판정해 이 동작이 아예 없다 = "DOWN에서 rsi2 유지"(10시드 1승9패) 검증 범위 밖.
+    //   비용도 실재: 청산 16회 × 왕복 0.33%p ≈ 계좌 -1.1%가 순수 마찰.
+    //   진입만 막는다(청산 로직 불변). 다음 거래일부터 재진입 허용.
+    const soldT = state.soldToday ?? {};
+    const errT = state.orderErr ?? {};
     for (const pick of (cands ?? [])) {
       if (heldSet.has(pick.code)) continue;
+      if (soldT[pick.code] === today) continue;
+      if ((errT[pick.code]?.n ?? 0) >= ORDER_ERR_MAX) continue;   // 당일 주문거부 누적 → 다음 후보로
       // 섹터 캡: 후보와 같은 섹터를 이미 SECTOR_CAP.max개 보유 중이면 스킵(금융 편중 차단). sector 미상(null)은 캡 미적용.
       if (SECTOR_CAP.enabled) { const psec = SECTOR[pick.code]; if (psec && items.filter(it => SECTOR[it.symbol] === psec).length >= SECTOR_CAP.max) continue; }
       const strong = CONVICTION_SIZING.enabled && pick.conviction >= CONVICTION_SIZING.strongThreshold;
@@ -525,14 +553,32 @@ while (true) {
       const strongBudgetCap = Math.max(MIN_PRICE, cash - minRemainForSlots);
       const budget = strong ? Math.min(Math.floor(cash * CONVICTION_SIZING.strongFraction), strongBudgetCap) : diversified;
       if (pick.px >= budget) continue;   // 이 예산으론 못 삼 → 다음 후보
-      const lpx = limitBuyPx(pick.px);
+      // ★ 주문 직전 현재가 재조회 (2026-07-29 진단으로 발견한 결함 수정)
+      //   pick.px는 신호스캔이 그 종목을 훑던 시점의 가격이다. uni420 스캔이 최소 44초(420×105ms rateSlot),
+      //   메인루프 30초 폴링까지 겹치면 **1~2분 낡는다**. 여기에 limitBuyPx가 +0.5%를 더 얹으므로
+      //   폭락장에선 지정가가 실시간 시장가보다 1%+ 위로 나가고, 크로싱 지정가라 그대로 체결된다.
+      //   실측(07-29 매수 11건): 진입가가 직전 30분 구간의 **63% 지점**(무작위 시점 28%),
+      //   카카오·한국항공우주는 구간 고점을 넘긴 150%·136%. 진입 후 +10분 -0.88% vs 무작위 -0.45%.
+      let livePx = pick.px;
+      try {
+        const pm = await getPricesMap([pick.code]);          // Map(symbol → {price, timestamp})
+        const fresh = Number(pm?.get?.(pick.code)?.price ?? 0);
+        if (fresh > 0) {
+          if (Math.abs(fresh / pick.px - 1) > 0.003) log(`가격 갱신 ${pick.name}(${pick.code}) 스캔 ${pick.px.toLocaleString()} → 현재 ${fresh.toLocaleString()} (${((fresh / pick.px - 1) * 100).toFixed(2)}%)`);
+          livePx = fresh;
+        }
+      } catch (e) { log(`현재가 재조회 실패(스캔가 사용) ${pick.code}: ${String(e.message).slice(0, 50)}`); }
+      if (livePx >= budget) continue;     // 갱신가로 예산 재확인
+      const lpx = limitBuyPx(livePx);
       const qty = Math.floor(budget * 0.999 / lpx);
       if (qty < 1) continue;
       try {
         const o = await createOrder(seq, { symbol: pick.code, side: 'BUY', orderType: 'LIMIT', price: String(lpx), quantity: String(qty) });
         const filled = await settleOrder(o?.orderId ?? o?.id, pick.code, 'BUY', 0, `매수 ${pick.code}`);
         if (filled) {
-          state.meta[pick.code] = { hi: pick.px, entry: pick.px, sub: pick.sub, boughtAt: now() };
+          // 트레일 고점·진입가는 **실제 주문가(lpx)** 기준. 낡은 스캔가(pick.px)를 쓰면 트레일선이 어긋난다.
+          state.meta[pick.code] = { hi: lpx, entry: lpx, sub: pick.sub, boughtAt: now() };
+          if (state.orderErr) delete state.orderErr[pick.code];   // 체결됐으면 거부 카운트 초기화
           const size = strong ? `집중 ${Math.round(CONVICTION_SIZING.strongFraction * 100)}%몰빵` : `분산 1/${remainingSlots}`;
           log(`매수 ${pick.name}(${pick.code}) ${qty}주 @${lpx.toLocaleString()} [${pick.sub}, 레짐 ${regime}, 확신도 ${pick.conviction.toFixed(1)}, ${size}${pick.rsi2 != null ? ', RSI2 ' + pick.rsi2.toFixed(1) : ', 돌파 ' + pick.breakout?.toFixed(1) + '%'}]`);
           recordTrade({ ts: now(), code: pick.code, name: pick.name, side: 'BUY', px: lpx, qty, sub: pick.sub, regime, conviction: Number(pick.conviction.toFixed(1)), sizing: strong ? 'concentrate' : 'diversify' });
@@ -540,7 +586,22 @@ while (true) {
           // 비우면 다음 백그라운드 스캔 완료까지 후보가 빈 채로 대기하게 돼 불필요하게 매수 기회를 놓침.
           writeFileSync(STATE, JSON.stringify(state, null, 1));
         }
-      } catch (e) { log(`매수 오류 ${pick.code}: ${e.message.slice(0, 80)}`); }
+      } catch (e) {
+        // ★ 오류 전문 300자 (2026-07-29). 기존 80자는 토스 422 본문의 code 필드가 잘려
+        //   07-28 프리마켓 거부 31회의 사유를 사후에 특정할 수 없었다(`"code":"mark` 까지만 남음).
+        const msg = String(e.message).slice(0, 300);
+        // 4xx = 거래소/서버가 이 주문을 확정 거부한 것 → 재시도로 뚫리지 않으므로 카운트.
+        // 5xx·타임아웃은 일시장애라 카운트하지 않는다(멀쩡한 종목을 당일 제외하면 손해).
+        const definitive = /:\s*4\d\d\s/.test(msg);
+        let n = 0;
+        if (definitive) {
+          const rec = (state.orderErr ??= {})[pick.code] ??= { n: 0, day: today };
+          rec.day = today; rec.n++; rec.msg = msg.slice(0, 120); n = rec.n;
+          writeFileSync(STATE, JSON.stringify(state, null, 1));
+        }
+        log(`매수 오류 ${pick.name}(${pick.code})${definitive ? ` 확정거부 ${n}/${ORDER_ERR_MAX}회` : ' 일시장애(카운트 제외)'}: ${msg}`);
+        if (definitive && n >= ORDER_ERR_MAX) log(`  → ${pick.name}(${pick.code}) 당일 진입 제외 — 연속 확정거부 ${n}회`);
+      }
       break;  // 사이클당 진입 1건 (나머지 슬롯은 다음 폴에서 잔여현금 재계산 후 평가)
     }
   } else if (marketOpen()) {
