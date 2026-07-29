@@ -84,7 +84,12 @@ const STRATEGIES = {
 // 가설 플래그: --volx N (hi120 돌파일 거래량 > 20일평균 ×N), --rsidays N (rsi2 N일 연속 과매도),
 //             --downsize 0.5 (DOWN 레짐 rsi2 사이즈 배수), --tp1r 1 (1R 도달 시 절반 익절)
 for (const [flag, key] of [['--trail', 'trailPct'], ['--minbreak', 'minBreakout'], ['--maxholdr', 'maxHoldR'], ['--stoppct', 'stopPct'],
-  ['--volx', 'volX'], ['--rsidays', 'rsiDays'], ['--downsize', 'downSize'], ['--tp1r', 'tp1R'], ['--intraday', 'intradayExit'], ['--maxholdh', 'maxHoldH'], ['--rsiuni', 'rsiUni'], ['--entryopen', 'entryOpen'], ['--downflat', 'downFlat'], ['--rsima', 'rsiMa'], ['--tp2r', 'tp2R'], ['--trailwide', 'trailWide'], ['--maxbreak', 'maxBreak'], ['--atrsize', 'atrSize'], ['--lookback', 'lookback'], ['--rsitp', 'rsiTp'], ['--closeloc', 'closeLoc'], ['--rsivol', 'rsiVol'], ['--breakfail', 'breakFail'], ['--rsicut', 'rsiCut'], ['--pyramid', 'pyramid'], ['--slots', 'slots'], ['--rsiafford', 'rsiAfford'], ['--gapmax', 'gapMax']]) {
+  ['--volx', 'volX'], ['--rsidays', 'rsiDays'], ['--downsize', 'downSize'], ['--tp1r', 'tp1R'], ['--intraday', 'intradayExit'], ['--maxholdh', 'maxHoldH'], ['--rsiuni', 'rsiUni'], ['--entryopen', 'entryOpen'], ['--downflat', 'downFlat'], ['--rsima', 'rsiMa'], ['--tp2r', 'tp2R'], ['--trailwide', 'trailWide'], ['--maxbreak', 'maxBreak'], ['--atrsize', 'atrSize'], ['--lookback', 'lookback'], ['--rsitp', 'rsiTp'], ['--closeloc', 'closeLoc'], ['--rsivol', 'rsiVol'], ['--breakfail', 'breakFail'], ['--rsicut', 'rsiCut'], ['--pyramid', 'pyramid'], ['--slots', 'slots'], ['--rsiafford', 'rsiAfford'], ['--gapmax', 'gapMax'],
+  // 2026-07-29 라이브-백테 괴리 검증(--rsitrail N): 라이브 봇은 rsi2 보유분에도 트레일 -6%를 걸지만
+  //   백테의 검증된 rsi2 청산은 하드손절 -7%·MA5회귀·maxHoldR 만기뿐 — 트레일이 아예 없다.
+  //   07-29 청산 15건 중 12건이 rsi2 트레일손절(전부 진입 2시간 내)이라 이 괴리가 실손실을 내고 있는지 판정해야 한다.
+  //   N=0(기본)이면 현행 검증 동작. N>0이면 rsi2에 트레일 N% 적용.
+  ['--rsitrail', 'rsiTrail'], ['--rsitp1', 'rsiTp1']]) {
   const v = argOf(flag, null);
   if (v != null) STRATEGIES['combo-v2'][key] = Number(v);
 }
@@ -841,7 +846,9 @@ for (let di = 0; di < tradingDays.length; di++) {
         if (cfg.intradayExit && !p.exitAtOpen && (cfg.intradayExit === 1 || p.sub === 'rsi2')) { // 2=rsi2 스톱만
           const level = p.sub === 'hi120'
             ? (p.hiPrev ?? p.hi) * (1 - cfg.trailPct / 100) // 전일 고점 기준 (당일 고가 lookahead 방지)
-            : p.entry * (1 - cfg.stopPct / 100);
+            // rsi2: 하드손절선. --rsitrail N이면 트레일선과 비교해 **높은 쪽**이 먼저 걸린다(라이브 동작 반영).
+            : Math.max(p.entry * (1 - cfg.stopPct / 100),
+              cfg.rsiTrail > 0 ? (p.hiPrev ?? p.hi) * (1 - cfg.rsiTrail / 100) : 0);
           if (cd.l[i] <= level && p.holdDays >= 1) {     // 진입 당일 제외
             sell(book, day, code, Math.min(level, cd.o[i]), p.sub === 'hi120' ? 'trailing_intraday' : 'stop_intraday');
             continue;
@@ -892,6 +899,14 @@ for (let di = 0; di < tradingDays.length; di++) {
           for (let j = i - n + 1; j <= i; j++) ma5 += cd.c[j];
           ma5 /= n;
           if (cd.c[i] <= p.entry * (1 - cfg.stopPct / 100)) p.exitAtOpen = 'stop_loss';
+          // ★ 2026-07-29 (--rsitp1 N): 라이브가 rsi2에도 걸고 있는 부분익절 +N% 절반 (백테엔 hi120만 있었다)
+          else if (cfg.rsiTp1 > 0 && !p.halfDone && cd.c[i] >= p.entry * (1 + cfg.rsiTp1 / 100) && Math.floor(p.qty * TPFRAC) >= 1) {
+            p.exitAtOpen = 'tp_half'; p.exitQty = Math.floor(p.qty * TPFRAC); p.halfDone = true;
+          }
+          // ★ 2026-07-29 (--rsitrail N): 라이브가 rsi2에도 걸고 있는 트레일 N%.
+          //   전일까지의 고점(hiPrev) 기준 — 당일 고가를 쓰면 lookahead다. 라이브는 실시간 당일 고점을 쓰므로
+          //   이 시뮬레이션은 라이브보다 **덜 공격적** = 피해를 과소평가한다(진입당일 청산은 아예 재현 못 함).
+          else if (cfg.rsiTrail > 0 && cd.c[i] <= (p.hiPrev ?? p.hi) * (1 - cfg.rsiTrail / 100)) p.exitAtOpen = 'trailing';
           // C22 (--rsitp N): ma 회귀 대신 진입가 +N% 고정익절
           else if (cfg.rsiTp > 0 ? cd.c[i] >= p.entry * (1 + cfg.rsiTp / 100) : cd.c[i] > ma5) p.exitAtOpen = cfg.rsiTp > 0 ? 'tp_fixed' : 'ma5_exit';
           // C27 (--rsicut N): N일째에도 진입가 미회복이면 조기 타임컷 (만기 전패 버킷 공략)
