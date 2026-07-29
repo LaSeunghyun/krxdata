@@ -29,6 +29,9 @@ const argv = process.argv.slice(2);
 const POLL_MS = 30_000;
 const TRAIL_PCT = 6, HARD_STOP_PCT = 7;   // 승자 태우기: 고점 -6% 트레일(2026-07-24 uni420 재조정) / 진입 -7% 하드손절
 const RSI_MAX = 10, MIN_TURNOVER = 3e9, MIN_PRICE = 2_000;
+// rsi2 만기 (백테 combo-v2 maxHoldR과 동일). 종가판정에서 holdDays >= 이 값이면 청산 예약.
+const MAX_HOLD_R = 5;
+const RSI2_JUDGE_HHMM = 1535;   // 종가 판정 시각 — KRX 종가 동시호가(15:20~15:30) 종료 후
 // 동일 종목 매수가 4xx로 연속 거부되면 당일 후보에서 제외 (07-28 프리마켓 31회 낭비 방지). 매도엔 미적용.
 const ORDER_ERR_MAX = 3;
 const STATE = join(__dirname, 'stock-live-state.json');
@@ -250,6 +253,74 @@ function logGate(msg, key) {
 //   메인루프(30초 매도/손절 체크) 안에서 실행하면 그 체크까지 같이 지연됨 → 완전 분리, 메인루프는 항상 30초 유지.
 //   scanCash/scanHeld는 메인루프가 매 사이클 최신값으로 갱신(아래), 매수 실행은 여전히 메인루프 for-loop에서
 //   현재(fresh) heldSet으로 재검증하므로 이 캐시가 한 스캔주기만큼 낡아도 중복매수 위험 없음.
+/**
+ * 일봉 timestamp → KST YYYYMMDD.
+ * Toss가 어떤 포맷을 주는지 미확인(확인엔 봇 정지 필요)이라 알려진 4가지를 모두 안전하게 처리한다.
+ * 특히 **타임존 없는 ISO**("2026-07-29T15:30:00")를 그냥 new Date()에 넣으면 VM이 UTC라 날짜가 밀린다 → KST로 간주.
+ */
+function barDay(ts) {
+  if (typeof ts === 'string') {
+    const ymd = ts.match(/^(\d{4})-?(\d{2})-?(\d{2})/);
+    if (ymd && !/[TZ+]/.test(ts.slice(10))) return ymd[1] + ymd[2] + ymd[3];   // 날짜만 → 그대로
+    const s = /[Z+]|-\d{2}:\d{2}$/.test(ts.slice(10)) ? ts : ts + '+09:00';     // 타임존 없으면 KST로 간주
+    const d = new Date(s);
+    return Number.isNaN(d.getTime()) ? '' : new Date(d.getTime() + 9 * 3_600_000).toISOString().slice(0, 10).replace(/-/g, '');
+  }
+  const n = Number(ts);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  return new Date((n < 1e12 ? n * 1000 : n) + 9 * 3_600_000).toISOString().slice(0, 10).replace(/-/g, '');
+}
+
+/**
+ * ★ rsi2 종가 판정 (2026-07-29 신규) — 하루 1회, 15:35 이후.
+ *   검증된 combo-v2 rsi2 청산을 라이브에 이식한다: 트레일 없음 · 종가 > MA5 익절 · 진입-7% 손절 · 5거래일 만기.
+ *   판정만 하고 집행은 익일(예약). 같은 날 집행되지 않도록 exitDay를 같이 박는다.
+ *
+ * 설계 요점
+ *  - **당일 종가**: Toss 일봉의 최신 봉 날짜가 오늘이면 그 종가(권위 있음), 아니면 현재가로 대체한다.
+ *    15:35엔 KRX가 이미 마감(15:30)이라 현재가 ≈ 당일 종가다. 어느 쪽을 썼는지 로그에 남겨
+ *    "Toss가 15:35에 당일봉을 주는가"라는 미검증 가정을 하루만 돌려 실측으로 바꾼다.
+ *  - **holdDays를 카운터로 세지 않는다**: 진입일 이후의 일봉 개수로 계산한다. 휴장일 오판이 없고,
+ *    구 규칙으로 산 기존 보유분도 마이그레이션 없이 정확한 값이 나온다(무상태·자기정정).
+ */
+async function judgeRsi2AtClose(items, state, today) {
+  for (const it of items) {
+    const m = state.meta[it.symbol];
+    if (!m || m.sub !== 'rsi2' || m.exitAt) continue;
+    if (m.judgedDay === today) continue;                       // 하루 1회
+    let cd;
+    try { cd = (await getDailyCandles(it.symbol, 12)).reverse(); } catch (e) { log(`종가판정 일봉조회 실패 ${it.symbol}: ${String(e.message).slice(0, 60)}`); continue; }
+    if (!Array.isArray(cd) || cd.length < 5) continue;
+
+    const newest = cd[cd.length - 1];
+    const newestDay = barDay(newest.timestamp);
+    const hasToday = newestDay === today.replace(/-/g, '');
+    // 첫 판정 1회만 원본 timestamp를 남긴다 — barDay 파싱이 맞는지 실측으로 확인하기 위한 것
+    if (!state.tsFmtLogged) { state.tsFmtLogged = true; log(`[일봉 timestamp 포맷 확인] raw=${JSON.stringify(newest.timestamp)} → barDay=${newestDay} (오늘=${today.replace(/-/g, '')})`); }
+    const livePx = Number(it.lastPrice);
+    const closeToday = hasToday ? Number(newest.close) : livePx;
+    if (!(closeToday > 0)) continue;
+    // MA5 = 당일 종가 + 직전 4일 종가. hasToday면 최신봉이 당일이므로 그 앞 4개를 쓴다.
+    const prior = (hasToday ? cd.slice(0, -1) : cd).map(b => Number(b.close)).filter(v => v > 0);
+    if (prior.length < 4) continue;
+    const ma5 = (closeToday + prior.slice(-4).reduce((a, b) => a + b, 0)) / 5;
+
+    const entry = Number(m.entry ?? it.averagePurchasePrice);
+    const bDay = String(m.boughtAt ?? '').slice(0, 10).replace(/-/g, '');
+    const holdDays = bDay ? cd.filter(b => barDay(b.timestamp) > bDay).length : 0;
+    m.judgedDay = today; m.holdDays = holdDays;
+
+    const ret = (closeToday / entry - 1) * 100;
+    let why = null;
+    if (closeToday <= entry * (1 - HARD_STOP_PCT / 100)) why = `손절 -${HARD_STOP_PCT}%`;
+    else if (closeToday > ma5) why = 'MA5회귀 익절';
+    else if (holdDays >= MAX_HOLD_R) why = `만기 ${MAX_HOLD_R}거래일`;
+    if (why) { m.exitAt = why; m.exitDay = today; }
+    log(`종가판정 ${it.name}(${it.symbol}) 종가 ${closeToday.toLocaleString()}${hasToday ? '(일봉)' : '(현재가대체)'} / MA5 ${Math.round(ma5).toLocaleString()} / ${ret.toFixed(1)}% / ${holdDays}일차 → ${why ? '★예약 ' + why : '보유 유지'}`);
+  }
+  writeFileSync(STATE, JSON.stringify(state, null, 1));
+}
+
 async function signalScanLoop() {
   while (true) {
     try {
@@ -441,7 +512,10 @@ while (true) {
     }
 
     // ⓪ 부분익절 (백테스트 검증): +tp1Pct 절반 / +tp2Pct 잔량절반. 나머지는 아래 트레일 유지.
-    if (PARTIAL_TP.enabled) {
+    // ★ 2026-07-29: hi120 전용으로 제한. 백테는 부분익절을 hi120에만 적용하는데(tp1R/tp2R 블록이
+    //   `if (p.sub === 'hi120')` 안에 있다) 라이브는 07-21 이식 때 sub 분기를 안 가져와 rsi2에도 걸었다.
+    //   10시드 MC: rsi2 부분익절만 추가해도 Calmar 1.71 → 1.59 (단일경로), 트레일과 합치면 1승 9패.
+    if (PARTIAL_TP.enabled && m.sub === 'hi120') {
       let tpTag = null;
       if (ret >= PARTIAL_TP.tp2Pct && m.tp1 && !m.tp2) tpTag = 'tp2';
       else if (ret >= PARTIAL_TP.tp1Pct && !m.tp1) tpTag = 'tp1';
@@ -467,7 +541,19 @@ while (true) {
 
     let reason = null, harvest = false;
     // 기존(검증된 combo-v2) 청산 — 항상 실집행
-    if (px <= entry * (1 - HARD_STOP_PCT / 100)) reason = `하드손절 -${HARD_STOP_PCT}%`;
+    // ★ 2026-07-29 rsi2 청산 전면 개편 (검증 3종 통과 — 오늘 유일)
+    //   ① 예약청산 집행: 전일 15:35 종가판정으로 예약된 건을 익일 개장 후 집행.
+    //      "익일 시가"는 08시(NXT)다 — candles-daily 시가가 08시 첫봉과 88.9% 일치(KRX+NXT 통합 데이터).
+    //      08시/09시 집행은 수익 차이 없음(782쌍 중 455건 동일, 갈리는 327건 160:167) → 시각 고정 안 하고
+    //      미체결 시 settleOrder가 취소·재시도하게 둔다(프리마켓 유동성 부족이면 자연히 09시로 밀림).
+    //   ② rsi2는 장중 트레일·하드손절 판정을 하지 않는다. 분봉 782쌍에서 장중 개입은 전부 악화:
+    //      트레일 +0.38%→-0.31% · 실시간 -7% 손절 +0.38%→-0.11%. "작게 이기고 크게 진다"가 반복 확인됨.
+    // exitDay !== today 가드: 판정한 당일에는 집행하지 않는다("종가 판정 → 익일 집행"을 순서와 무관하게 보장)
+    if (m.exitAt && m.exitDay !== today) {
+      reason = `예약청산(${m.exitAt}, ${m.holdDays ?? '?'}일차, ${m.exitDay} 종가판정)`;
+    }
+    else if (m.sub === 'rsi2') { /* 장중 무개입 — 판정은 15:35 종가에만 (judgeRsi2AtClose) */ }
+    else if (px <= entry * (1 - HARD_STOP_PCT / 100)) reason = `하드손절 -${HARD_STOP_PCT}%`;
     else if (px <= m.hi * (1 - TRAIL_PCT / 100) && ret > 0) reason = `트레일링(고점대비 -${TRAIL_PCT}%, ${ret.toFixed(1)}%)`;
     else if (px <= m.hi * (1 - TRAIL_PCT / 100)) reason = `트레일손절(고점대비 -${TRAIL_PCT}%, ${ret.toFixed(1)}%)`;
     // 신규: 예측 하락경보 이익보호 — 기존 규칙 미발동 & 수익종목이 조인 트레일(bearTrailPct) 이탈 시
@@ -501,6 +587,15 @@ while (true) {
     }
   }
   writeFileSync(STATE, JSON.stringify(state, null, 1));
+
+  // ★ rsi2 종가 판정 (2026-07-29) — 15:35 이후 하루 1회. 판정만, 집행은 익일.
+  {
+    const k = kst();
+    const hhmm = k.getUTCHours() * 100 + k.getUTCMinutes();
+    if (hhmm >= RSI2_JUDGE_HHMM && items.some(i => state.meta[i.symbol]?.sub === 'rsi2' && state.meta[i.symbol]?.judgedDay !== today)) {
+      try { await judgeRsi2AtClose(items, state, today); } catch (e) { log(`종가판정 오류: ${String(e.message).slice(0, 120)}`); }
+    }
+  }
 
   // 하락경보 시 신규진입 보류 (shadow면 기록만, live면 실제 스킵)
   if (bear && items.length < LIVE_SLOTS && cash >= MIN_PRICE) {
