@@ -31,6 +31,8 @@ const TRAIL_PCT = 6, HARD_STOP_PCT = 7;   // 승자 태우기: 고점 -6% 트레
 const RSI_MAX = 10, MIN_TURNOVER = 3e9, MIN_PRICE = 2_000;
 // rsi2 만기 (백테 combo-v2 maxHoldR과 동일). 종가판정에서 holdDays >= 이 값이면 청산 예약.
 const MAX_HOLD_R = 5;
+// hi120 만기 = 백테 combo-v2 maxHoldH. 60거래일이라 사실상 거의 안 걸리지만 검증값 그대로 둔다.
+const MAX_HOLD_H = 60;
 // ★ rsi2 익절 이동평균 일수 = 백테 combo-v2 `rsiMa: 3`. **MA3이지 MA5가 아니다.**
 //   2026-07-29 최초 배포에서 MA5로 잘못 넣었다. 하락 계열에서 MA5는 오래된 고가를 물고 있어
 //   현재가보다 12~14% 위에 떠 버리고 익절이 사실상 발동하지 않는다(실측: 5종목 전원).
@@ -177,18 +179,54 @@ const loadJournal = () => { try { return JSON.parse(readFileSync(JOURNAL, 'utf8'
 function recordTrade(t) { const j = loadJournal(); j.trades.push(t); writeFileSync(JOURNAL, JSON.stringify(j, null, 1)); }
 
 // 체결 확인: 주문상태 필드명 불확실 → 보유수량 변화로 검증(견고). 미체결이면 주문 취소해 스테일 방지.
-async function settleOrder(orderId, symbol, side, qtyBefore, tag) {
+/**
+ * 체결 확인 + **실제 체결가 산출** (2026-07-29 결함 수정).
+ *
+ * 기존 결함: 저널이 `px: lpx`로 **지정가를 거래가로 기록**했다. 크로싱 지정가는 상한선일 뿐이고
+ *   실제 체결은 최우선 호가에서 일어난다. 실측(보유 5종목): 실제 진입가가 지정가보다 **0.47~0.56% 낮다.**
+ *   그 결과 매수는 손실 과대, 매도는 이익 과소로 기록돼 **봇의 자체 손익 보고 전체가 편향**됐다
+ *   (오늘 보고한 "청산 15건 -32.6%p"도 실제보다 나쁜 값).
+ *
+ * 산출법: BUY는 보유 평균단가 변화에서 정확히 역산한다.
+ *   fillPx = (avgAfter×qtyAfter − avgBefore×qtyBefore) / (qtyAfter − qtyBefore)
+ *   SELL은 평균단가가 안 바뀌어 역산이 불가 → getOrder로 시도하고, 필드명이 불확실하므로
+ *   처음 1회 응답 키를 로그에 남겨 실측으로 확정한다(추측한 필드명으로 조용히 틀리는 것 방지).
+ *
+ * 반환: { ok, fillPx } — fillPx가 null이면 호출자가 지정가로 폴백(기존 동작 유지).
+ */
+let orderKeysLogged = false;
+async function settleOrder(orderId, symbol, side, qtyBefore, tag, avgBefore = 0) {
   for (let i = 0; i < 12; i++) {
     await new Promise(r => setTimeout(r, 2000));
     try {
       const h = await getHoldings(seq);
-      const cur = Number((h?.items ?? []).find(x => x.symbol === symbol)?.quantity ?? 0);
-      if (side === 'BUY' && cur > qtyBefore) return true;
-      if (side === 'SELL' && cur < qtyBefore) return true;
+      const it = (h?.items ?? []).find(x => x.symbol === symbol);
+      const cur = Number(it?.quantity ?? 0);
+      if (side === 'BUY' && cur > qtyBefore) {
+        const avgAfter = Number(it?.averagePurchasePrice ?? 0);
+        let fillPx = null;
+        if (avgAfter > 0 && cur > qtyBefore) {
+          const v = (avgAfter * cur - avgBefore * qtyBefore) / (cur - qtyBefore);
+          if (v > 0) fillPx = Math.round(v);
+        }
+        return { ok: true, fillPx };
+      }
+      if (side === 'SELL' && cur < qtyBefore) {
+        let fillPx = null;
+        try {
+          const od = await getOrder(seq, orderId);
+          if (!orderKeysLogged && od) { orderKeysLogged = true; log(`  [getOrder 필드 확인] ${JSON.stringify(od).slice(0, 300)}`); }
+          for (const k of ['executedPrice', 'avgExecutedPrice', 'filledPrice', 'averagePrice', 'execPrice']) {
+            const v = Number(od?.[k]);
+            if (v > 0) { fillPx = Math.round(v); break; }
+          }
+        } catch {}
+        return { ok: true, fillPx };
+      }
     } catch {}
   }
   try { await cancelOrder(seq, orderId); log(`  ${tag} 미체결 → 주문취소(스테일 방지)`); } catch {}
-  return false;
+  return { ok: false, fillPx: null };
 }
 
 // 수급붕괴 판정 (FLOW_EXIT). stock_investor_flows에서 종목별 최근 N거래일 누적 순매수 조회 → ≤ threshold면 청산대상.
@@ -288,10 +326,11 @@ function barDay(ts) {
  *  - **holdDays를 카운터로 세지 않는다**: 진입일 이후의 일봉 개수로 계산한다. 휴장일 오판이 없고,
  *    구 규칙으로 산 기존 보유분도 마이그레이션 없이 정확한 값이 나온다(무상태·자기정정).
  */
-async function judgeRsi2AtClose(items, state, today) {
+async function judgeExitsAtClose(items, state, today) {
   for (const it of items) {
     const m = state.meta[it.symbol];
-    if (!m || m.sub !== 'rsi2' || m.exitAt) continue;
+    if (!m || m.exitAt) continue;
+    if (m.sub !== 'rsi2' && m.sub !== 'hi120') continue;
     if (m.judgedDay === today) continue;                       // 하루 1회
     let cd;
     try { cd = (await getDailyCandles(it.symbol, 12)).reverse(); } catch (e) { log(`종가판정 일봉조회 실패 ${it.symbol}: ${String(e.message).slice(0, 60)}`); continue; }
@@ -316,12 +355,29 @@ async function judgeRsi2AtClose(items, state, today) {
     m.judgedDay = today; m.holdDays = holdDays;
 
     const ret = (closeToday / entry - 1) * 100;
-    let why = null;
-    if (closeToday <= entry * (1 - HARD_STOP_PCT / 100)) why = `손절 -${HARD_STOP_PCT}%`;
-    else if (closeToday > ma) why = `MA${RSI_MA_N}회귀 익절`;
-    else if (holdDays >= MAX_HOLD_R) why = `만기 ${MAX_HOLD_R}거래일`;
-    if (why) { m.exitAt = why; m.exitDay = today; }
-    log(`종가판정 ${it.name}(${it.symbol}) 종가 ${closeToday.toLocaleString()}${hasToday ? '(일봉)' : '(현재가대체)'} / MA${RSI_MA_N} ${Math.round(ma).toLocaleString()} / ${ret.toFixed(1)}% / ${holdDays}일차 → ${why ? '★예약 ' + why : '보유 유지'}`);
+    let why = null, frac = 1, extra = '';
+    if (m.sub === 'rsi2') {
+      // 검증된 rsi2 청산: 하드손절 / MA(rsiMa=3) 회귀 익절 / maxHoldR 만기
+      if (closeToday <= entry * (1 - HARD_STOP_PCT / 100)) why = `손절 -${HARD_STOP_PCT}%`;
+      else if (closeToday > ma) why = `MA${RSI_MA_N}회귀 익절`;
+      else if (holdDays >= MAX_HOLD_R) why = `만기 ${MAX_HOLD_R}거래일`;
+      extra = ` / MA${RSI_MA_N} ${Math.round(ma).toLocaleString()}`;
+    } else {
+      // ★ 2026-07-29 hi120도 종가판정으로 이관. 백테 combo-v2는 intradayExit 키가 없어
+      //   **hi120 트레일·부분익절도 종가판정 → 익일 시가 집행**이다(771행 exitAtOpen).
+      //   라이브만 30초 실시간이었다 = rsi2에서 제거한 것과 동일한 미검증 괴리.
+      //   우선순위는 백테와 같게: 부분익절 → 트레일 → 만기. (수급붕괴는 별도 경로에서 이미 하루 1회)
+      //   hi120엔 백테상 하드손절이 없다(트레일이 진입 -TRAIL%에서 시작해 먼저 걸린다) → 넣지 않는다.
+      const hiD = Math.max(Number(m.hi ?? closeToday), closeToday);
+      m.hi = hiD;
+      if (PARTIAL_TP.enabled && !m.tp1 && ret >= PARTIAL_TP.tp1Pct) { why = `부분익절 tp1 +${PARTIAL_TP.tp1Pct}%`; frac = 0.5; }
+      else if (PARTIAL_TP.enabled && m.tp1 && !m.tp2 && ret >= PARTIAL_TP.tp2Pct) { why = `부분익절 tp2 +${PARTIAL_TP.tp2Pct}%`; frac = 0.5; }
+      else if (closeToday <= hiD * (1 - TRAIL_PCT / 100)) why = `트레일 -${TRAIL_PCT}%(고점 ${Math.round(hiD).toLocaleString()})`;
+      else if (holdDays >= MAX_HOLD_H) why = `만기 ${MAX_HOLD_H}거래일`;
+      extra = ` / 고점 ${Math.round(hiD).toLocaleString()}`;
+    }
+    if (why) { m.exitAt = why; m.exitDay = today; m.exitFrac = frac; }
+    log(`종가판정[${m.sub}] ${it.name}(${it.symbol}) 종가 ${closeToday.toLocaleString()}${hasToday ? '(일봉)' : '(현재가대체)'}${extra} / ${ret.toFixed(1)}% / ${holdDays}일차 → ${why ? '★예약 ' + why + (frac < 1 ? ` ${Math.round(frac * 100)}%` : '') : '보유 유지'}`);
   }
   writeFileSync(STATE, JSON.stringify(state, null, 1));
 }
@@ -502,11 +558,13 @@ while (true) {
       try {
         const lpx = limitSellPx(px);
         const o = await createOrder(seq, { symbol: it.symbol, side: 'SELL', orderType: 'LIMIT', price: String(lpx), quantity: String(qty) });
-        const filled = await settleOrder(o?.orderId ?? o?.id, it.symbol, 'SELL', qty, `수급청산 ${it.symbol}`);
-        if (filled) {
+        const filled = await settleOrder(o?.orderId ?? o?.id, it.symbol, 'SELL', qty, `수급청산 ${it.symbol}`, entry);
+        if (filled.ok) {
+          const fpx = filled.fillPx ?? lpx;                       // 실제 체결가 우선, 없으면 지정가 폴백
+          const fret = (fpx / entry - 1) * 100;
           const rsn = `수급붕괴(기관+외국인 ${FLOW_EXIT.days}일 순매도)`;
-          log(`매도 ${it.name}(${it.symbol}) ${qty}주 @${lpx.toLocaleString()} (${rsn}, ${ret.toFixed(1)}%)`);
-          recordTrade({ ts: now(), code: it.symbol, name: it.name, side: 'SELL', px: lpx, entry, ret: Number(ret.toFixed(1)), reason: rsn });
+          log(`매도 ${it.name}(${it.symbol}) ${qty}주 @${fpx.toLocaleString()}${filled.fillPx ? '' : '(지정가)'} (${rsn}, ${fret.toFixed(1)}%)`);
+          recordTrade({ ts: now(), code: it.symbol, name: it.name, side: 'SELL', px: fpx, limitPx: lpx, fillSrc: filled.fillPx ? 'actual' : 'limit', entry, ret: Number(fret.toFixed(1)), reason: rsn });
           delete state.meta[it.symbol];
           (state.soldToday ??= {})[it.symbol] = today;   // 당일 재진입 금지
           writeFileSync(STATE, JSON.stringify(state, null, 1));
@@ -520,7 +578,7 @@ while (true) {
     // ★ 2026-07-29: hi120 전용으로 제한. 백테는 부분익절을 hi120에만 적용하는데(tp1R/tp2R 블록이
     //   `if (p.sub === 'hi120')` 안에 있다) 라이브는 07-21 이식 때 sub 분기를 안 가져와 rsi2에도 걸었다.
     //   10시드 MC: rsi2 부분익절만 추가해도 Calmar 1.71 → 1.59 (단일경로), 트레일과 합치면 1승 9패.
-    if (PARTIAL_TP.enabled && m.sub === 'hi120') {
+    if (false) {   // ★ 2026-07-29: 부분익절도 종가판정으로 이관(judgeExitsAtClose). 장중 실시간 판정 폐지.
       let tpTag = null;
       if (ret >= PARTIAL_TP.tp2Pct && m.tp1 && !m.tp2) tpTag = 'tp2';
       else if (ret >= PARTIAL_TP.tp1Pct && !m.tp1) tpTag = 'tp1';
@@ -530,12 +588,14 @@ while (true) {
           try {
             const lpx = limitSellPx(px);
             const o = await createOrder(seq, { symbol: it.symbol, side: 'SELL', orderType: 'LIMIT', price: String(lpx), quantity: String(tpQty) });
-            const filled = await settleOrder(o?.orderId ?? o?.id, it.symbol, 'SELL', qty, `부분익절 ${it.symbol}`);
-            if (filled) {
+            const filled = await settleOrder(o?.orderId ?? o?.id, it.symbol, 'SELL', qty, `부분익절 ${it.symbol}`, entry);
+            if (filled.ok) {
               m[tpTag] = true;
               const pct = tpTag === 'tp2' ? PARTIAL_TP.tp2Pct : PARTIAL_TP.tp1Pct;
-              log(`부분익절 ${it.name}(${it.symbol}) ${tpQty}주 @${lpx.toLocaleString()} (+${pct}% 도달, ${ret.toFixed(1)}%)`);
-              recordTrade({ ts: now(), code: it.symbol, name: it.name, side: 'SELL', px: lpx, qty: tpQty, entry, ret: Number(ret.toFixed(1)), reason: `부분익절(${tpTag}) +${pct}%` });
+              const fpx = filled.fillPx ?? lpx;
+              const fret = (fpx / entry - 1) * 100;
+              log(`부분익절 ${it.name}(${it.symbol}) ${tpQty}주 @${fpx.toLocaleString()}${filled.fillPx ? '' : '(지정가)'} (+${pct}% 도달, 실현 ${fret.toFixed(1)}%)`);
+              recordTrade({ ts: now(), code: it.symbol, name: it.name, side: 'SELL', px: fpx, limitPx: lpx, fillSrc: filled.fillPx ? 'actual' : 'limit', qty: tpQty, entry, ret: Number(fret.toFixed(1)), reason: `부분익절(${tpTag}) +${pct}%` });
               writeFileSync(STATE, JSON.stringify(state, null, 1));
             }
           } catch (e) { log(`부분익절 오류 ${it.symbol}: ${e.message.slice(0, 80)}`); }
@@ -557,7 +617,15 @@ while (true) {
     if (m.exitAt && m.exitDay !== today) {
       reason = `예약청산(${m.exitAt}, ${m.holdDays ?? '?'}일차, ${m.exitDay} 종가판정)`;
     }
-    else if (m.sub === 'rsi2') { /* 장중 무개입 — 판정은 15:35 종가에만 (judgeRsi2AtClose) */ }
+    // ★ 장중 무개입: rsi2·hi120 모두 15:35 종가판정만(judgeExitsAtClose). 검증된 백테가 종가판정이다.
+    else if (m.sub === 'rsi2' || m.sub === 'hi120') { /* 장중 판정 없음 */ }
+    // ⚠️ sub 미상 포지션만 아래 장중 경로를 탄다(수동픽·state 유실분). 봇 매수분이 여기 오면
+    //   meta가 유실돼 검증된 종가판정을 우회하는 것이므로 **경보**를 남긴다(조용한 회귀 방지).
+    else if (!m.sub) {
+      if (m.noSubAlertDay !== today) { m.noSubAlertDay = today; log(`⚠️ sub 미상 포지션 ${it.name}(${it.symbol}) — meta 유실 의심, 장중 경로로 판정됨. 수동 확인 필요`); }
+      if (px <= entry * (1 - HARD_STOP_PCT / 100)) reason = `하드손절 -${HARD_STOP_PCT}%`;
+      else if (px <= m.hi * (1 - TRAIL_PCT / 100)) reason = `트레일손절(고점대비 -${TRAIL_PCT}%, ${ret.toFixed(1)}%)`;
+    }
     else if (px <= entry * (1 - HARD_STOP_PCT / 100)) reason = `하드손절 -${HARD_STOP_PCT}%`;
     else if (px <= m.hi * (1 - TRAIL_PCT / 100) && ret > 0) reason = `트레일링(고점대비 -${TRAIL_PCT}%, ${ret.toFixed(1)}%)`;
     else if (px <= m.hi * (1 - TRAIL_PCT / 100)) reason = `트레일손절(고점대비 -${TRAIL_PCT}%, ${ret.toFixed(1)}%)`;
@@ -578,13 +646,26 @@ while (true) {
       }
       try {
         const lpx = limitSellPx(px);
-        const o = await createOrder(seq, { symbol: it.symbol, side: 'SELL', orderType: 'LIMIT', price: String(lpx), quantity: String(qty) });
-        const filled = await settleOrder(o?.orderId ?? o?.id, it.symbol, 'SELL', qty, `매도 ${it.symbol}`);
-        if (filled) {
-          log(`매도 ${it.name}(${it.symbol}) ${qty}주 @${lpx.toLocaleString()} (${reason})`);
-          recordTrade({ ts: now(), code: it.symbol, name: it.name, side: 'SELL', px: lpx, entry, ret: Number(ret.toFixed(1)), reason, forecast: harvest ? fc : undefined });
-          delete state.meta[it.symbol];
-          (state.soldToday ??= {})[it.symbol] = today;   // 당일 재진입 금지(아래 진입 루프에서 스킵)
+        // ★ 2026-07-29: 예약청산이 부분익절이면 절반만 팔고 포지션을 유지한다(백테 tp_half/tp_quarter 재현).
+        //   m.exitFrac: 1=전량 / 0.5=절반. 전량이 아니면 meta를 지우지 않고 tp1/tp2 플래그만 세운다.
+        const frac = Number(m.exitFrac ?? 1);
+        const sellQty = frac >= 1 ? qty : Math.max(1, Math.floor(qty * frac));
+        const partial = sellQty < qty;
+        const o = await createOrder(seq, { symbol: it.symbol, side: 'SELL', orderType: 'LIMIT', price: String(lpx), quantity: String(sellQty) });
+        const filled = await settleOrder(o?.orderId ?? o?.id, it.symbol, 'SELL', qty, `매도 ${it.symbol}`, entry);
+        if (filled.ok) {
+          const fpx = filled.fillPx ?? lpx;                       // 실제 체결가 우선, 없으면 지정가 폴백
+          const fret = (fpx / entry - 1) * 100;
+          log(`매도 ${it.name}(${it.symbol}) ${sellQty}주${partial ? `/${qty} 부분` : ''} @${fpx.toLocaleString()}${filled.fillPx ? '' : '(지정가)'} (${reason}, 실현 ${fret.toFixed(1)}%)`);
+          recordTrade({ ts: now(), code: it.symbol, name: it.name, side: 'SELL', px: fpx, limitPx: lpx, fillSrc: filled.fillPx ? 'actual' : 'limit', qty: sellQty, entry, ret: Number(fret.toFixed(1)), reason, forecast: harvest ? fc : undefined });
+          if (partial) {
+            // 부분익절: 포지션 유지. tp 플래그를 세워 다음 판정에서 같은 단계가 재발동하지 않게 한다.
+            if (/tp1/.test(reason)) m.tp1 = true; else if (/tp2/.test(reason)) m.tp2 = true;
+            delete m.exitAt; delete m.exitFrac; delete m.exitDay;
+          } else {
+            delete state.meta[it.symbol];
+            (state.soldToday ??= {})[it.symbol] = today;   // 당일 재진입 금지(아래 진입 루프에서 스킵)
+          }
         }
         // ★ 매도는 백오프를 걸지 않는다 (2026-07-29). 청산을 막으면 손실이 무한정 열린다 —
         //   매수와 달리 재시도 낭비보다 미청산 리스크가 크다. 오류 전문만 300자로 늘린다.
@@ -597,8 +678,8 @@ while (true) {
   {
     const k = kst();
     const hhmm = k.getUTCHours() * 100 + k.getUTCMinutes();
-    if (hhmm >= RSI2_JUDGE_HHMM && items.some(i => state.meta[i.symbol]?.sub === 'rsi2' && state.meta[i.symbol]?.judgedDay !== today)) {
-      try { await judgeRsi2AtClose(items, state, today); } catch (e) { log(`종가판정 오류: ${String(e.message).slice(0, 120)}`); }
+    if (hhmm >= RSI2_JUDGE_HHMM && items.some(i => ['rsi2','hi120'].includes(state.meta[i.symbol]?.sub) && state.meta[i.symbol]?.judgedDay !== today)) {
+      try { await judgeExitsAtClose(items, state, today); } catch (e) { log(`종가판정 오류: ${String(e.message).slice(0, 120)}`); }
     }
   }
 
@@ -674,14 +755,17 @@ while (true) {
       if (qty < 1) continue;
       try {
         const o = await createOrder(seq, { symbol: pick.code, side: 'BUY', orderType: 'LIMIT', price: String(lpx), quantity: String(qty) });
-        const filled = await settleOrder(o?.orderId ?? o?.id, pick.code, 'BUY', 0, `매수 ${pick.code}`);
-        if (filled) {
-          // 트레일 고점·진입가는 **실제 주문가(lpx)** 기준. 낡은 스캔가(pick.px)를 쓰면 트레일선이 어긋난다.
-          state.meta[pick.code] = { hi: lpx, entry: lpx, sub: pick.sub, boughtAt: now() };
+        const filled = await settleOrder(o?.orderId ?? o?.id, pick.code, 'BUY', 0, `매수 ${pick.code}`, 0);
+        if (filled.ok) {
+          // ★ 2026-07-29: 진입가·트레일 고점을 **실제 체결가**로 잡는다.
+          //   지정가(lpx)는 크로싱 상한선일 뿐이고 실측으로 체결가가 0.47~0.56% 낮았다.
+          //   lpx를 쓰면 (a) 손익이 과대 손실로 기록되고 (b) 트레일선·손절선이 실제보다 높게 걸린다.
+          const fpx = filled.fillPx ?? lpx;
+          state.meta[pick.code] = { hi: fpx, entry: fpx, sub: pick.sub, boughtAt: now() };
           if (state.orderErr) delete state.orderErr[pick.code];   // 체결됐으면 거부 카운트 초기화
           const size = strong ? `집중 ${Math.round(CONVICTION_SIZING.strongFraction * 100)}%몰빵` : `분산 1/${remainingSlots}`;
-          log(`매수 ${pick.name}(${pick.code}) ${qty}주 @${lpx.toLocaleString()} [${pick.sub}, 레짐 ${regime}, 확신도 ${pick.conviction.toFixed(1)}, ${size}${pick.rsi2 != null ? ', RSI2 ' + pick.rsi2.toFixed(1) : ', 돌파 ' + pick.breakout?.toFixed(1) + '%'}]`);
-          recordTrade({ ts: now(), code: pick.code, name: pick.name, side: 'BUY', px: lpx, qty, sub: pick.sub, regime, conviction: Number(pick.conviction.toFixed(1)), sizing: strong ? 'concentrate' : 'diversify' });
+          log(`매수 ${pick.name}(${pick.code}) ${qty}주 @${fpx.toLocaleString()}${filled.fillPx ? '' : '(지정가)'} [${pick.sub}, 레짐 ${regime}, 확신도 ${pick.conviction.toFixed(1)}, ${size}${pick.rsi2 != null ? ', RSI2 ' + pick.rsi2.toFixed(1) : ', 돌파 ' + pick.breakout?.toFixed(1) + '%'}]`);
+          recordTrade({ ts: now(), code: pick.code, name: pick.name, side: 'BUY', px: fpx, limitPx: lpx, fillSrc: filled.fillPx ? 'actual' : 'limit', qty, sub: pick.sub, regime, conviction: Number(pick.conviction.toFixed(1)), sizing: strong ? 'concentrate' : 'diversify' });
           // signalCache는 더 이상 여기서 비우지 않음(2026-07-24) — signalScanLoop가 독립적으로 계속 갱신하므로
           // 비우면 다음 백그라운드 스캔 완료까지 후보가 빈 채로 대기하게 돼 불필요하게 매수 기회를 놓침.
           writeFileSync(STATE, JSON.stringify(state, null, 1));
