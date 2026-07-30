@@ -18,7 +18,7 @@ import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { getAccounts, getHoldings, getBuyingPower, getPricesMap, getDailyCandles, createOrder, getOrder, cancelOrder } from './toss-api.js';
-import { LIVE_SLOTS, LIVE_UNIVERSE_LIMIT, CONVICTION_SIZING, FORECAST_GUARD, PARTIAL_TP, CA_GUARD, LIVE_EXCLUDE, CAPITAL_DEPLOY, SECTOR_CAP, RSI_ENTRY_FILTER, FLOW_EXIT } from './strategy-contract.mjs';
+import { LIVE_SLOTS, LIVE_UNIVERSE_LIMIT, CONVICTION_SIZING, FORECAST_GUARD, PARTIAL_TP, CA_GUARD, LIVE_EXCLUDE, CAPITAL_DEPLOY, SECTOR_CAP, SECTOR_OVERRIDE, applySectorOverride, RSI_ENTRY_FILTER, FLOW_EXIT } from './strategy-contract.mjs';
 import { buildLiveCandidates } from './live-parity.mjs';
 import { readBotExclude } from './bot-exclude.mjs';
 import { executeBuy, executeSell } from './tg-order.mjs';
@@ -183,8 +183,12 @@ if (seq == null) { log('토스 계좌 조회 실패(10회 소진) — 중단, ke
 let SECTOR = {};
 if (SECTOR_CAP.enabled) {
   try {
-    SECTOR = Object.fromEntries((await dbQuery(`SELECT stock_code, sector FROM stock_analysis`)).map(r => [r.stock_code, r.sector]));
-    log(`섹터맵 로드 ${Object.keys(SECTOR).length}종목 (섹터캡 max ${SECTOR_CAP.max})`);
+    // ★ 2026-07-30: stock_analysis.sector 가 SK스퀘어→금융·LG전자→반도체 등으로 틀려 있어
+    //   보정 맵을 덮어쓴다(도출 근거는 strategy-contract.mjs SECTOR_OVERRIDE 주석 = 잔차상관 실측).
+    SECTOR = applySectorOverride(Object.fromEntries((await dbQuery(`SELECT stock_code, sector FROM stock_analysis`)).map(r => [r.stock_code, r.sector])));
+    const ov = Object.entries(SECTOR_OVERRIDE).filter(([c]) => SECTOR[c]);
+    log(`섹터맵 로드 ${Object.keys(SECTOR).length}종목 (섹터캡 max ${SECTOR_CAP.max}) · 보정 ${ov.length}종목 적용`);
+    log(`  반도체복합: ${Object.entries(SECTOR).filter(([, s]) => s === '반도체복합').map(([c]) => c).join(' ')}`);
   } catch (e) { log(`섹터맵 로드 실패(캡 무효화): ${String(e.message).slice(0, 60)}`); }
 }
 
@@ -818,7 +822,14 @@ while (true) {
           };
           if (state.orderErr) delete state.orderErr[pick.code];   // 체결됐으면 거부 카운트 초기화
           const size = strong ? `집중 ${Math.round(CONVICTION_SIZING.strongFraction * 100)}%몰빵` : `분산 1/${remainingSlots}`;
-          log(`매수 ${pick.name}(${pick.code}) ${qty}주 @${fpx.toLocaleString()}${filled.fillPx ? '' : '(지정가)'} [${pick.sub}${gp.bin ? '/' + gp.bin + ' trail' + gp.trailPct : ''}, 레짐 ${regime}, 확신도 ${pick.conviction.toFixed(1)}, ${size}${pick.rsi2 != null ? ', RSI2 ' + pick.rsi2.toFixed(1) : ', 돌파 ' + pick.breakout?.toFixed(1) + '%'}]`);
+          // ★ 2026-07-30 로그 표시 수정: 갭정책 오버라이드(trail/tp)는 **hi120 청산에만 작동한다.**
+          //   rsi2 청산은 하드손절 -7% / MA회귀 / 만기뿐이라 trail·tp를 쓰지 않는다.
+          //   그런데 기존 로그는 sub 구분 없이 'G1 trail10'을 찍어 rsi2에도 적용되는 것처럼 보였다
+          //   (07-30 5건 전부 rsi2인데 'rsi2/G1 trail10'으로 표기됨). meta에는 감사 목적으로 계속 저장한다.
+          const gapTag = gp.bin
+            ? (pick.sub === 'hi120' ? `/${gp.bin} trail${gp.trailPct}%` : `/${gp.bin}(미적용:rsi2)`)
+            : '';
+          log(`매수 ${pick.name}(${pick.code}) ${qty}주 @${fpx.toLocaleString()}${filled.fillPx ? '' : '(지정가)'} [${pick.sub}${gapTag}, 레짐 ${regime}, 확신도 ${pick.conviction.toFixed(1)}, ${size}${pick.rsi2 != null ? ', RSI2 ' + pick.rsi2.toFixed(1) : ', 돌파 ' + pick.breakout?.toFixed(1) + '%'}]`);
           recordTrade({ ts: now(), code: pick.code, name: pick.name, side: 'BUY', px: fpx, limitPx: lpx, fillSrc: filled.fillPx ? 'actual' : 'limit', qty, sub: pick.sub, regime, conviction: Number(pick.conviction.toFixed(1)), sizing: strong ? 'concentrate' : 'diversify' });
           // signalCache는 더 이상 여기서 비우지 않음(2026-07-24) — signalScanLoop가 독립적으로 계속 갱신하므로
           // 비우면 다음 백그라운드 스캔 완료까지 후보가 빈 채로 대기하게 돼 불필요하게 매수 기회를 놓침.

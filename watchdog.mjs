@@ -111,6 +111,25 @@ function evaluate() {
       if (gapMin > 30) hits.push({ key: 'silent', msg: `봇 로그 ${gapMin.toFixed(0)}분간 정지 (마지막 ${lastTs})`, detail: '' });
     }
   }
+
+  // ⑦ ★ 2026-07-30 신규: 조회 실패 반복 = **살아있지만 아무것도 못 하는 상태**
+  //   07-30 실측: 08:50~10:26(96분) 동안 `조회 실패(재시도): aborted due to timeout` 이 1~2분마다 반복되며
+  //   봇이 매수·매도·종가판정을 전부 못 했다. 그런데 기존 규칙 어디에도 안 걸렸다:
+  //     · ⑥ silent 은 **로그가 계속 찍히고 있었으므로** 발동 안 함 (타임아웃 메시지 자체가 로그다)
+  //     · ⑤ ip 는 no_authorization_ip 가 아니라서 미해당
+  //   결과: 개장~10:26 장중 96분을 아무 경보 없이 흘려보냈다. 사용자가 직접 시세를 보고 알아챘다.
+  //   이 침묵이 이번 사건의 실질 피해다(장애 자체보다). 그래서 별도 규칙으로 승격한다.
+  if (h >= 8 && h < 16) {
+    const fails = liveLog.filter(l => /조회 실패|aborted due to timeout|ETIMEDOUT|ECONNRESET/.test(l));
+    // 장중 10건 이상이면 일시적 네트워크 흔들림이 아니라 지속 장애로 본다(정상일엔 0~2건).
+    if (fails.length >= 10) {
+      hits.push({
+        key: 'apifail',
+        msg: `조회 실패 ${fails.length}회 반복 — 봇이 살아있으나 매매 불가 상태일 수 있음`,
+        detail: fails.slice(-3).map(l => l.slice(0, 90)).join(' | '),
+      });
+    }
+  }
   return hits;
 }
 

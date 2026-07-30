@@ -76,3 +76,9 @@ research-smoke.json
 research-results/*/raw/
 stock-keeper-log.txt
 data-1m.tar.gz
+
+# 2026-07-30 종가소스 검증용 대용량 캔들 (재생성 가능 — collect-krx-daily.mjs / build-clean-candles.mjs / perturb-candles.mjs)
+candles-daily-krx.jsonl
+candles-daily-krx-clean.jsonl
+candles-daily-toss-clean.jsonl
+candles-pert-*.jsonl

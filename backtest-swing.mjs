@@ -22,7 +22,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { getDailyCandles } from './toss-api.js';
 import { calcBuyCashImpact, calcSellCashImpact, calcRoundTripPnl, getSellTaxBps } from './execution-model.mjs';
-import { LIVE_COMBO_CAPS, LIVE_UNIVERSE_LIMIT, LIVE_EXCLUDE, CONVICTION_SIZING, CAPITAL_DEPLOY } from './strategy-contract.mjs';
+import { LIVE_COMBO_CAPS, LIVE_UNIVERSE_LIMIT, LIVE_EXCLUDE, CONVICTION_SIZING, CAPITAL_DEPLOY, applySectorOverride } from './strategy-contract.mjs';
 import { buildLiveCandidates, liveCandidateBudget } from './live-parity.mjs';
 import { volatilityThrottleMultiplier } from './volatility-throttle.mjs';
 import { absoluteTrendOn, hi120RegimeAllows, marketSeriesIndex, selectMomentumLeaders } from './research-strategies.mjs';
@@ -40,9 +40,16 @@ const TO = argOf('--to', '20260611');
 const CAPITAL = Number(argOf('--capital', '10000000'));
 const BARS_DEPTH = Number(argOf('--bars', '1150')); // 2022-01~ (FROM 이전 룩백 130일 포함)
 const ONLY = argOf('--strategies', '').split(',').filter(Boolean);
-const CACHE_FILE = join(__dirname, 'candles-daily.jsonl');
+// ★ 2026-07-30: 종가 소스 교체 실험용. 기본은 Toss(candles-daily.jsonl = KRX정규장+NXT 통합),
+//   `--candles candles-daily-krx.jsonl` 을 주면 KRX 정규장 전용 일봉으로 같은 백테를 돌린다.
+//   근거: 상위집합 제약(Toss고가>=KIS고가 AND Toss저가<=KIS저가) 390/390 = 100% → Toss는 NXT 포함 확정.
+//   라이브 15:35 판정은 사실상 KRX 종가를 읽어 MA3 조건 판정이 5.1% 뒤집힌다(10:10 대칭 = 노이즈).
+const CACHE_FILE = join(__dirname, argOf('--candles', 'candles-daily.jsonl'));
+const CANDLES_ALT = CACHE_FILE !== join(__dirname, 'candles-daily.jsonl');
 // 2026-07-24: 6주 stale 캐시로 리서치가 조용히 좁은 표본 도는 사고 재발 방지 — 실행 전 자동 신선도 체크(+장중이면 스킵).
-if (!argv.includes('--no-freshness-check')) await ensureCandlesFresh();
+// ★ 2026-07-30: --candles로 대체 소스를 쓸 때는 건너뛴다. 이 체크는 candles-daily.jsonl(Toss)을
+//   대상으로 하고 갱신 시 **Toss를 호출**하는데, 토스 토큰은 단일 인스턴스라 라이브봇 세션을 깬다.
+if (!argv.includes('--no-freshness-check') && !CANDLES_ALT) await ensureCandlesFresh();
 
 // C31 (--stress 1): 슬리피지 ±2틱 + 수수료 2배 비관 시나리오
 const STRESS = Number(argOf('--stress', 0));
@@ -129,6 +136,12 @@ const DYNSLOT = Number(argOf('--dynslot', 0)); // MC3 I11: 포지션당 목표 �
 const REGIME_EXP = (() => { const v = argOf('--regimeexp', null); if (!v) return null; const [u, n, d] = v.split(',').map(Number); return { UP: u, NEUTRAL: n, DOWN: d }; })();
 // 2026-07-22 리서치 ICE#1: NEUTRAL 레짐 rsi2 진입 스킵(우리 regime pnl서 NEUTRAL rsi2=순손실). live-parity 진입에만 적용.
 const SKIP_NEUTRAL_RSI = argv.includes('--skipneutralrsi');
+// ★ 2026-07-30 (--downrsi N): DOWN 레짐 rsi2 슬롯 상한 오버라이드. -1(기본)=오버라이드 없음.
+const DOWN_RSI = Number(argOf('--downrsi', -1));
+// ★ 2026-07-30 (--maexitmin N): MA 익절에 '종가 > 진입가×(1+N%)' AND 조건. 미지정=조건 없음(현행).
+//   0 이면 본전 초과에서만 익절. 음수도 허용(예: -1 = -1%까지는 허용).
+const _mem = argOf('--maexitmin', null);
+const MA_EXIT_MIN = _mem == null ? null : Number(_mem);
 // 2026-07-27 사용자 제안: 레짐을 시장(삼전) 프록시가 아니라 종목 자체 추세로 판정 (--selfregime)
 const SELF_REGIME = argv.includes('--selfregime');
 // --selfand: 시장 레짐은 그대로 두고, hi120 진입에 "종목 자체도 UP"을 추가 요구(교집합=더 엄격)
@@ -332,7 +345,12 @@ async function loadPool(codes) {
     console.log(`캐시 ${candles.size}종목`);
   }
   const missing = codes.filter(c => !candles.has(c));
-  if (missing.length) {
+  // ★ 대체 종가 소스(--candles)를 쓸 때는 Toss 자동 보충을 금지한다. 보충하면 한 백테 안에
+  //   KRX 전용 봉과 NXT 통합 봉이 섞여 비교의 의미가 사라진다(조용한 오염). 누락은 드러내야 한다.
+  if (missing.length && CANDLES_ALT) {
+    console.log(`⚠️ 대체 캔들소스(${CACHE_FILE}) 사용 중 — 누락 ${missing.length}종목을 Toss로 보충하지 않는다.`);
+    console.log(`   누락분은 유니버스에서 자연히 빠진다. 앞 10개: ${missing.slice(0, 10).join(' ')}`);
+  } else if (missing.length) {
     console.log(`일봉 신규 수집 ${missing.length}종목 (~${Math.round(missing.length * 6 * 0.105 / 60)}분)...`);
     let done = 0;
     for (const code of missing) {
@@ -769,7 +787,9 @@ for (const r of allRows) {
 const RSI_UNI = Number(STRATEGIES['combo-v2'].rsiUni ?? argOf('--rsiuni', 30)); // rsi2 유니버스 크기(대형주 상위 N). 라이브 LIVE_RSI2_UNIVERSE_LIMIT=30 대응. 이전엔 하드코딩 30이라 --rsiuni가 죽어있었음(2026-07-22 배선).
 const largeCaps = (await dbQuery(`SELECT stock_code FROM stock_analysis WHERE current_price >= ${MIN_PRICE} AND avg_turnover_20d >= ${MIN_TURNOVER} ORDER BY market_cap_tril DESC LIMIT ${RSI_UNI}`)).map(r => r.stock_code);
 // 섹터 캡용 stock_code→sector 맵 (금융 편중 완화 테스트). sector NULL은 캡 미적용(카운트 0).
-const SECTOR = Object.fromEntries((await dbQuery(`SELECT stock_code, sector FROM stock_analysis`)).map(r => [r.stock_code, r.sector]));
+// ★ 2026-07-30: stock_analysis.sector 보정 적용 (라이브와 동일 함수). 보정 없이 --sectorcap 을 돌리면
+//   SK스퀘어가 금융으로, LG전자가 반도체로 잡혀 검증 대상이 실제 라이브 동작과 달라진다.
+const SECTOR = applySectorOverride(Object.fromEntries((await dbQuery(`SELECT stock_code, sector FROM stock_analysis`)).map(r => [r.stock_code, r.sector])));
 const countSector = (code, book) => { const s = SECTOR[code]; if (!s) return 0; let n = 0; for (const pc of Object.keys(book.positions)) if (SECTOR[pc] === s) n++; return n; };
 // ROTATE 자금원: 최약 laggard(ret≤ROTATE_MAXRET & holdDays≥ROTATE_MINHOLD & 부분익절 미진행) 중 최저 ret. 승자·트레일 보호(반환 안 함).
 function weakestLaggard(book, day) {
@@ -1010,7 +1030,12 @@ for (let di = 0; di < tradingDays.length; di++) {
       const regime = marketRegime(day);
       // --scenpolicy: 오늘 시나리오의 파라미터 오버라이드 (없으면 null → 현행 기본값 그대로)
       const scenPol = SCENPOLICY ? (SCENPOLICY[SCEN_BY_DAY.get(day)] ?? null) : null;
-      const caps = (cfg.v2 ? (CAPS_PRESETS[CAPS_SEL] ?? COMBO_CAPS_V2) : COMBO_CAPS)[regime];
+      let caps = (cfg.v2 ? (CAPS_PRESETS[CAPS_SEL] ?? COMBO_CAPS_V2) : COMBO_CAPS)[regime];
+      // ★ 2026-07-30 (--downrsi N): 하락장 rsi2 슬롯 상한. 현행 DOWN은 { hi120: 0, rsi2: 4 } 로
+      //   5슬롯 중 4개까지 rsi2를 허용한다. hi120은 DOWN에서 이미 0인데 rsi2는 거의 무제한인 비대칭.
+      //   근거: 2026-07-29 "DOWN에서 rsi2 유지"를 10시드로 봤을 때 1승9패였으나, 그 판정은
+      //   노이즈 바닥(10시드 0.527)을 재기 전이라 무효에 가깝다. 30시드+바닥으로 다시 본다.
+      if (DOWN_RSI >= 0 && regime === 'DOWN') caps = { ...caps, rsi2: DOWN_RSI };
       // H9 (--entryopen): 전일 돌파 시그널을 당일 시가에 진입
       if (cfg.entryOpen && book.pendingBuys?.length) {
         const pend = book.pendingBuys; book.pendingBuys = [];
@@ -1033,7 +1058,7 @@ for (let di = 0; di < tradingDays.length; di++) {
           p.bands = eiB != null ? atrExitBands(cd, eiB, ATR_EXIT) : null;
         }
         const trailP = p.bands?.trail ?? p.scenTrail ?? cfg.trailPct;   // 트레일 폭 (scenTrail = 진입일 시나리오 고정 오버라이드)
-        const stopP = p.bands?.stop ?? cfg.stopPct;      // 하드손절 폭
+        const stopP = p.bands?.stop ?? p.scenStop ?? cfg.stopPct;      // 하드손절 폭 (scenStop = 진입일 시나리오 고정)
         // 부분익절 임계: ATR 모드면 절대% 사용, 아니면 기존 trailPct×tp1R/tp2R (scenTrail 시 함께 스케일 — trail 스윕 런과 동일 의미론)
         const tp1Lv = p.bands ? p.bands.tp1 : (p.scenTrail ?? cfg.trailPct) * cfg.tp1R;
         const tp2Lv = p.bands ? p.bands.tp2 : (p.scenTrail ?? cfg.trailPct) * cfg.tp2R;
@@ -1122,10 +1147,18 @@ for (let di = 0; di < tradingDays.length; di++) {
           //   이 시뮬레이션은 라이브보다 **덜 공격적** = 피해를 과소평가한다(진입당일 청산은 아예 재현 못 함).
           else if (cfg.rsiTrail > 0 && cd.c[i] <= (p.hiPrev ?? p.hi) * (1 - cfg.rsiTrail / 100)) p.exitAtOpen = 'trailing';
           // C22 (--rsitp N): ma 회귀 대신 진입가 +N% 고정익절
-          else if (cfg.rsiTp > 0 ? cd.c[i] >= p.entry * (1 + cfg.rsiTp / 100) : cd.c[i] > ma5) p.exitAtOpen = cfg.rsiTp > 0 ? 'tp_fixed' : 'ma5_exit';
+          // ★ 2026-07-30 (--maexitmin N): MA 익절에 **종가 > 진입가×(1+N%)** 를 AND로 요구한다.
+          //   왜: MA선은 직전 2일 종가만 보고 진입가를 안 본다 → **손실 상태에서도 "익절"로 청산된다.**
+          //   실측 2건: 카카오(07-29 진입 35,650 / MA선 35,475 = 진입가보다 낮음)
+          //             한국타이어(07-30 진입 68,000 / MA선 66,300, 현재 67,300 = 이미 익절선 위 → -1.03% 손실청산 예약)
+          //   손실 청산은 하드손절 -7%와 만기가 담당하므로, MA 익절이 손실에서 발동하는 건 설계 의도로 보기 어렵다.
+          //   차단되면 rsiCut/max_hold로 흘러간다(= 더 오래 보유) — 그 대가를 측정하는 것이 이 검증의 요점.
+          else if (cfg.rsiTp > 0
+            ? cd.c[i] >= p.entry * (1 + cfg.rsiTp / 100)
+            : (cd.c[i] > ma5 && (MA_EXIT_MIN == null || cd.c[i] > p.entry * (1 + MA_EXIT_MIN / 100)))) p.exitAtOpen = cfg.rsiTp > 0 ? 'tp_fixed' : 'ma5_exit';
           // C27 (--rsicut N): N일째에도 진입가 미회복이면 조기 타임컷 (만기 전패 버킷 공략)
           else if (cfg.rsiCut > 0 && p.holdDays >= cfg.rsiCut && cd.c[i] < p.entry) p.exitAtOpen = 'time_cut';
-          else if (p.holdDays >= cfg.maxHoldR) p.exitAtOpen = 'max_hold';
+          else if (p.holdDays >= (p.scenMaxHold ?? cfg.maxHoldR)) p.exitAtOpen = 'max_hold';
         }
       }
       const countSub = (sub) => Object.values(book.positions).filter(p => p.sub === sub).length;
@@ -1254,12 +1287,34 @@ for (let di = 0; di < tradingDays.length; di++) {
           const expFrac = REGIME_EXP ? (REGIME_EXP[regime] ?? 1) : 1;
           const effEq = eq * expFrac;
           const perSlot = Math.floor(effEq / cfg.slots);
-          const bigCount = Object.entries(book.positions).filter(([code, p]) => {
+          const countBig = () => Object.entries(book.positions).filter(([code, p]) => {
             const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
             const px = i == null ? p.entry : cd.c[i];
             return px * p.qty >= perSlot * CAPITAL_DEPLOY.dustFraction;
           }).length;
-          if (bigCount >= cfg.slots || book.cash < perSlot * CAPITAL_DEPLOY.minFillFraction) break;
+          let bigCount = countBig();
+          const blocked = () => bigCount >= cfg.slots || book.cash < perSlot * CAPITAL_DEPLOY.minFillFraction;
+          // ★ 2026-07-30 배선 수정: ROTATE가 **non-live-parity 분기(아래 else)에만** 걸려 있어
+          //   --live-parity 실행에서는 죽은 코드였다. 실측: --rotate 유/무 + rotminhold 1/3 세 조합이
+          //   1115체결·CAGR 26.2%·최종자본 21,942,606원으로 완전 동일, 로그에 'rotate' 0건.
+          //   (오늘 세 번째 사례 — --cooldown no-op, --dynslot 미결합에 이어)
+          //   ★ 배선 지점이 중요하다: 이 break가 "슬롯 만석 또는 현금 부족"에서 즉시 발동하는데
+          //     그게 바로 로테이션이 필요한 상황이다. bgt 산출 뒤에 훅을 달면 도달하지 못한다
+          //     (1차 시도가 그래서 또 무효였다 — 값이 다시 완전 동일했다).
+          //   → break 자리에서 최약 laggard를 팔아 자리를 만들고, 그래도 막히면 break.
+          if (blocked()) {
+            let rotated = false;
+            if (ROTATE) {
+              const w = weakestLaggard(book, day);
+              if (w && w !== candidate.code) {
+                const cw = candles.get(w), iw = cw ? indexOfDate(cw, day) : null;
+                if (iw != null) { sell(book, day, w, cw.c[iw], 'rotate'); rotated = true; }
+              }
+            }
+            if (!rotated) break;
+            bigCount = countBig();          // 매도로 슬롯·현금이 바뀌었으므로 재평가
+            if (blocked()) break;
+          }
           // 변동성 사이징(--atrsize N): 후보 종목 ATR%가 목표(N%)보다 크면 작게, 작으면 크게(0.5~1.5배). atrSize 미설정 시 1.
           const vcd = candles.get(candidate.code); const vci = vcd ? indexOfDate(vcd, day) : null;
           const atrM = vci != null ? atrMult(vcd, vci, cfg) : 1;
@@ -1282,7 +1337,7 @@ for (let di = 0; di < tradingDays.length; di++) {
             //   "이 값이 결과를 예측하는가"(= 랭킹 신호로 쓸 수 있는가)를 본다. 필터 통과 여부와 별개 질문.
             : { sub: 'rsi2', regime, rsi: candidate.rsi.toFixed(0), conviction: candidate.conviction.toFixed(1),
               maDist: (vci != null && vci >= (cfg.rsiMa || 5)) ? ((maAt(vcd.c, vci, cfg.rsiMa || 5) / vcd.c[vci] - 1) * 100).toFixed(1) : null };
-          buy(book, day, candidate.code, candidate.price, bgt, { sub: candidate.sub, ctx, breakLv: candidate.breakLv, ...(scenPol?.trailPct > 0 ? { scenTrail: scenPol.trailPct } : {}) });
+          buy(book, day, candidate.code, candidate.price, bgt, { sub: candidate.sub, ctx, breakLv: candidate.breakLv, ...(scenPol?.trailPct > 0 ? { scenTrail: scenPol.trailPct } : {}), ...(scenPol?.stopPct > 0 ? { scenStop: scenPol.stopPct } : {}), ...(scenPol?.maxHoldR > 0 ? { scenMaxHold: scenPol.maxHoldR } : {}) });
         }
       } else {
       // hi120 서브 진입 (모멘텀 유니버스 신고가 돌파)
