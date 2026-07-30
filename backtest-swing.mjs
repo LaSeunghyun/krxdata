@@ -78,7 +78,10 @@ const STRATEGIES = {
   // combo: 레짐 적응형 — 상승장 hi120 비중↑, 중립 rsi2 비중↑, 하락장 rsi2 소량+현금
   'combo':      { slots: 10, rsiMax: 10, stopPct: 7, maxHoldR: 10, lookback: 120, trailPct: 10, maxHoldH: 60 },
   // combo-v2: 사유 기록 분석 반영 — hi120 돌파폭 3%+만, rsi2 최대보유 5일, NEUTRAL hi120 슬롯 2
-  'combo-v2':   { slots: 10, rsiMax: 10, stopPct: 7, maxHoldR: 5, lookback: 120, trailPct: 8, maxHoldH: 60, minBreakout: 3, rsiDays: 2, tp1R: 1, rsiMa: 3, tp2R: 2, v2: true },
+  // ★ 2026-07-30: 라이브 HARD_STOP_PCT 를 7→15 로 올렸다(근거는 stock-live.mjs 주석). 백테 기본도 맞춘다.
+  //   과거 비교를 재현할 때는 `--stoppct 7` 을 명시할 것. 라이브와 기본값이 갈리면 오늘 하루 종일 잡은
+  //   "검증된 백테와 라이브가 다르다" 부류의 결함이 다시 생긴다.
+  'combo-v2':   { slots: 10, rsiMax: 10, stopPct: 15, maxHoldR: 5, lookback: 120, trailPct: 8, maxHoldH: 60, minBreakout: 3, rsiDays: 2, tp1R: 1, rsiMa: 3, tp2R: 2, v2: true },
   // bb-mr: BB 하단밴드 이탈→재진입 확인(단순 터치 아님) 매수, 중심선 도달 전량청산 (rsi2 청산구조 재사용)
   'bb-mr':      { slots: 10, period: 20, mult: 2.0, stopPct: 7, maxHold: 10 },
   // bb-brk: 밴드폭 스퀴즈(120일 분포 하위 20%) 후 상단 돌파 매수, 트레일링 청산 (단독 hi120 청산구조 재사용)
@@ -141,6 +144,11 @@ const DOWN_RSI = Number(argOf('--downrsi', -1));
 // ★ 2026-07-30 (--maexitmin N): MA 익절에 '종가 > 진입가×(1+N%)' AND 조건. 미지정=조건 없음(현행).
 //   0 이면 본전 초과에서만 익절. 음수도 허용(예: -1 = -1%까지는 허용).
 const _mem = argOf('--maexitmin', null);
+// ★ 2026-07-30 (--rsimarank): 확신도 동률 내 MA거리 내림차순 재정렬(풀 불변, 순서만).
+// 값으로 방향을 받는다: desc=MA거리 큰 것 우선(급락 우선) · asc=작은 것 우선(완만한 딥 우선).
+//   플래그만 주면 desc(하위호환). 2026-07-30 단일경로: desc 는 CAGR -6.4%·MDD 70.6% 로 파괴적이었다.
+const _rmr = argOf('--rsimarank', null);
+const RSI_MA_RANK = argv.includes('--rsimarank') ? (_rmr === 'asc' ? 'asc' : 'desc') : null;
 const MA_EXIT_MIN = _mem == null ? null : Number(_mem);
 // 2026-07-27 사용자 제안: 레짐을 시장(삼전) 프록시가 아니라 종목 자체 추세로 판정 (--selfregime)
 const SELF_REGIME = argv.includes('--selfregime');
@@ -1223,6 +1231,39 @@ for (let di = 0; di < tradingDays.length; di++) {
             if (cv) return cv;
             if (a.sub !== b.sub) return a.sub === 'hi120' ? -1 : 1;
             if (a.sub === 'rsi2') return (atrOf.get(a.code) ?? 99) - (atrOf.get(b.code) ?? 99);
+            return 0;
+          });
+        }
+        // ★ 2026-07-30 (--rsimarank): 확신도 동률 내 **MA거리 내림차순** 재정렬. 풀을 깎지 않고 순서만 바꾼다.
+        //
+        //   왜 이 축인가: 확신도는 rsi2에서 **사실상 상수다.** 라이브 journal 실측 BUY 28건 중
+        //   **26건이 확신도 정확히 5.0**(나머지 2건만 2.3·0.8). 즉 후보가 슬롯보다 많을 때
+        //   무엇을 사는지가 **임의 순서로 결정된다.** 07-30 라이브는 후보 98건에서 5건을 샀다 = 93건이 임의 탈락.
+        //   실제 피해 사례: 07-29 카카오는 진입 시 MA거리 +1.0%(익절선 35,475 < 진입가 35,650)로
+        //   **규칙상 최대 기대이익이 음수인 자리**였다. 같은 날 하이브는 +21.8% — 20배 차이인데
+        //   확신도가 같아 구분되지 않았다.
+        //
+        //   같은 직관의 다른 두 형태는 이미 기각됐다(노이즈 바닥 0.268 초과):
+        //     --rsimindist (거른다)   Calmar 3.30 → 1.71 (Δ-1.59)
+        //     --maexitmin  (막는다)   Calmar 1.73 → 1.19 (Δ-0.54)
+        //   ATR 정렬(--rsiatrrank)도 최하위였다(0.70). 그래서 **거르기·막기가 아니라 정렬**만 남았다.
+        if (RSI_MA_RANK) {
+          const mdOf = new Map();
+          for (const c of candidates) {
+            if (c.sub !== 'rsi2') continue;
+            const cdR = candles.get(c.code); const iR = cdR ? indexOfDate(cdR, day) : null;
+            const n = cfg.rsiMa || 5;
+            // MA거리 % = 익절목표(MA)까지 남은 거리. 클수록 규칙상 기대이익이 크다.
+            mdOf.set(c.code, (iR != null && iR >= n) ? ((maAt(cdR.c, iR, n) / cdR.c[iR] - 1) * 100) : -99);
+          }
+          candidates.sort((a, b) => {
+            const cv = b.conviction - a.conviction;
+            if (cv) return cv;
+            if (a.sub !== b.sub) return a.sub === 'hi120' ? -1 : 1;
+            if (a.sub === 'rsi2') {
+              const av = mdOf.get(a.code) ?? -99, bv = mdOf.get(b.code) ?? -99;
+              return RSI_MA_RANK === 'asc' ? av - bv : bv - av;
+            }
             return 0;
           });
         }
