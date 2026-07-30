@@ -44,7 +44,35 @@ async function tgSend(t) {
   if (!TG) return;
   const T = process.env.TELEGRAM_BOT_TOKEN, C = process.env.TELEGRAM_CHAT_ID;
   if (!T || !C) return;
-  try { await fetch(`https://api.telegram.org/bot${T}/sendMessage`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: C, text: t }) }); } catch {}
+  // ★ 2026-07-30: 기존은 `catch {}` 로 실패를 **완전히 삼켰다**. 경보가 안 가도 아무 흔적이 없었다.
+  //
+  //   그리고 이 VM에서 **Node의 fetch 로는 텔레그램에 보낼 수 없다**(실측):
+  //     node fetch  → 149.154.166.110:443 ETIMEDOUT, 3회 재시도 전부 실패
+  //                   IPv6(2001:67c:4e8:f004::9) 는 ENETUNREACH (VM에 글로벌 v6 경로 없음)
+  //     curl        → **같은 IP** 에 HTTP 302 · connect 0.27s 로 성공
+  //     `--dns-result-order=ipv4first` 로도 fetch 는 실패 → DNS 순서 문제가 아니다.
+  //     A 레코드는 149.154.166.110 단 하나이므로 "나쁜 IP를 잡았다"도 아니다.
+  //   원인을 undici 내부까지 파지 않고, **동작이 검증된 경로(curl)** 로 보낸다.
+  //   fetch 는 폴백으로 남긴다(curl 없는 환경 대비).
+  const body = JSON.stringify({ chat_id: C, text: t });
+  const url = `https://api.telegram.org/bot${T}/sendMessage`;
+  try {
+    const { execFile } = await import('child_process');
+    const out = await new Promise((res, rej) => {
+      execFile('curl', ['-4', '-s', '-m', '10', '-X', 'POST', '-H', 'Content-Type: application/json', '-d', body, url],
+        { timeout: 12_000 }, (e, so) => (e ? rej(e) : res(so)));
+    });
+    if (/"ok":true/.test(out)) return;
+    log(`텔레그램 전송 실패(curl): ${String(out).slice(0, 120)}`);
+  } catch (e) {
+    log(`텔레그램 curl 오류: ${String(e.message).slice(0, 80)} — fetch 폴백 시도`);
+    try {
+      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: AbortSignal.timeout(8_000) });
+      if (r.ok) return;
+      log(`텔레그램 전송 실패(fetch) HTTP ${r.status}`);
+    } catch (e2) { log(`텔레그램 fetch 오류: ${String(e2.cause?.code ?? e2.message).slice(0, 60)}`); }
+  }
+  log(`⚠️ 텔레그램 경보 전달 실패 — 경보가 가지 않았다. 원문: ${t.slice(0, 80)}`);
 }
 
 /** claude -p 를 읽기전용 도구로 띄워 진단 (주문·수정 불가) */
