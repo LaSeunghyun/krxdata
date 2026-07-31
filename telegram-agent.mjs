@@ -6,7 +6,8 @@
  *   킬스위치: "STOP"→일시정지(.bot-paused), "START"→재개.
  *   안전: (1)chat_id 잠금=본인만 (2)allowedTools 화이트리스트로 Write/Edit/Web 차단 (3)시스템프롬프트로 주문·--go 금지.
  */
-import { spawn } from 'child_process';
+import { spawn, execFile } from 'child_process';
+import { promisify } from 'util';
 import { existsSync, writeFileSync, unlinkSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -23,8 +24,41 @@ const PAUSE = join(__dirname, '.bot-paused');
 if (!TOKEN || !CHAT) { console.error('TELEGRAM_BOT_TOKEN/CHAT_ID 미설정'); process.exit(1); }
 if (!process.env.CLAUDE_CODE_OAUTH_TOKEN && !process.env.ANTHROPIC_API_KEY) { console.error('CLAUDE_CODE_OAUTH_TOKEN 미설정'); process.exit(1); }
 
-const api = (m, body) => fetch(`https://api.telegram.org/bot${TOKEN}/${m}`,
-  { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json()).catch(e => ({ ok: false, e: e.message }));
+/**
+ * ★ 2026-07-31: fetch → curl 로 교체.
+ *
+ * 이 VM 에서 **Node fetch 는 api.telegram.org 에 도달하지 못한다**(실측):
+ *   node fetch → 149.154.166.110:443 ETIMEDOUT (3/3 실패) · IPv6 는 ENETUNREACH(글로벌 v6 경로 없음)
+ *   curl       → **같은 IP** 에 HTTP 302 · connect 0.27s 성공
+ *   `--dns-result-order=ipv4first` 로도 fetch 는 실패 → DNS 순서 문제가 아니다.
+ *   A 레코드가 149.154.166.110 하나뿐이라 "나쁜 IP 를 잡았다"도 아니다.
+ * 결과: telegram-agent 가 systemd 상 active 인데도 **메시지를 받은 적도 보낸 적도 없었다**
+ *   (2시간 journalctl 0줄 — getUpdates 가 매번 타임아웃하고 조용히 재시도했다).
+ * watchdog(2026-07-31 commit b5c2454)과 동일한 수정이다.
+ *
+ * getUpdates 는 long-poll(timeout 30)이므로 curl -m 은 45, 프로세스 타임아웃은 50s 로 둔다.
+ * ★ 실패를 삼키지 않는다 — watchdog 의 `catch {}` 가 96분 무경보의 원인이었다. 여기선 로그를 남긴다.
+ */
+const execFileP = promisify(execFile);
+let apiFailStreak = 0;
+const api = async (m, body) => {
+  try {
+    const { stdout } = await execFileP('curl', [
+      '-4', '-s', '-m', '45', '-X', 'POST',
+      '-H', 'Content-Type: application/json',
+      '-d', JSON.stringify(body),
+      `https://api.telegram.org/bot${TOKEN}/${m}`,
+    ], { maxBuffer: 8 * 1024 * 1024, timeout: 50_000 });
+    const j = JSON.parse(stdout);
+    if (j.ok) { if (apiFailStreak >= 3) console.log(`[tg] 복구 — ${m} 정상 (연속실패 ${apiFailStreak}건 후)`); apiFailStreak = 0; }
+    else { apiFailStreak++; if (apiFailStreak <= 3 || apiFailStreak % 20 === 0) console.error(`[tg] ${m} 실패(${apiFailStreak}연속): ${stdout.slice(0, 160)}`); }
+    return j;
+  } catch (e) {
+    apiFailStreak++;
+    if (apiFailStreak <= 3 || apiFailStreak % 20 === 0) console.error(`[tg] ${m} 오류(${apiFailStreak}연속): ${String(e.message).slice(0, 160)}`);
+    return { ok: false, e: String(e.message).slice(0, 160) };
+  }
+};
 async function send(text) {
   const t = String(text || '(빈 응답)');
   for (let i = 0; i < t.length; i += 3800) await api('sendMessage', { chat_id: CHAT, text: t.slice(i, i + 3800) });
@@ -116,17 +150,28 @@ console.log('[telegram-agent] 시작 — chat_id 잠금:', CHAT);
 while (true) {
   try {
     const r = await api('getUpdates', { offset, timeout: 30 });
+    // ★ 2026-07-31 계측 추가: 수신을 **무조건** 로그로 남긴다.
+    //   기존에는 정상 수신 경로에 로그가 하나도 없어서(미승인 chat 만 로그) "메시지를 받았는지"를
+    //   판정할 수 없었다. 오늘 진단이 막힌 원인이 이것이다 — 발신은 msg_id 로 확인되는데
+    //   수신은 흔적이 없어 "도달 안 함"과 "받고 조용히 처리"를 구분할 수 없었다.
+    if (r.result?.length) console.log(`[tg] 수신 ${r.result.length}건 offset=${offset} → ${r.result.map(u => `${u.update_id}:${u.message?.chat?.id}:${JSON.stringify(u.message?.text ?? '(텍스트없음)').slice(0, 40)}`).join(' ')}`);
+    else if (r.ok === false) console.error(`[tg] getUpdates 실패: ${JSON.stringify(r).slice(0, 200)}`);
     for (const u of (r.result || [])) {
       offset = u.update_id + 1;
-      const msg = u.message; if (!msg?.text) continue;
+      const msg = u.message;
+      if (!msg?.text) { console.log(`[tg] 스킵(텍스트 아님) update_id=${u.update_id}`); continue; }
       if (String(msg.chat.id) !== CHAT) { console.log('무시(미승인 chat):', msg.chat.id); continue; }
       const text = msg.text.trim();
-      if (text === 'STOP') { writeFileSync(PAUSE, '1'); await send('⏸️ 봇 일시정지. 재개: START'); continue; }
-      if (text === 'START') { if (existsSync(PAUSE)) unlinkSync(PAUSE); await send('▶️ 봇 재개'); continue; }
-      if (existsSync(PAUSE)) continue;
+      // ★ 2026-07-31: 제어명령을 **대소문자 무관**으로 바꿨다.
+      //   실측 사고: 사용자가 `Start` 를 보냈는데 `text === 'START'` 가 거짓이라 제어 경로를 타지 않고
+      //   일반 질문으로 흘러가 claude 를 51초 돌렸다. 제어명령은 오타·대소문자에 관대해야 한다.
+      const CMD = text.toUpperCase();
+      if (CMD === 'STOP') { writeFileSync(PAUSE, '1'); await send('⏸️ 봇 일시정지. 재개: START'); continue; }
+      if (CMD === 'START') { if (existsSync(PAUSE)) unlinkSync(PAUSE); await send('▶️ 봇 재개'); continue; }
+      if (existsSync(PAUSE)) { console.log(`[tg] 폐기(.bot-paused 존재) text=${JSON.stringify(text).slice(0, 40)}`); continue; }
       // 실주문 킬스위치
-      if (text === '주문ON') { writeFileSync(ORDERS_FLAG, '1'); await send('🟢 실주문 ON — 매수/매도 명령이 실제 체결됩니다. (끄기: 주문OFF)'); continue; }
-      if (text === '주문OFF') { if (existsSync(ORDERS_FLAG)) unlinkSync(ORDERS_FLAG); await send('🔴 실주문 OFF — 명령은 DRY(모의)로만 표시됩니다.'); continue; }
+      if (CMD === '주문ON' || CMD === 'ORDERON') { writeFileSync(ORDERS_FLAG, '1'); await send('🟢 실주문 ON — 매수/매도 명령이 실제 체결됩니다. (끄기: 주문OFF)'); continue; }
+      if (CMD === '주문OFF' || CMD === 'ORDEROFF') { if (existsSync(ORDERS_FLAG)) unlinkSync(ORDERS_FLAG); await send('🔴 실주문 OFF — 명령은 DRY(모의)로만 표시됩니다.'); continue; }
       if (text.startsWith('격리해제')) { // 수동픽 전량 매도·체결 확인 후 자동봇 관리대상 복귀
         const nm = text.replace(/^격리해제\s*/, '').trim();
         if (!nm) { await send('사용법: 격리해제 <종목명>'); continue; }
@@ -135,14 +180,6 @@ while (true) {
       }
       // 결정론적 주문 인터셉터 (매수/매도 명령은 claude 안 거치고 tg-order로 직접 처리)
       const cmd = parseCommand(text);
-      if (cmd.action === 'ca_clear') {
-        try {
-          const e2 = (s) => String(s ?? '').replace(/'/g, "''");
-          await dbQuery(`INSERT INTO tg_order_queue (side, name) VALUES ('ca-clear', '${e2(cmd.name)}')`);
-          await send(`📥 CA서킷 해제 요청 큐 등록: ${cmd.name} — 자동봇이 곧 락업 해제(최대 30초).`);
-        } catch (e) { await send('CA서킷 해제 오류: ' + String(e.message).slice(0, 120)); }
-        continue;
-      }
       if (cmd.action === 'buy' || cmd.action === 'sell' || cmd.action === 'sell_target') {
         const dry = !ordersOn();
         if (!dry && !marketOpen()) { await send('⏰ 장시간(08:00~20:00 KST) 외 — 주문 보류. 시간 내 재시도해줘.'); continue; }
@@ -165,8 +202,13 @@ while (true) {
         } catch (e) { await send('주문 오류: ' + String(e.message).slice(0, 200)); }
         continue;
       }
+      // ★ 2026-07-31: claude 경로도 로그를 남긴다 — 오늘 "받았는데 답장이 왔는지" 판정이
+      //   불가능했던 원인이 이 구간의 침묵이었다. 소요시간까지 남겨 300s 타임아웃 여부를 구분한다.
       await api('sendChatAction', { chat_id: CHAT, action: 'typing' });
+      const t0 = Date.now();
       const reply = await ask(text);
+      const secs = ((Date.now() - t0) / 1000).toFixed(1);
+      console.log(`[tg] claude 응답 ${secs}s · ${reply.length}자 · text=${JSON.stringify(text).slice(0, 40)}`);
       await send(reply);
     }
     // 매도사인 모니터는 stock-live(30초 루프, Toss 재사용)로 이관 — telegram-agent는 명령 처리만.
