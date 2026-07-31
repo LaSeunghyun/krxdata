@@ -28,6 +28,10 @@ import readline from 'readline';
 const argv = process.argv.slice(2);
 const argOf = (f, d) => { const i = argv.indexOf(f); return i >= 0 ? argv[i + 1] : d; };
 const MIN_TOV = Number(argOf('--minturnover', 3e9));   // 유동성 하한 (실현 가능성)
+// ★ 2026-07-31 수정: 기본 데이터를 **정제본**으로 바꿨다. 원본 candles-daily.jsonl 에는
+//   Toss 캐시의 가짜 가격점프 18종목(최대 30배)이 들어 있다(2026-07-30 발견 — 권리변동 미반영으로
+//   시계열 내부에 -97% 같은 허위 급락이 생긴다). IC 연구에서 그건 ret20/distMA 계열을 통째로 오염시킨다.
+const CANDLES = String(argOf('--candles', 'candles-daily-toss-clean.jsonl'));
 const FROM = String(argOf('--from', '20230102'));
 const HORIZONS = [1, 3, 5, 10, 20];
 const MIN_STOCKS = 100;                                 // 그날 횡단면 최소 종목수
@@ -35,7 +39,7 @@ const MIN_STOCKS = 100;                                 // 그날 횡단면 최�
 // ── 데이터 로드 ──────────────────────────────────────────────────────────────
 const C = [];
 await new Promise((res) => {
-  const rl = readline.createInterface({ input: createReadStream('candles-daily.jsonl') });
+  const rl = readline.createInterface({ input: createReadStream(CANDLES) });
   rl.on('line', (l) => { if (!l.trim()) return; try { const j = JSON.parse(l); if (j.c?.length >= 200) C.push(j); } catch {} });
   rl.on('close', res);
 });
@@ -69,6 +73,15 @@ const FEATURES = {
   vol20:     (j, i) => { let s = 0, m = 0; for (let k = i - 19; k <= i; k++) m += j.c[k] / j.c[k - 1] - 1; m /= 20; for (let k = i - 19; k <= i; k++) { const r = j.c[k] / j.c[k - 1] - 1; s += (r - m) ** 2; } return Math.sqrt(s / 20); },
   turnover:  (j, i) => { let t = 0; for (let k = i - 19; k <= i; k++) t += j.c[k] * j.v[k]; return Math.log(t / 20 + 1); },
 };
+// ★ 2026-07-31 추가: **귀무 대조군.** 다중비교 건수만 세면 "우연 기대 N개" 상한만 알 뿐,
+//   |IC|·t·스프레드가 무신호에서 실제로 어디까지 흔들리는지는 모른다. 순수 노이즈 특징을
+//   **같은 파이프라인**에 통과시켜 그 바닥을 직접 측정한다(포트폴리오 MC 의 교란 대조군과 같은 역할).
+//   결정적 해시라 재현 가능하다 — Math.random 이면 재실행마다 바닥이 달라진다.
+const h32 = (a, b) => { let x = (a * 374761393 + b * 668265263) | 0; x = (x ^ (x >>> 13)) * 1274126177 | 0; return ((x ^ (x >>> 16)) >>> 0) / 4294967296; };
+const codeSeed = (j) => { let h = 0; for (const ch of String(j.code)) h = (h * 31 + ch.charCodeAt(0)) | 0; return h; };
+FEATURES.NULL_a = (j, i) => h32(codeSeed(j), i);
+FEATURES.NULL_b = (j, i) => h32(codeSeed(j) ^ 0x5bf03635, i * 7 + 1);
+FEATURES.NULL_c = (j, i) => h32(codeSeed(j) + 99991, i * 13 + 5);
 const NAMES = Object.keys(FEATURES);
 
 /** Spearman 상관 (순위 기반). 동순위는 평균순위로 처리하지 않음 — 표본이 크고 연속값이라 영향 미미 */
@@ -169,6 +182,22 @@ console.log(`\n=== 다중비교 정직성 ===`);
 console.log(`검정 수: 특징 ${NAMES.length} × 지평 ${HORIZONS.length} = ${N}개`);
 console.log(`|t| ≥ 3 (p<0.003): ${sig.length}개 · 우연 기대 ${(N * 0.0027).toFixed(1)}개`);
 console.log(`그 중 **연도별 IC 부호가 전부 일치**: ${cons.length}개  ← 국면 안정성까지 통과한 것`);
+// ★ 2026-07-31: 귀무 바닥 판정. NULL_* 의 |IC|·|t|·|스프레드| 최대값이 무신호 상한이다.
+const nullRows = flat.filter(r => r.fname.startsWith('NULL_'));
+const realRows = flat.filter(r => !r.fname.startsWith('NULL_'));
+if (nullRows.length) {
+  const mx = (k) => Math.max(...nullRows.map(r => Math.abs(r[k])));
+  const icF = mx('ic'), tF = mx('t'), spF = mx('sp');
+  console.log(`
+=== 귀무 바닥 (NULL 특징 ${nullRows.length}건 = 노이즈만) ===`);
+  console.log(`|IC| 최대 ${icF.toFixed(4)} · |t| 최대 ${tF.toFixed(2)} · |십분위스프레드| 최대 ${spF.toFixed(4)}%`);
+  const pass = realRows.filter(r => Math.abs(r.ic) > icF && Math.abs(r.t) > tF && Math.abs(r.sp) > spF);
+  console.log(`실제 특징 중 **세 지표 모두 귀무 바닥 초과**: ${pass.length}/${realRows.length}건`);
+  for (const r of pass.sort((a, b) => Math.abs(b.t) - Math.abs(a.t)).slice(0, 15)) {
+    console.log(`  ${r.fname.padEnd(10)} ${String(r.h).padStart(2)}일  IC ${r.ic.toFixed(4)}  t ${r.t.toFixed(1)}  스프레드 ${r.sp.toFixed(3)}%  연도부호 ${r.consistent ? '일치' : '불일치'} (${r.yrs})`);
+  }
+  if (!pass.length) console.log(`  없음 — 이 특징집합에서 노이즈를 넘는 예측력이 검출되지 않았다.`);
+}
 console.log(`\n※ IC는 비용 전이다. 왕복 0.33%p + 스프레드를 넘어야 실현 가능하다.`);
 console.log(`※ 십분위 스프레드가 지평별로 어떻게 감쇠하는지가 보유기간의 근거가 된다.`);
 console.log(`※ 생존편향: 풀이 현재 상장분 → 절대 수치는 낙관. 상대 순위 비교엔 영향 작다.`);
