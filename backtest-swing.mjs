@@ -161,6 +161,10 @@ const SKIP_DOWN_RSI = argv.includes('--skipdownrsi');
 const RSI_TREND = Number(argOf('--rsitrend', 0));
 // 2026-07-25: rsi2 최대낙폭 필터 — 최근 20일 수익률이 -N% 이하로 붕괴한 종목 제외(구조적 하락 배제). 0=off.
 const RSI_MAXDD20 = Number(argOf('--rsimaxdd20', 0));
+// ★ 2026-07-30 (--maxnew N): 하루 신규진입 건수 상한(0=off).
+//   계기 = 07-30 라이브가 폭락 하루에 5슬롯 전액을 3분 만에 같은 신호(rsi2·RSI2 0.0)로 채워
+//   5개 독립 베팅이 아니라 1개 베팅 5배가 됐다. 슬롯 수는 총노출만 제한하고 **동시성**은 제한하지 않는다.
+const MAX_NEW = Number(argOf('--maxnew', 0));
 /**
  * ★ 2026-07-29 사용자 제안(--rsimindist N): rsi2 진입 시 **익절목표까지의 거리**를 요구한다.
  *   rsi2의 익절은 "종가 > MA(rsiMa)" 이고 손절은 진입 -stopPct% 고정이다. 그런데 진입 시점에
@@ -1267,7 +1271,9 @@ for (let di = 0; di < tradingDays.length; di++) {
             return 0;
           });
         }
+        let newToday = 0;   // --maxnew: 당일 신규진입 카운터
         for (const candidate of candidates) {
+          if (MAX_NEW > 0 && newToday >= MAX_NEW) break;   // 당일 신규진입 상한 도달
           if (book.positions[candidate.code]) continue;
           const cReg = SELF_REGIME ? (candidate.selfRegime ?? regime) : regime; // 스킵 필터도 같은 기준으로
           if (SKIP_NEUTRAL_RSI && cReg === 'NEUTRAL' && candidate.sub === 'rsi2') continue; // ICE#1: NEUTRAL rsi2 스킵 테스트
@@ -1379,6 +1385,7 @@ for (let di = 0; di < tradingDays.length; di++) {
             : { sub: 'rsi2', regime, rsi: candidate.rsi.toFixed(0), conviction: candidate.conviction.toFixed(1),
               maDist: (vci != null && vci >= (cfg.rsiMa || 5)) ? ((maAt(vcd.c, vci, cfg.rsiMa || 5) / vcd.c[vci] - 1) * 100).toFixed(1) : null };
           buy(book, day, candidate.code, candidate.price, bgt, { sub: candidate.sub, ctx, breakLv: candidate.breakLv, ...(scenPol?.trailPct > 0 ? { scenTrail: scenPol.trailPct } : {}), ...(scenPol?.stopPct > 0 ? { scenStop: scenPol.stopPct } : {}), ...(scenPol?.maxHoldR > 0 ? { scenMaxHold: scenPol.maxHoldR } : {}) });
+          newToday++;
         }
       } else {
       // hi120 서브 진입 (모멘텀 유니버스 신고가 돌파)

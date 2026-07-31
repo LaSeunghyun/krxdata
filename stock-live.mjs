@@ -161,6 +161,11 @@ async function pickCandidate(cashCeil, heldSet = new Set()) {
         const cl = cd.map(b => b.close), px = cl[cl.length - 1];
         if (px >= cashCeil) return null;
         const rv = rsi2(cl);
+        // ★ 2026-07-30: 20일 점대점 낙폭 하한(RSI_ENTRY_FILTER.maxDd20). -50% 초과는 종목-일 표에서
+        //   유일한 음수 버킷이고 시총 상위(=이 봇의 모집단)에서 가장 나쁘다. 근거·한계는 strategy-contract 주석.
+        //   ※ 아래 dd20 은 rsi2 후보에만 쓴다(hi120 은 신고가 돌파라 애초에 해당 없음).
+        const dd20 = cl.length > 20 ? (px / cl[cl.length - 21] - 1) * 100 : 0;
+        const dd20Block = RSI_ENTRY_FILTER.maxDd20 > 0 && dd20 < -RSI_ENTRY_FILTER.maxDd20;
         // 투매 확인용 거래량비: 당일 / 최근20일 평균
         const vols = cd.map(b => Number(b.volume) || 0);
         const prev20 = vols.slice(-21, -1); const avgVol = prev20.length ? prev20.reduce((a, b) => a + b, 0) / prev20.length : 0;
@@ -170,7 +175,7 @@ async function pickCandidate(cashCeil, heldSet = new Set()) {
           let hh = 0; const startJ = Math.max(0, cl.length - 121); for (let j = startJ; j < cl.length - 1; j++) hh = Math.max(hh, cd[j]?.high ?? 0);
           brk = hh > 0 ? (px / hh - 1) * 100 : 0;
         }
-        return { code: r.stock_code, name: r.corp_name, px, rsi: rv, rsi2: rv, breakoutPct: brk, breakout: brk, sector: r.sector, volRatio };
+        return { code: r.stock_code, name: r.corp_name, px, rsi: rv, rsi2: rv, breakoutPct: brk, breakout: brk, sector: r.sector, volRatio, dd20, dd20Block };
       } catch { return null; } // skip
     }));
     for (const s of results) if (s) signals.push(s);
@@ -178,6 +183,13 @@ async function pickCandidate(cashCeil, heldSet = new Set()) {
   // 캠페인 승자: rsi2 매수 시 투매 거래량 확인(rsiVolMin) + NEUTRAL 레짐 rsi2 스킵
   let cands = buildLiveCandidates(signals, { regime, rsiMax: RSI_MAX, minBreakout: 3, rsiVolMin: RSI_ENTRY_FILTER.volMin });
   if (RSI_ENTRY_FILTER.skipNeutral && regime === 'NEUTRAL') cands = cands.filter(c => c.sub !== 'rsi2');
+  // ★ 2026-07-30: 20일낙폭 -50% 초과 rsi2 후보 배제. 차단 건은 1회 로그로 남긴다 —
+  //   "발동한 적 없다"를 나중에 데이터로 확인할 수 있어야 한다(구 --rsimaxdd20 40 이 그걸 못 해서 미규명으로 남았다).
+  {
+    const blocked = cands.filter(c => c.sub === 'rsi2' && c.dd20Block);
+    if (blocked.length) log(`낙폭배제 ${blocked.length}종목 (20일 -${RSI_ENTRY_FILTER.maxDd20}% 초과): ${blocked.slice(0, 5).map(c => `${c.name} ${c.dd20.toFixed(1)}%`).join(' · ')}`);
+    cands = cands.filter(c => !(c.sub === 'rsi2' && c.dd20Block));
+  }
   const rsiCount = cands.filter(c => c.sub === 'rsi2').length;
   const hiCount = cands.filter(c => c.sub === 'hi120').length;
   return { regime, cands, pick: cands[0] ?? null, rsiCount, hiCount };
@@ -689,6 +701,14 @@ while (true) {
     // exitDay !== today 가드: 판정한 당일에는 집행하지 않는다("종가 판정 → 익일 집행"을 순서와 무관하게 보장)
     if (m.exitAt && m.exitDay !== today) {
       reason = `예약청산(${m.exitAt}, ${m.holdDays ?? '?'}일차, ${m.exitDay} 종가판정)`;
+      // ★ 2026-07-31 계측 추가: 예약청산이 **조용히 집행되지 않는 사례**가 실제로 발생했다.
+      //   07-30 15:35 삼성전기(009150) exitAt='손절 -15%' 예약 → 07-31 08:00~08:45 4사이클 동안
+      //   매도 시도 로그가 **한 줄도 없었다.** settleOrder 는 미체결 시 로그를 남기고 catch 도 로그하므로
+      //   "주문 자체가 시도되지 않았다"는 뜻인데, 원인을 원격 정적분석으로 특정할 수 없었다
+      //   (CA서킷 0건 · marketCountry 전부 KR · EXCLUDED 무관 · settleOrder 로그 없음 — 전부 배제됨).
+      //   그래서 분기 진입 자체를 무조건 기록한다. 다음 사이클에 이 줄이 있으면 분기는 탄 것이고,
+      //   없으면 items 에 없거나 그 앞에서 continue 된 것이다 — 둘 중 어디인지가 갈린다.
+      log(`예약청산 시도 ${it.name}(${it.symbol}) ${m.exitAt} / exitDay ${m.exitDay} / 현재가 ${px.toLocaleString()} / ${qty}주 / ${ret.toFixed(1)}%`);
     }
     // ★ 장중 무개입: rsi2·hi120 모두 15:35 종가판정만(judgeExitsAtClose). 검증된 백테가 종가판정이다.
     else if (m.sub === 'rsi2' || m.sub === 'hi120') { /* 장중 판정 없음 */ }
@@ -745,6 +765,15 @@ while (true) {
       } catch (e) { log(`매도 오류 ${it.name}(${it.symbol}): ${String(e.message).slice(0, 300)}`); }
     }
   }
+  // ★ 2026-07-31 계측 추가: 청산 루프가 실제로 어떤 종목을 봤는지 사이클당 1줄로 남긴다.
+  //   위 '예약청산 시도' 로그와 짝을 이룬다 — 여기 종목이 있는데 시도 로그가 없으면
+  //   루프 앞 구간(CA가드 등)에서 continue 된 것이고, 여기에도 없으면 items 구성 문제다.
+  //   내용이 바뀔 때만 찍히므로(logGate 10분 게이트) 평시 로그량은 거의 늘지 않는다.
+  logGate(`보유판정 ${items.length}종목: ${items.map((i) => {
+    const mm = state.meta[i.symbol];
+    return `${i.symbol}@${Number(i.lastPrice).toLocaleString()}${mm?.exitAt ? `[예약 ${mm.exitAt}/${mm.exitDay}]` : ''}${mm?.caHold ? '[CA보류]' : ''}${mm?.sub ? '' : '[sub없음]'}`;
+  }).join(' ')}`, `hold|${items.map(i => `${i.symbol}:${state.meta[i.symbol]?.exitAt ? 'R' : '-'}`).join(',')}`);
+
   writeFileSync(STATE, JSON.stringify(state, null, 1));
 
   // ★ rsi2 종가 판정 (2026-07-29) — 15:35 이후 하루 1회. 판정만, 집행은 익일.
