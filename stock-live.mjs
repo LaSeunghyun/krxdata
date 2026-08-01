@@ -123,7 +123,13 @@ const marketOpen = () => { const k = kst(); const d = k.getUTCDay(), h = k.getUT
 function tick(p) { if (p < 2_000) return 1; if (p < 5_000) return 5; if (p < 20_000) return 10; if (p < 50_000) return 50; if (p < 200_000) return 100; if (p < 500_000) return 500; return 1_000; }
 const roundTick = (p) => Math.round(p / tick(p)) * tick(p);
 // NXT 애프터마켓은 MARKET 거부 → LIMIT만. 스프레드 크로싱 지정가로 시장가처럼 즉시 체결 유도.
-const limitBuyPx = (p) => { const t = tick(p); return Math.round((p * 1.005) / t) * t; };   // 현재가 +0.5% 올림틱 (매수 체결 유도)
+// ★ 2026-08-01 결함 수정: tick 을 **보정 전 가격**으로 계산해 밴드 경계를 넘는 지정가가 이전 밴드
+//   호가단위로 반올림됐다 → 유효하지 않은 호가라 거래소가 확정 거부(4xx)하고, orderErr 3회면 당일 제외까지 간다.
+//   실측: limitBuyPx(49,900)=50,150 (5만원 이상 구간 호가단위는 100원). 1,000~700,000원 유효가격
+//   6,001건 전수검사에서 매수 30건 위반(0.50%)·매도 0건(상위 밴드가 굵어 하향 반올림은 항상 유효).
+//   → tick 을 **목표가**로 계산한다. 전수 재검증: 위반 0건, 현재가보다 낮아지는 경우 0건, 최소 크로싱 +0.40%.
+//   limitSellPx 는 위반이 없으므로 건드리지 않는다(최소 개입).
+const limitBuyPx = (p) => { const v = p * 1.005; const t = tick(v); return Math.round(v / t) * t; };   // 현재가 +0.5% 올림틱 (매수 체결 유도)
 const limitSellPx = (p) => { const t = tick(p); return Math.round((p * 0.995) / t) * t; };  // 현재가 -0.5% 내림틱 (매도 체결 유도)
 
 const dbQuery = async (sql) => {
@@ -167,7 +173,13 @@ async function gapPolicyToday(today) {
     if (!Array.isArray(cd) || cd.length < 2) return dflt;
     const last = cd.at(-1), prev = cd.at(-2);
     // 당일 봉이 아니면 판단 불가 → 현행 폴백 (추측 금지)
-    if (barDay(last.timestamp) !== today.replace(/-/g, '')) { gapCache = { day: today, params: dflt }; return dflt; }
+    // ★ 2026-08-01: 이 경로만 기본값을 **하루 캐시**해서, 그날 첫 체결이 005930 당일봉 생성 전
+    //   (08:00~09:00 NXT 구간·토스 일봉 반영 지연)에 일어나면 그 이후 편입되는 **모든 hi120 포지션이
+    //   trail 6%/tp 6·12% 로 고정**됐다 — 실제 갭이 G1(-1.8%)이어도 검증된 오버라이드(trail 10/tp 10·20)가
+    //   적용되지 않는다. 갭정책은 사전선언 기준을 전부 통과한 유일한 변종(OOS MC Calmar 2.87→4.67)이므로
+    //   "검증된 동작이 조용히 꺼지는" 경로다. 형제 실패 경로(길이<2·!isFinite·예외)는 캐시하지 않는다 —
+    //   그쪽과 동일하게 재시도 가능하게 만든다. 성공적으로 계산된 갭은 그대로 하루 캐시된다.
+    if (barDay(last.timestamp) !== today.replace(/-/g, '')) return dflt;
     const g = (Number(last.open) / Number(prev.close) - 1) * 100;
     if (!Number.isFinite(g)) return dflt;
     const bin = g < -GAP_BOUND ? 'G1' : g < GAP_BOUND ? 'G2' : 'G3';
@@ -229,7 +241,11 @@ async function pickCandidate(cashCeil, heldSet = new Set()) {
           let hh = 0; const startJ = Math.max(0, cl.length - 121); for (let j = startJ; j < cl.length - 1; j++) hh = Math.max(hh, cd[j]?.high ?? 0);
           brk = hh > 0 ? (px / hh - 1) * 100 : 0;
         }
-        return { code: r.stock_code, name: r.corp_name, px, rsi: rv, rsi2: rv, breakoutPct: brk, breakout: brk, sector: r.sector, volRatio, dd20, dd20Block };
+        // ★ 2026-08-01: 후보 섹터에도 보정맵을 적용한다. 기존엔 후보는 stock_analysis.sector 원본,
+        //   보유는 보정된 SECTOR 맵이라 **같은 종목이 어느 리스트에 있느냐에 따라 다른 섹터로** AI 에게
+        //   제시됐다(SK스퀘어: 후보면 '금융·보험', 보유면 '반도체복합'). 섹터캡이 꺼져 있어 AI 판단이
+        //   유일한 섹터 방어선인데 그 전제가 깨져 있었고, 원장의 섹터 근거도 잘못된 라벨 기반이 된다.
+        return { code: r.stock_code, name: r.corp_name, px, rsi: rv, rsi2: rv, breakoutPct: brk, breakout: brk, sector: SECTOR[r.stock_code] ?? r.sector, volRatio, dd20, dd20Block };
       } catch { return null; } // skip
     }));
     for (const s of results) if (s) signals.push(s);
@@ -520,18 +536,28 @@ async function marketForecast() {
  *   forecast_ledger.drivers 는 순수 통계(EWMA 변동성·평균)라 이 용도로 쓸 수 없다 — 실측 확인함.
  *   하루 1회만 조회하고 프롬프트 크기를 위해 앞부분만 쓴다. 없으면 null(브리핑 없이 판단).
  */
-let briefCache = { day: null, text: null };
+let briefCache = { day: null, text: null, at: 0 };
 async function morningBrief(today) {
-  if (briefCache.day === today) return briefCache.text;
+  // ★ 2026-08-01 결함 2건 수정.
+  //   ① **키 포맷 불일치로 브리핑이 영원히 안 잡혔다.** 저장측 forecast-run 은 `kstDate()` =
+  //      `toKstDateKey()` = `.replaceAll('-','')` 이라 실제 키가 `fc_report:pre:20260803` 인데
+  //      여기서는 `today`(= `2026-08-03`, 대시 포함)로 조회했다. 즉 사용자 요청 ①("아침에 미국장·
+  //      이슈로 전략 수립")이 **한 번도 동작할 수 없었다.**
+  //      내 검증 스크립트(diag-report-save)가 양쪽 다 대시 키를 써서 자기검증으로 이걸 가렸다 —
+  //      테스트가 코드를 검증한 게 아니라 자기 자신을 검증한 사례다.
+  //   ② **부재·실패를 성공과 같이 하루 캐시**했다. 08:00 첫 사이클에 07:00 크론이 아직 안 끝났거나
+  //      dbQuery 가 5xx 면 그날 종일 브리핑 없이 판단한다. 성공만 하루 캐시하고 실패는 10분 후 재조회.
+  const dk = today.replace(/-/g, '');
+  if (briefCache.day === today && (briefCache.text != null || Date.now() - briefCache.at < 600_000)) return briefCache.text;
   let text = null;
   try {
     const rows = await dbQuery(`SELECT data->>'text' AS t, data->>'hm' AS hm FROM paper_state
-      WHERE k IN ('fc_report:pre:${today}', 'fc_report:close:${today}') ORDER BY k = 'fc_report:pre:${today}' DESC LIMIT 1`);
+      WHERE k IN ('fc_report:pre:${dk}', 'fc_report:close:${dk}') ORDER BY k = 'fc_report:pre:${dk}' DESC LIMIT 1`);
     const t = Array.isArray(rows) && rows[0]?.t ? String(rows[0].t) : null;
     if (t) { text = t.slice(0, 3000); log(`아침 브리핑 로드 (${rows[0].hm ?? '?'}, ${t.length}자 → ${text.length}자 사용)`); }
-    else logGate('아침 브리핑 없음 — 예측 보고서 미저장(07:00 크론 확인)', 'brief|none');
-  } catch (e) { log(`아침 브리핑 조회 실패: ${String(e.message).slice(0, 60)}`); }
-  briefCache = { day: today, text };
+    else logGate(`아침 브리핑 없음 (키 fc_report:pre:${dk}) — 10분 후 재조회`, 'brief|none');
+  } catch (e) { log(`아침 브리핑 조회 실패(10분 후 재조회): ${String(e.message).slice(0, 60)}`); }
+  briefCache = { day: today, text, at: Date.now() };
   return text;
 }
 // 하락경보: call_direction=='down' 이거나 (하락확률−상승확률 ≥ probDiff AND confidence ≥ minConf)
@@ -1114,6 +1140,13 @@ while (true) {
             delete state.meta[it.symbol];
             (state.soldToday ??= {})[it.symbol] = today;   // 당일 재진입 금지(아래 진입 루프에서 스킵)
           }
+          // ★ 2026-08-01: 이 경로에 saveState 가 **누락**돼 있었다(옆의 수급청산 경로는 부른다).
+          //   다음 영속은 청산 for 루프가 전부 끝난 뒤인데, 그 사이 남은 종목들이 settleOrder
+          //   폴링(포지션당 최대 24초)을 돌아 예약 3건인 날은 최대 ~50초간 상태가 디스크에 없다.
+          //   그 창에서 죽으면 (a) soldToday 유실 → 당일 재진입 금지가 풀린다(07-28~29 두산퓨얼셀
+          //   4회 휩소로 도입된 검증 규칙) (b) 부분익절의 tp1 플래그가 유실돼 **같은 절반 익절이
+          //   다시 집행**된다(27주 + 13주 = 74% 청산 → "절반 익절하고 나머지를 태운다"가 깨진다).
+          saveState();
         }
         // ★ 매도는 백오프를 걸지 않는다 (2026-07-29). 청산을 막으면 손실이 무한정 열린다 —
         //   매수와 달리 재시도 낭비보다 미청산 리스크가 크다. 오류 전문만 300자로 늘린다.
@@ -1268,6 +1301,11 @@ while (true) {
       if ((state.aiSellCount ?? 0) >= AI_TRADER.sellMaxPerDay) { logGate(`AI청산예약 상한 도달(${AI_TRADER.sellMaxPerDay}/일) — ${code} 스킵`, 'aisell|cap'); break; }
       const m = state.meta[code];
       if (!m || m.exitAt) continue;                      // 미보유·기존예약은 스킵
+      // ★ 2026-08-01: 오늘 종가판정이 끝난 뒤(15:35~20:00)에 심으면 그 예약은 **익일 개장에 집행돼
+      //   다음 판정(15:35)보다 먼저 끝난다** → aiExitPark 대조를 영구히 못 받는다. 즉 "검증된 청산
+      //   사다리 우선" 불변식이 이 시간창에서만 통째로 우회된다. defer 경로는 이미 같은 가드가 있는데
+      //   sell 만 빠져 있었다. AI 매도는 08:00~15:35 창에서만 등록돼 그날 판정과 반드시 겨루게 한다.
+      if (m.judgedDay === today) { log(`AI청산예약 무효 ${code}: 오늘 종가판정 완료(${m.exitAt ?? '보유 유지'}) — 다음 거래일 판단에서 재검토`); continue; }
       m.exitAt = `AI판단(${String(why).slice(0, 60)})`; m.exitDay = today; m.exitFrac = 1; m.aiExit = true;
       state.aiSellCount = (state.aiSellCount ?? 0) + 1; n++;
       log(`AI청산예약 ${code} (${state.aiSellCount}/${AI_TRADER.sellMaxPerDay}) — ${why}`);
@@ -1305,7 +1343,7 @@ while (true) {
     scanHeld = heldSet;
     // 진입대기 가시성(2026-07-27): 후보 0건이면 아무 로그도 안 남아 "왜 안 사는지"를 매번 수동확인해야 했음.
     const blockedToday = Object.values(state.soldToday ?? {}).filter(d => d === today).length;
-    logGate(`${canDeploy ? '진입대기' : '교체검토(만석)'}: 레짐 ${regime ?? '스캔중'} · 후보 ${cands?.length ?? 0}건 · 현금 ${Math.round(cash / 10000).toLocaleString()}만 · 슬롯 ${bigCount}/${LIVE_SLOTS}${rotLeft ? ` · 교체가능 ${rotLeft}회` : ''}${blockedToday ? ` · 당일재진입금지 ${blockedToday}종목` : ''}`,
+    logGate(`${canDeploy ? '진입대기' : '교체검토(만석)'}: 레짐 ${regime ?? '스캔중'} · 후보 ${cands?.length ?? 0}건 · 현금 ${Math.round(cash / 10000).toLocaleString()}만 · 슬롯 ${bigCount}/${LIVE_SLOTS} · 슬롯예산 ${Math.round(perSlot / 10000).toLocaleString()}만${rotLeft ? ` · 교체가능 ${rotLeft}회` : ''}${blockedToday ? ` · 당일재진입금지 ${blockedToday}종목` : ''}`,
       `${canDeploy ? 'buy' : 'rot'}|${regime ?? '스캔중'}|${(cands?.length ?? 0) > 0 ? 'cand' : 'none'}`);
     // ★ 즉시 교체(rotate) 집행 — **이 코드가 유일하게 장중에 매도한다.** 사용자 요청의 핵심 경로다.
     //   ("살 종목 생겼다 → 보유 모멘텀 없어졌다 → 판다 → 새로 산다". 일반 sell 은 익일 집행이라
@@ -1540,6 +1578,16 @@ while (true) {
       const lpx = limitBuyPx(livePx);
       const qty = Math.floor(budget * 0.999 / lpx);
       if (qty < 1) continue;
+      // ★ 2026-08-01: 교체 매수에만 최소 크기 게이트. Toss cashBuyingPower 는 매도대금을 즉시
+      //   반영하지 않는다(paper-swing.js 에 같은 문제로 최대 180초 대기 루프가 이미 있다 — 실측 기록).
+      //   그러면 목표 304만 슬롯을 잔여현금 12만으로 2주만 사고 '교체 완결' 처리되며,
+      //   rotPendingBuy 가 지워져 이어받기·재시도가 소멸하고 그 종목을 정상 크기로 다시 살 경로가 없다
+      //   (추가매수 로직 없음). 즉 교체 기능이 조용히 무력화된다.
+      //   continue 가 아니라 **break** — 차순위를 사면 짝이 깨지고 rotPendingBuy 가 지워진다.
+      if (isRotBuy && qty * lpx < perSlot * CAPITAL_DEPLOY.minFillFraction) {
+        logGate(`교체 매수 보류 ${pick.code}: 예산 ${Math.round(budget / 10000)}만 < 반슬롯 ${Math.round(perSlot * CAPITAL_DEPLOY.minFillFraction / 10000)}만 — 매도대금 미반영 추정, 다음 사이클 재시도`, `rotdust|${pick.code}`);
+        break;
+      }
       try {
         const o = await createOrder(seq, { symbol: pick.code, side: 'BUY', orderType: 'LIMIT', price: String(lpx), quantity: String(qty) });
         const filled = await settleOrder(o?.orderId ?? o?.id, pick.code, 'BUY', 0, `매수 ${pick.code}`, 0);
