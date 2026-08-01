@@ -103,6 +103,14 @@ function ledger(rec) {
   try { appendFileSync(LEDGER, JSON.stringify(rec) + '\n'); } catch { /* 원장 실패가 매매를 막으면 안 됨 */ }
 }
 
+/** 로그 스로틀 — 30초 사이클마다 같은 줄이 쌓이는 걸 막는다(하루 1,440줄 방지). */
+const thrAt = new Map();
+function logThrottled(log, msg, key, ms = 600_000) {
+  const p = thrAt.get(key);
+  if (p != null && Date.now() - p < ms) return;
+  thrAt.set(key, Date.now()); log(msg);
+}
+
 /** VM 가용 메모리(MB). 읽기 실패 시 null = 게이트 통과(리눅스 아닌 환경 등). */
 function memAvailableMb() {
   try {
@@ -190,11 +198,16 @@ ${JSON.stringify(data, null, 1)}
 # 출력
 아래 JSON 한 개만. 다른 텍스트·설명·코드펜스 밖 문장 금지.
 {"strategy":"오늘의 전략 1~2문장","market":"시장 한줄평","skipAll":false,
- "buy":[{"code":"005930","reason":"근거"}],
- "sell":[{"code":"000150","reason":"근거"}],
- "rotate":[{"sell_code":"000150","buy_code":"005930","reason":"근거"}],
- "defer_stop":[{"code":"011070","reason":"근거"}]}
-빈 항목은 빈 배열로 둔다. rotate 의 buy_code 는 buy 목록에도 함께 넣어라.`;
+ "buy":[{"code":"매수할 후보코드","reason":"근거"}],
+ "sell":[{"code":"익일 청산할 보유코드","reason":"근거"}],
+ "rotate":[{"sell_code":"즉시 팔 보유코드","buy_code":"즉시 살 후보코드","reason":"근거"}],
+ "defer_stop":[{"code":"손절 유예할 보유코드","reason":"근거"}]}
+
+규칙 두 개를 반드시 지켜라:
+ · rotate 의 buy_code 는 **buy 목록에도 함께** 넣는다(안 넣으면 그 교체는 무시된다).
+ · rotate 의 sell_code 는 **sell 목록에 넣지 마라.** 같은 종목을 양쪽에 넣으면 즉시교체가 아니라
+   익일 청산으로 처리되고 교체의 매수 레그가 사라진다. 즉시 팔 것은 rotate 에만, 익일 팔 것은 sell 에만.
+빈 항목은 빈 배열로 둔다.`;
 }
 const num = (v, d = 1) => (typeof v === 'number' && Number.isFinite(v) ? Number(v.toFixed(d)) : v ?? null);
 
@@ -294,14 +307,25 @@ export function parseDecision(text, ctx) {
     const rotElig = j.skipAll ? [] : rotRaw.filter(rotOk);
     const rotate = rotElig.slice(0, rotCap);
     const rotTrunc = rotElig.slice(rotCap).map(x => `${x.sell_code}→${x.buy_code}`);
+
+    // ★ sell ∩ rotate 충돌 해소 — **rotate 를 우선**하고 sell 에서 제거한다(리뷰 확정 critical).
+    //   같은 종목이 양쪽에 오면 stock-live 의 sell 예약이 먼저 돌아 m.exitAt 을 심고, rotate 는
+    //   `if (m.exitAt)` 에서 죽는다. 그러면 장중 즉시교체 0건 + 만석이라 매수 0건이 되어
+    //   **사용자가 고쳐달라고 한 증상(만석이면 기회가 사라진다)으로 조용히 되돌아간다.**
+    //   그리고 한 번 exitAt 이 찍히면 다음 판단에서 exit_reserved 로 그 짝이 영구 기각된다.
+    const rotSellCodes = new Set(rotate.map(x => x.sell_code));
+    const sellConflict = sell.filter(x => rotSellCodes.has(x.code)).map(x => x.code);
+    const sellFinal = sell.filter(x => !rotSellCodes.has(x.code));
     const dropped = {
       buy: pick(j.buy).filter(x => !candSet.has(x.code)).map(x => x.code),
       sell: [...pick(j.sell).filter(x => !sellOk(x)).map(x => x.code), ...sellTrunc],
       defer: pick(j.defer_stop).filter(x => !deferOk(x)).map(x => x.code),
       rotate: [...rotRaw.filter(x => !rotOk(x)).map(x => `${x.sell_code}→${x.buy_code}`), ...rotTrunc],
+      // 원장에서 충돌 발생 빈도를 셀 수 있게 별도 태그로 남긴다(프롬프트 개선 판단 근거).
+      sellRotConflict: sellConflict,
     };
     return {
-      buy, sell, defer, rotate, skipAll: j.skipAll,
+      buy, sell: sellFinal, defer, rotate, skipAll: j.skipAll,
       strategy: String(j.strategy ?? '').slice(0, 400),
       market: String(j.market ?? '').slice(0, 300),
       dropped,
@@ -324,8 +348,11 @@ async function callTrader(ctx, { log, notify }) {
   const ms = Date.now() - t0;
 
   // 락 대기 초과는 **실패로 카운트하지 않는다** — 장애가 아니라 정상적인 양보다.
+  //   단 사유(blockedWhy)는 남긴다: 양보가 계속되면 판단이 무기한 안 되는데 그게 조용히 지나가면
+  //   메모리 게이트와 같은 "무경보 정지"가 된다(리뷰 확정). staleFallbackMin 을 넘기면 경보+폴백.
   if (res.locked) {
-    log(`AI판단 양보(claude 동시실행 회피, ${(ms / 1000).toFixed(0)}s) — 다음 주기 재시도`);
+    st.blockedWhy = 'claude 동시실행 락 대기 초과(telegram-agent 사용 중)';
+    logThrottled(log, `AI판단 양보(claude 동시실행 회피, ${(ms / 1000).toFixed(0)}s) — 다음 주기 재시도`, 'lock');
     st.pending = false;
     return;
   }
@@ -435,32 +462,37 @@ export function consultTrader(ctx, { log, notify }) {
 
     // 호출 조건: 판단 없음/만료 OR 상황 변화. 둘 다 minCallGap·메모리·pending 가드를 통과해야 한다.
     const want = !fresh || changed;
+    // ★ "판단이 필요한데 아직 못 받은" 시각을 원인과 무관하게 하나로 기록한다(wantSince).
+    //   원인별로 따로 세면(메모리만, 락만) claude 자체 실패·타임아웃 경로가 빠져
+    //   minCallGapMin(10분) × failOpenAfter(3) = 20분 넘게 'hold'(매수 전면중단)로 조용히 남는다.
+    //   여기서 필요한 판정은 "왜 못 했나"가 아니라 "얼마나 오래 못 했나"다.
+    if (!fresh) st.wantSince ??= Date.now();
+    else { st.wantSince = null; st.blockedWhy = null; }
+
     if (want && !st.pending && (st.lastCallAt === 0 || gapOk)) {
       const mem = memAvailableMb();
       if (mem != null && mem < AI_TRADER.minMemMb) {
-        // ★ 자원 조건이 거래를 **조용히** 멈추게 두지 않는다(리뷰 확정 critical).
-        //   원하는데 못 한 시각을 기록하고, staleFallbackMin 을 넘기면 아래에서 경보+기계폴백으로 넘어간다.
-        st.blockedSince ??= Date.now();
         st.blockedWhy = `메모리 ${mem}MB < ${AI_TRADER.minMemMb}MB`;
+        logThrottled(log, `AI판단 지연(${st.blockedWhy}) — 다음 주기 재시도`, 'mem');
       } else {
-        st.blockedSince = null;
         callTrader(snapshot(ctx), { log, notify })
           .catch(e => { st.pending = false; log(`AI판단 내부오류: ${String(e.message).slice(0, 120)}`); });
       }
-    } else if (!want) st.blockedSince = null;
+    }
 
     if (!fresh) {
-      // ★ 판단 없는 상태가 오래 지속되면 경보 1회 + 기계 로직 폴백.
-      //   'hold' 로 무한정 두면 신규매수가 하루 종일 경보 없이 멈춘다 — "후보가 없어서 안 산 날"과
-      //   구분조차 안 된다. 검증된 기준선으로 계속 도는 것이 자원문제로 멈추는 것보다 낫다.
-      const stale = st.blockedSince && (Date.now() - st.blockedSince) > AI_TRADER.staleFallbackMin * 60_000;
-      if (stale) {
+      // ★ 판단 없는 상태가 staleFallbackMin 을 넘으면 경보 1회 + **기계 로직 폴백**.
+      //   'hold' 로 무한정 두면 신규매수가 경보 없이 멈추고 "후보가 없어서 안 산 날"과 구분조차 안 된다.
+      //   폴백 방향이 기계 로직인 이유: 고장난 쪽은 미검증 AI 레이어이고 기준선은 3.4년 검증된 쪽이다.
+      const staleMs = Date.now() - (st.wantSince ?? Date.now());
+      if (staleMs > AI_TRADER.staleFallbackMin * 60_000) {
+        const why = st.blockedWhy ?? (st.failStreak ? `claude 호출 실패 ${st.failStreak}회` : '판단 미수신');
         if (st.staleAlertDay !== ctx.today) {
           st.staleAlertDay = ctx.today;
-          log(`⚠️ AI판단 ${AI_TRADER.staleFallbackMin}분+ 불가(${st.blockedWhy}) → 기계 로직으로 폴백`);
-          notify(`⚠️ AI 판단을 ${AI_TRADER.staleFallbackMin}분 넘게 못 하고 있습니다(${st.blockedWhy}).\n검증된 기계 전략(combo-v2)으로 계속 매매합니다. AI 매도·손절유예·즉시교체는 이 동안 작동하지 않습니다.`);
+          log(`⚠️ AI판단 ${Math.round(staleMs / 60_000)}분간 불가(${why}) → 기계 로직으로 폴백`);
+          notify(`⚠️ AI 판단을 ${Math.round(staleMs / 60_000)}분 넘게 못 받고 있습니다(${why}).\n검증된 기계 전략(combo-v2)으로 계속 매매합니다. AI 매도·손절유예·즉시교체는 이 동안 작동하지 않습니다.`);
         }
-        return { mode: 'open', reason: st.blockedWhy };
+        return { mode: 'open', reason: why };
       }
       return { mode: 'hold', reason: st.pending ? 'AI 판단 진행 중' : (st.blockedWhy ?? 'AI 판단 대기') };
     }

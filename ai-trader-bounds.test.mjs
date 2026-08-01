@@ -132,6 +132,24 @@ console.log('\n[rotate] 짝 필수 · 매수측 승인 필수 · 손실상한 ·
   eq('짝이 불완전하면(buy_code 없음) 거부', pairs(d.rotate), []);
 }
 
+console.log('\n[충돌] sell 과 rotate 에 같은 종목 — rotate 우선, sell 에서 제거');
+{
+  const d = parseDecision(J({ skipAll: false, buy: [{ code: 'C1' }],
+    sell: [{ code: 'H2', reason: '익일청산' }, { code: 'H1', reason: '정상' }],
+    rotate: [{ sell_code: 'H2', buy_code: 'C1' }] }), ctxOf());
+  eq('rotate 는 살아남는다', pairs(d.rotate), ['H2→C1']);
+  eq('충돌한 H2 는 sell 에서 제거됨', codes(d.sell), ['H1']);
+  eq('충돌이 dropped 에 태그로 남는다', d.dropped.sellRotConflict, ['H2']);
+}
+{
+  // rotate 가 경계에서 기각되면 sell 은 그대로 살아 있어야 한다(과잉 제거 방지)
+  const d = parseDecision(J({ skipAll: false, buy: [],
+    sell: [{ code: 'H2', reason: '익일청산' }],
+    rotate: [{ sell_code: 'H2', buy_code: 'C1' }] }), ctxOf());
+  eq('rotate 기각 시 sell 은 유지', codes(d.sell), ['H2']);
+  eq('충돌 태그 없음', d.dropped.sellRotConflict, []);
+}
+
 console.log('\n[파싱] 깨진 응답은 null 로 떨어져 실패 카운트로 간다');
 eq('비 JSON', parseDecision('죄송합니다 판단 불가', ctxOf()), null);
 eq('skipAll 누락', parseDecision(J({ buy: [] }), ctxOf()), null);
