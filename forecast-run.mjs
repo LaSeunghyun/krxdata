@@ -1237,7 +1237,9 @@ async function main() {
     //   composeReport 는 allow_websearch(pre/close)로 해외장·뉴스를 넣고 공시·환율·수급·NXT까지 합성한다.
     //   그런데 지금까지 **console + 텔레그램으로만 나가고 어디에도 저장되지 않았다** → stock-live 의
     //   AI 판단이 읽을 수 없었다. forecast_ledger.drivers 는 순수 통계(EWMA·평균)뿐이라 대체가 안 된다.
-    //   ai-trader 가 pre 보고서를 morning_brief 로 읽는다(stock-live.marketForecast).
+    //   ai-trader 가 pre 보고서를 morning_brief 로 읽는다(stock-live.morningBrief).
+    //   ※ 알려진 사소한 손실: jsonb() 헬퍼가 `$j$` 달러쿼팅 보호를 위해 본문의 `$` 를 전부 제거한다
+    //     ("1,380원/$" → "1,380원/"). 공용 헬퍼라 바꾸지 않고 감수한다 — 판단에 영향 없는 표기 손실.
     if (!dry) {
       try {
         await dbQuery(`
