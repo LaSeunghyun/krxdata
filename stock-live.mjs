@@ -16,8 +16,8 @@
  *         node stock-live.mjs --go     (집행+연속감시, 백그라운드)
  */
 import dotenv from 'dotenv';
-import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'fs';
-import { execFile } from 'child_process';
+import { existsSync, readFileSync, writeFileSync, appendFileSync, renameSync, unlinkSync } from 'fs';
+import { execFile, execFileSync } from 'child_process';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -25,7 +25,9 @@ import { getAccounts, getHoldings, getBuyingPower, getPricesMap, getDailyCandles
 import { LIVE_SLOTS, LIVE_UNIVERSE_LIMIT, CONVICTION_SIZING, FORECAST_GUARD, PARTIAL_TP, CA_GUARD, LIVE_EXCLUDE, CAPITAL_DEPLOY, SECTOR_CAP, SECTOR_OVERRIDE, applySectorOverride, RSI_ENTRY_FILTER, FLOW_EXIT, AI_TRADER } from './strategy-contract.mjs';
 import { buildLiveCandidates } from './live-parity.mjs';
 import { readBotExclude } from './bot-exclude.mjs';
-import { executeBuy, executeSell } from './tg-order.mjs';
+// ★ 2026-08-01: resolveStock 이 import 목록에 없어 667행 CA서킷 해제 호출이 ReferenceError 였다
+//   (try/catch 안이라 프로세스는 안 죽지만 텔레그램 "CA서킷 해제" 명령이 **한 번도 동작할 수 없었다**).
+import { executeBuy, executeSell, resolveStock } from './tg-order.mjs';
 import { consultTrader, clearRotate } from './ai-trader.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -160,7 +162,11 @@ async function regimeOf() {
 const SCAN_CONCURRENCY = 15; // 2026-07-26 최적화: 동시배치 15개로 스캔 속도 향상
 async function pickCandidate(cashCeil, heldSet = new Set()) {
   const regime = await regimeOf();
-  const rows = await dbQuery(`SELECT stock_code,corp_name,current_price,sector FROM stock_analysis WHERE current_price>=${MIN_PRICE} AND current_price<${Math.floor(cashCeil)} AND avg_turnover_20d>=${MIN_TURNOVER} ORDER BY market_cap_tril DESC LIMIT ${LIVE_UNIVERSE_LIMIT}`);
+  const rows = await dbQuery(`SELECT stock_code,corp_name,current_price,sector FROM stock_analysis WHERE current_price>=${MIN_PRICE} AND current_price<${Math.floor(cashCeil)} AND avg_turnover_20d>=${MIN_TURNOVER} ORDER BY market_cap_tril DESC NULLS LAST LIMIT ${LIVE_UNIVERSE_LIMIT}`);
+  // ★ 2026-08-01 `NULLS LAST` 추가. Postgres 는 DESC 에서 NULL 을 **먼저** 놓는다(NULLS FIRST 기본).
+  //   market_cap_tril 이 NULL 인 종목(신규상장·수집 실패)이 있으면 시총 상위 420 유니버스의
+  //   상단이 그것들로 채워져 **"시총 상위"라는 전제 자체가 깨진다**. 유동성 필터는 통과할 수 있으므로
+  //   조용히 소형주가 후보로 올라온다 — uni420 확장 시 측정한 성과(대형주 기준)와 다른 모집단이 된다.
   const dynExclude = readBotExclude(); // 텔레그램 수동매수 종목 = 봇 재매수 금지
   const targets = rows.filter(r => !heldSet.has(r.stock_code) && !LIVE_EXCLUDE.has(r.stock_code) && !dynExclude.has(r.stock_code)); // 보유·제외·수동관리 스킵
   const signals = [];
@@ -272,8 +278,80 @@ if (argv.includes('--plan')) {
 }
 if (!argv.includes('--go')) { console.log('사용법: --plan 또는 --go'); process.exit(1); }
 
+/**
+ * ★ 2026-08-01 싱글턴 게이트. 기존엔 이중 기동을 막는 장치가 **전혀 없었다**.
+ *   두 프로세스가 같이 돌면 state 를 last-write-wins 로 상호 덮어써서
+ *   rotCount·aiSellCount·soldToday·rotPendingBuy 가 소실되고 → 일일 상한이 뚫리고,
+ *   방금 손절한 종목을 같은 날 재매수하며(07-28~29 두산퓨얼셀 4회 휩소 = 계좌 -1.1% 마찰),
+ *   같은 예약청산을 양쪽이 집행한다. systemd 는 같은 유닛의 중복 기동만 막고
+ *   수동 `node stock-live.mjs --go` 는 못 막는다 — 실제로 발생 가능한 경로다.
+ *   (2026-07-09 "B" 이중실행 사건의 재발 방지이기도 하다.)
+ *   판정은 /proc 존재로 한다(리눅스). 살아 있지 않은 pid 면 스테일 파일로 보고 덮어쓴다.
+ */
+{
+  const PIDF = join(__dirname, '.stock-live.pid');
+  try {
+    if (existsSync(PIDF)) {
+      const other = Number(readFileSync(PIDF, 'utf8').trim());
+      if (other && other !== process.pid && existsSync(`/proc/${other}`)) {
+        // ★ tgNotify 는 여기서 쓸 수 없다 — 그 함수가 참조하는 execFileP 가 아래쪽 const 라 TDZ 다.
+        //   경보는 curl 을 직접 부른다(이 시점에 확실히 동작하는 유일한 경로).
+        log(`🚨 이중 기동 차단 — 이미 pid ${other} 가 돌고 있다. 이 프로세스는 종료한다.`);
+        try {
+          const T = process.env.TELEGRAM_BOT_TOKEN, C = process.env.TELEGRAM_CHAT_ID;
+          if (T && C) execFileSync('curl', ['-4', '-s', '-m', '15', '-X', 'POST', '-H', 'Content-Type: application/json',
+            '-d', JSON.stringify({ chat_id: C, text: `🚨 stock-live 이중 기동을 차단했습니다(기존 pid ${other}).\n두 프로세스가 같이 돌면 주문 상한이 뚫리고 같은 청산을 두 번 집행합니다.` }),
+            `https://api.telegram.org/bot${T}/sendMessage`], { stdio: 'ignore' });
+        } catch {}
+        process.exit(1);
+      }
+      if (other) log(`스테일 pid 파일 정리 (pid ${other} 없음)`);
+    }
+    writeFileSync(PIDF, String(process.pid));
+    const clearPid = () => { try { if (existsSync(PIDF) && Number(readFileSync(PIDF, 'utf8').trim()) === process.pid) unlinkSync(PIDF); } catch {} };
+    process.on('exit', clearPid);
+    for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { clearPid(); process.exit(0); });
+  } catch (e) { log(`싱글턴 게이트 오류(계속 진행): ${String(e.message).slice(0, 100)}`); }
+}
+
 // ── 상태 ─────────────────────────────────────────────────────
-let state = existsSync(STATE) ? JSON.parse(readFileSync(STATE, 'utf8')) : { meta: {}, ipAlerted: false };
+/**
+ * ★ 2026-08-01: state 로드를 방어했다. 기존 `JSON.parse(readFileSync(STATE))` 는 모듈 최상위에
+ *   try/catch 없이 있었다 — 파일이 0바이트·절단이면 throw → 프로세스 즉사 → systemd Restart 로
+ *   5초마다 같은 크래시 = **매매 전면 정지에 로그·경보 0줄**. 보유 전액이 손절·예약청산 없이 방치된다.
+ *   절단은 실재 가능한 시나리오다: writeFileSync 가 19곳에서 비원자적으로 쓰고 있어
+ *   쓰기 중 프로세스가 죽으면(OOM·재배포) 반쪽 파일이 남는다.
+ *   → (a) 로드 실패 시 .bak 폴백 → 그것도 실패하면 빈 상태로 기동(예약은 잃지만 프로세스는 산다)
+ *      (b) saveState 를 tmp→rename 원자쓰기 + .bak 보존으로 바꿔 절단 자체를 막는다.
+ */
+function loadState() {
+  for (const [path, label] of [[STATE, '본파일'], [STATE + '.bak', '백업']]) {
+    if (!existsSync(path)) continue;
+    try {
+      const j = JSON.parse(readFileSync(path, 'utf8'));
+      if (j && typeof j === 'object') {
+        if (label !== '본파일') console.error(`[state] 본파일 손상 → ${label}에서 복구`);
+        return { meta: {}, ipAlerted: false, ...j };
+      }
+    } catch (e) { console.error(`[state] ${label} 파싱 실패: ${String(e.message).slice(0, 120)}`); }
+  }
+  console.error('[state] 로드 실패 — 빈 상태로 기동. 예약청산·트레일 고점이 유실됐다(보유는 브로커 평단으로 복원됨)');
+  return { meta: {}, ipAlerted: false, stateLostAt: new Date(Date.now() + 9 * 3_600_000).toISOString().slice(0, 19) };
+}
+let state = loadState();
+/** 원자적 상태 저장 — tmp 에 쓰고 rename. 직전본은 .bak 로 남겨 절단 시 복구 가능하게 한다. */
+function saveState() {
+  const tmp = STATE + '.tmp';
+  try {
+    writeFileSync(tmp, JSON.stringify(state, null, 1));
+    if (existsSync(STATE)) { try { renameSync(STATE, STATE + '.bak'); } catch {} }
+    renameSync(tmp, STATE);
+  } catch (e) {
+    // 원자쓰기 실패 시 직접 쓰기로 폴백(상태 유실보다 절단 위험을 감수). 실패는 로그로 남긴다.
+    try { writeFileSync(STATE, JSON.stringify(state, null, 1)); } catch {}
+    console.error(`[state] 원자쓰기 실패(직접쓰기 폴백): ${String(e.message).slice(0, 120)}`);
+  }
+}
 const loadJournal = () => { try { return JSON.parse(readFileSync(JOURNAL, 'utf8')); } catch { return { trades: [] }; } };
 function recordTrade(t) { const j = loadJournal(); j.trades.push(t); writeFileSync(JOURNAL, JSON.stringify(j, null, 1)); }
 // AI게이트 컨텍스트용: 최근 실현 매도 n건 (연패 흐름을 판단 근거로 제공)
@@ -501,7 +579,12 @@ function barDay(ts) {
 async function judgeExitsAtClose(items, state, today) {
   for (const it of items) {
     const m = state.meta[it.symbol];
-    if (!m || m.exitAt) continue;
+    // ★ 2026-08-01 결함 수정: 기존 `if (!m || m.exitAt) continue` 는 **AI 예약도 걸러버려서**
+    //   아래 aiExitPark 블록(AI 예약보다 기계 판정을 먼저 돌리는 방어)이 **도달 불가 코드**였다.
+    //   즉 오늘 넣은 "검증된 청산 사다리 선점 방지"가 실제로는 전혀 작동하지 않았다.
+    //   기계 예약(부분익절·MA3·트레일·만기)은 이미 결정된 것이므로 그대로 스킵하고,
+    //   AI 예약만 통과시켜 기계 판정과 우선순위를 겨루게 한다.
+    if (!m || (m.exitAt && !m.aiExit)) continue;
     if (m.sub !== 'rsi2' && m.sub !== 'hi120') continue;
     if (m.judgedDay === today) continue;                       // 하루 1회
     let cd;
@@ -532,6 +615,17 @@ async function judgeExitsAtClose(items, state, today) {
     if (prior.length < RSI_MA_N - 1) continue;
     const ma = (closeToday + prior.slice(-(RSI_MA_N - 1)).reduce((a, b) => a + b, 0)) / RSI_MA_N;
 
+    // ★ 2026-08-01: 평단 재동기화. 사용자가 토스 앱에서 같은 종목을 추가 매수하면 브로커 평단은
+    //   바뀌는데 m.entry 는 옛 진입가로 고정돼, 실제로는 -7% 인 포지션이 -15% 로 계산돼 손절된다
+    //   (반대 방향으로는 손절이 늦어진다). 브로커 평단이 사실이므로 그쪽을 신뢰하고 경보를 남긴다.
+    //   장중 경로는 이미 averagePurchasePrice 를 쓰므로 여기만 맞추면 두 경로가 일치한다.
+    const avgNow = Number(it.averagePurchasePrice) || 0;
+    if (m.entry && avgNow > 0 && Math.abs(avgNow / Number(m.entry) - 1) > 0.005) {
+      log(`⚠️ 평단 불일치 ${it.name}(${it.symbol}) 봇기록 ${Number(m.entry).toLocaleString()} → 브로커 ${avgNow.toLocaleString()} (${((avgNow / Number(m.entry) - 1) * 100).toFixed(1)}%) — 브로커 값으로 재동기화(외부 추가매수 추정)`);
+      tgNotify(`⚠️ 평단 불일치 감지: ${it.name}\n봇 기록 ${Number(m.entry).toLocaleString()} → 실제 ${avgNow.toLocaleString()}\n브로커 평단으로 손절·익절 기준을 재동기화했습니다(토스 앱에서 추가 매수하셨다면 정상).`);
+      m.entry = avgNow;
+      if (m.hi != null && Number(m.hi) < avgNow) m.hi = avgNow;   // 고점이 새 평단보다 낮으면 즉시 트레일 발동을 막는다
+    }
     const entry = Number(m.entry ?? it.averagePurchasePrice);
     const bDay = String(m.boughtAt ?? '').slice(0, 10).replace(/-/g, '');
     const holdDays = bDay ? cd.filter(b => barDay(b.timestamp) > bDay).length : 0;
@@ -598,7 +692,7 @@ async function judgeExitsAtClose(items, state, today) {
     if (why) { m.exitAt = why; m.exitDay = today; m.exitFrac = frac; }
     log(`종가판정[${m.sub}] ${it.name}(${it.symbol}) 종가 ${closeToday.toLocaleString()}${hasToday ? '(일봉)' : '(현재가대체)'}${extra} / ${ret.toFixed(1)}% / ${holdDays}일차 → ${why ? '★예약 ' + why + (frac < 1 ? ` ${Math.round(frac * 100)}%` : '') : (m.exitAt ? '★AI예약 유지 ' + m.exitAt : '보유 유지')}`);
   }
-  writeFileSync(STATE, JSON.stringify(state, null, 1));
+  saveState();
 }
 
 async function signalScanLoop() {
@@ -641,7 +735,7 @@ async function emitSellSignals(holdings, manualCodes, today) {
     if (sig[key] === today) continue; // 종목·유형당 하루 1회
     sig[key] = today;
     await tgSend(`🔔 매도 사인: ${nm}(${it.symbol}) ${ret >= 0 ? '+' : ''}${ret.toFixed(1)}% (${label})\n진입 ${entry.toLocaleString()} → 현재 ${cur.toLocaleString()}\n팔려면 텔레그램: 매도 ${nm}`);
-    writeFileSync(STATE, JSON.stringify(state, null, 1));
+    saveState();
   }
 }
 
@@ -669,7 +763,7 @@ async function processOrderQueue(seq) {
           if (state.meta[res.code]) {
             delete state.meta[res.code].caHold;
             delete state.meta[res.code].caAlertDay;
-            writeFileSync(STATE, JSON.stringify(state, null, 1));
+            saveState();
           }
           r = { ok: true, msg: `✅ [CA서킷 해제] ${res.name}(${res.code}) 봇 자동 매도/손절 정상 재개` };
         } else {
@@ -716,16 +810,28 @@ while (true) {
   //   그 종목을 나중에 다시 사면 372행이 **낡은 meta를 그대로 재사용**해 옛 고점으로 트레일을 계산하고
   //   (즉시 매도 위험) 옛 진입가로 하드손절을 잡고 tp1:true가 남아 부분익절을 건너뛴다.
   //   조회 실패·부분응답으로 트레일 고점을 잃지 않게 **3사이클 연속 미보유**일 때만 삭제한다.
-  if (holdings?.items) {
+  // ★ 2026-08-01: `if (holdings?.items)` 는 **빈 배열도 truthy** 라 통과했다. 토스가 부분응답·
+  //   일시장애로 items:[] 를 주면 3사이클(90초)만에 meta 전량이 purge 되고 예약청산이 소멸한다.
+  //   복구 후 전 포지션이 sub 미상이 되어 폐지된 장중 경로로 떨어진다(측정상 청산건당 -0.69%p).
+  //   "보유 0건"과 "부분응답"을 코드로 구분할 수 없으므로 **빈 응답은 purge 판정에서 제외**한다
+  //   (진짜 전량매도면 soldToday 정리·meta 재생성 경로가 따로 처리한다).
+  if (holdings?.items?.length) {
     const heldNow = new Set((holdings.items ?? []).filter(i => Number(i.quantity) > 0).map(i => i.symbol));
     const miss = (state.metaMiss ??= {});
-    let purged = 0;
+    let purged = 0; const purgedInfo = [];
     for (const code of Object.keys(state.meta)) {
       if (heldNow.has(code)) { delete miss[code]; continue; }
       miss[code] = (miss[code] ?? 0) + 1;
-      if (miss[code] >= 3) { delete state.meta[code]; delete miss[code]; purged++; }
+      if (miss[code] >= 3) {
+        purgedInfo.push(`${code}${state.meta[code]?.exitAt ? `[예약 ${state.meta[code].exitAt}]` : ''}`);
+        delete state.meta[code]; delete miss[code]; purged++;
+      }
     }
-    if (purged) log(`meta 고아 정리 ${purged}건 (미보유 3사이클 연속) → 남은 ${Object.keys(state.meta).length}건`);
+    // ★ 예약청산이 걸린 meta 가 지워지면 검증된 청산이 소멸한다 — 조용히 넘기지 않고 경보한다.
+    if (purged) {
+      log(`meta 고아 정리 ${purged}건 (미보유 3사이클 연속) → 남은 ${Object.keys(state.meta).length}건${purgedInfo.length ? ` · ${purgedInfo.join(' ')}` : ''}`);
+      if (purgedInfo.some(s => s.includes('[예약'))) tgNotify(`⚠️ meta 정리 ${purged}건 중 **예약청산 보유분**이 포함됐습니다: ${purgedInfo.join(' ')}\n토스에서 직접 매도했다면 정상입니다. 아니면 조회 장애일 수 있으니 확인이 필요합니다.`);
+    }
   }
   // 당일 재진입 금지 목록은 날이 바뀌면 정리 (파일 무한 증가 방지)
   if (state.soldToday) {
@@ -751,6 +857,15 @@ while (true) {
   // ① 청산 판정 (트레일링 최대익절 + 하드손절) + 예측하락 이익보호(신규) + 수급붕괴(신규)
   for (const it of items) {
     const px = Number(it.lastPrice), entry = Number(it.averagePurchasePrice), qty = Number(it.quantity);
+    // ★ 2026-08-01: 가격·평단 유효성 검사. 기존엔 검사가 전혀 없어서 **lastPrice 가 한 틱 0 으로만
+    //   와도** (a) CA서킷이 -100% 급락으로 오판해 caHold 를 세우고 (b) ret=-100 이라 clearRet(-10)
+    //   조건을 못 넘겨 **자동매도가 영구 동결**됐다. 예약된 -15% 손절까지 봉인된다.
+    //   entry 가 0·null 이면 ret 이 -Infinity/NaN 이 되어 모든 비교가 무의미해진다.
+    //   유효하지 않으면 이 사이클만 건너뛴다(다음 30초에 정상값이 오면 그대로 진행).
+    if (!(px > 0) || !(entry > 0) || !(qty > 0)) {
+      logGate(`가격·평단 이상 ${it.name}(${it.symbol}) px=${it.lastPrice} avg=${it.averagePurchasePrice} qty=${it.quantity} — 이번 사이클 판정 건너뜀`, `badpx|${it.symbol}`);
+      continue;
+    }
     const m = state.meta[it.symbol] ?? (state.meta[it.symbol] = { hi: px, entry });
     const ret = (px / entry - 1) * 100;
 
@@ -758,14 +873,29 @@ while (true) {
     if (CA_GUARD.enabled) {
       if (m.lastPx && px < m.lastPx * (1 - CA_GUARD.dropPct / 100)) m.caHold = true; // 급락 감지
       if (m.caHold) {
-        if (ret >= CA_GUARD.clearRet) { m.caHold = false; delete m.caAlertDay; } // 조정 반영/회복 → 정상 재개
+        // ★ 2026-08-01 산술 함정 수정: clearRet(-10%)가 하드손절선(-15%)보다 **위**에 있어서
+        //   caHold 가 걸린 포지션은 손절 구간에서 **원리상 절대 풀리지 않았다** —
+        //   풀리는 조건(ret ≥ -10%)은 이미 손절이 불필요한 상태이고, 손절이 필요한 구간(≤ -15%)은
+        //   전부 봉인 영역이었다. CA 오탐(갭하락·lastPrice 이상) 한 번이 검증된 손절을 무기한 봉인한다.
+        //   → 해제 조건을 두 개로: ① 기존 회복 조건 ② **maxHoldDays 경과** = 권리락이었다면
+        //   그 사이 평단이 조정됐을 것이므로 오탐으로 보고 정상 로직을 재개한다(경보 남김).
+        if (ret >= CA_GUARD.clearRet) { m.caHold = false; delete m.caAlertDay; delete m.caSince; }
         else {
+          m.caSince ??= today;
+          const days = Math.round((new Date(today) - new Date(m.caSince)) / 86_400_000);
+          if (days >= CA_GUARD.maxHoldDays) {
+            m.caHold = false; delete m.caAlertDay; delete m.caSince;
+            log(`CA서킷 자동해제 ${it.name}(${it.symbol}) — ${days}일 경과(${CA_GUARD.maxHoldDays}일 상한), ${ret.toFixed(1)}%. 권리락 오탐으로 판단, 정상 청산로직 재개`);
+            tgNotify(`🔓 CA서킷 자동해제: ${it.name} ${ret.toFixed(1)}%\n${days}일간 보류됐으나 평단 조정이 없어 오탐으로 판단했습니다.\n검증된 청산 규칙(손절 -15% 등)을 다시 적용합니다.`);
+          }
+        }
+        if (m.caHold) {
           if (m.caAlertDay !== today) {
             const msg = `⚠️ [CA서킷] ${it.name}(${it.symbol}) 급락 감지(${ret.toFixed(1)}%, 직전 ${m.lastPx?.toLocaleString()}→${px.toLocaleString()}) — 무상증자·분할 의심, 자동매도 보류. 수동 확인 필요!`;
             log(msg); tgNotify(msg); m.caAlertDay = today;
           }
           m.lastPx = px;
-          writeFileSync(STATE, JSON.stringify(state, null, 1));
+          saveState();
           continue; // 이 종목 자동매도(부분익절·손절·트레일) 전면 스킵
         }
       }
@@ -781,15 +911,25 @@ while (true) {
         const lpx = limitSellPx(px);
         const o = await createOrder(seq, { symbol: it.symbol, side: 'SELL', orderType: 'LIMIT', price: String(lpx), quantity: String(qty) });
         const filled = await settleOrder(o?.orderId ?? o?.id, it.symbol, 'SELL', qty, `수급청산 ${it.symbol}`, entry);
+        // ★ 2026-08-01: 전량청산이므로 **실제 체결수량이 주문수량에 미달하면 meta 를 지우지 않는다**
+        //   (지우면 잔량이 sub 미상 포지션이 되어 폐지된 장중 경로로 떨어진다). 예약청산과 동일 규칙.
+        const fqF = Number(filled.filledQty ?? qty);
+        if (filled.ok && fqF < qty) {
+          log(`수급청산 수량 미달 ${it.name}(${it.symbol}) ${fqF}/${qty}주 — meta 유지, 다음 사이클 재판정`);
+          tgNotify(`⚠️ 수급청산 수량 미달: ${it.name} ${fqF}/${qty}주만 체결. 잔량은 기존 규칙이 관리합니다.`);
+          recordTrade({ ts: now(), code: it.symbol, name: it.name, side: 'SELL', px: filled.fillPx ?? lpx, limitPx: lpx, qty: fqF, orderQty: qty, partialFill: true, entry, reason: `수급붕괴 부분체결(${fqF}/${qty})` });
+          saveState();
+          continue;
+        }
         if (filled.ok) {
           const fpx = filled.fillPx ?? lpx;                       // 실제 체결가 우선, 없으면 지정가 폴백
           const fret = (fpx / entry - 1) * 100;
           const rsn = `수급붕괴(기관+외국인 ${FLOW_EXIT.days}일 순매도)`;
           log(`매도 ${it.name}(${it.symbol}) ${qty}주 @${fpx.toLocaleString()}${filled.fillPx ? '' : '(지정가)'} (${rsn}, ${fret.toFixed(1)}%)`);
-          recordTrade({ ts: now(), code: it.symbol, name: it.name, side: 'SELL', px: fpx, limitPx: lpx, fillSrc: filled.fillPx ? 'actual' : 'limit', entry, ret: Number(fret.toFixed(1)), reason: rsn });
+          recordTrade({ ts: now(), code: it.symbol, name: it.name, side: 'SELL', px: fpx, limitPx: lpx, fillSrc: filled.fillPx ? 'actual' : 'limit', qty, entry, ret: Number(fret.toFixed(1)), reason: rsn });
           delete state.meta[it.symbol];
           (state.soldToday ??= {})[it.symbol] = today;   // 당일 재진입 금지
-          writeFileSync(STATE, JSON.stringify(state, null, 1));
+          saveState();
           continue;
         }
         m.flowSold = today; // 미체결 → 당일 재시도 안 함(다음날 재판정)
@@ -818,7 +958,7 @@ while (true) {
               const fret = (fpx / entry - 1) * 100;
               log(`부분익절 ${it.name}(${it.symbol}) ${tpQty}주 @${fpx.toLocaleString()}${filled.fillPx ? '' : '(지정가)'} (+${pct}% 도달, 실현 ${fret.toFixed(1)}%)`);
               recordTrade({ ts: now(), code: it.symbol, name: it.name, side: 'SELL', px: fpx, limitPx: lpx, fillSrc: filled.fillPx ? 'actual' : 'limit', qty: tpQty, entry, ret: Number(fret.toFixed(1)), reason: `부분익절(${tpTag}) +${pct}%` });
-              writeFileSync(STATE, JSON.stringify(state, null, 1));
+              saveState();
             }
           } catch (e) { log(`부분익절 오류 ${it.symbol}: ${e.message.slice(0, 80)}`); }
           continue; // 이번 사이클은 부분익절만 — 남은 수량은 다음 폴에서 추가익절/트레일 평가
@@ -851,10 +991,20 @@ while (true) {
     else if (m.sub === 'rsi2' || m.sub === 'hi120') { /* 장중 판정 없음 */ }
     // ⚠️ sub 미상 포지션만 아래 장중 경로를 탄다(수동픽·state 유실분). 봇 매수분이 여기 오면
     //   meta가 유실돼 검증된 종가판정을 우회하는 것이므로 **경보**를 남긴다(조용한 회귀 방지).
+    // ★ 2026-08-01: sub 미상 포지션의 **자동매도를 제거하고 경보만 남긴다.**
+    //   기존엔 폐지된 장중 하드손절·트레일을 여기서 집행했는데, 이 분기에 오는 것은
+    //   ① 격리해제 직후 수동픽(사용자 평단과 무관한 meta 가 방금 생성됨) ② meta 유실분이다.
+    //   ①은 사용자가 명령한 지 30초 안에 -15%/-6% 로 처분돼 취소할 틈이 없고,
+    //   ②는 진입가·고점이 이미 틀린 값이라 그 기준으로 집행하면 잘못된 가격에 팔린다.
+    //   장중 개입 자체가 분봉 782쌍에서 전부 열위였으므로(청산건당 -0.69%p) 검증되지 않은
+    //   기준값으로 장중 집행할 근거가 없다. 판단은 사람에게 넘긴다.
     else if (!m.sub) {
-      if (m.noSubAlertDay !== today) { m.noSubAlertDay = today; log(`⚠️ sub 미상 포지션 ${it.name}(${it.symbol}) — meta 유실 의심, 장중 경로로 판정됨. 수동 확인 필요`); }
-      if (px <= entry * (1 - HARD_STOP_PCT / 100)) reason = `하드손절 -${HARD_STOP_PCT}%`;
-      else if (px <= m.hi * (1 - TRAIL_PCT / 100)) reason = `트레일손절(고점대비 -${TRAIL_PCT}%, ${ret.toFixed(1)}%)`;
+      if (m.noSubAlertDay !== today) {
+        m.noSubAlertDay = today;
+        const near = px <= entry * (1 - HARD_STOP_PCT / 100);
+        log(`⚠️ sub 미상 포지션 ${it.name}(${it.symbol}) ${ret.toFixed(1)}% — 전략 미상이라 자동청산 보류${near ? ' (손절선 이하)' : ''}. 수동 판단 필요`);
+        tgNotify(`⚠️ 전략 미상 포지션: ${it.name}(${it.symbol}) ${ret >= 0 ? '+' : ''}${ret.toFixed(1)}%\n진입 ${entry.toLocaleString()} → 현재 ${px.toLocaleString()}\n봇이 어떤 전략으로 산 건지 모르는 포지션이라 **자동청산하지 않습니다**(잘못된 기준가로 팔 위험).\n팔려면: 매도 ${it.name}`);
+      }
     }
     else if (px <= entry * (1 - HARD_STOP_PCT / 100)) reason = `하드손절 -${HARD_STOP_PCT}%`;
     else if (px <= m.hi * (1 - TRAIL_PCT / 100) && ret > 0) reason = `트레일링(고점대비 -${TRAIL_PCT}%, ${ret.toFixed(1)}%)`;
@@ -886,9 +1036,20 @@ while (true) {
         if (filled.ok) {
           const fpx = filled.fillPx ?? lpx;                       // 실제 체결가 우선, 없으면 지정가 폴백
           const fret = (fpx / entry - 1) * 100;
-          log(`매도 ${it.name}(${it.symbol}) ${sellQty}주${partial ? `/${qty} 부분` : ''} @${fpx.toLocaleString()}${filled.fillPx ? '' : '(지정가)'} (${reason}, 실현 ${fret.toFixed(1)}%)`);
-          recordTrade({ ts: now(), code: it.symbol, name: it.name, side: 'SELL', px: fpx, limitPx: lpx, fillSrc: filled.fillPx ? 'actual' : 'limit', qty: sellQty, entry, ret: Number(fret.toFixed(1)), reason, forecast: harvest ? fc : undefined });
-          if (partial) {
+          // ★ 2026-08-01 결함 수정: 기존엔 `filled.ok` 만 봐서 **주문수량보다 적게 체결돼도 전량으로
+          //   처리**했다. 전량청산(frac=1)에서 15주 중 6주만 체결되면 meta 가 삭제되고 잔량 9주가
+          //   "sub 미상" 포지션이 되어 **폐지된 장중 손절·트레일 경로**로 떨어진다(검증 범위 밖 동작).
+          //   부분익절에서는 tp 플래그가 조기에 세워져 남은 익절 단계가 사라진다.
+          //   → 실제 체결수량으로 판정한다. 미달이면 상태를 바꾸지 않고 다음 판정에 맡긴다.
+          const fq = Number(filled.filledQty ?? sellQty);
+          const under = fq < sellQty;
+          log(`매도 ${it.name}(${it.symbol}) ${fq}주${under ? `(주문 ${sellQty} 중 미달)` : ''}${partial ? `/${qty} 부분` : ''} @${fpx.toLocaleString()}${filled.fillPx ? '' : '(지정가)'} (${reason}, 실현 ${fret.toFixed(1)}%)`);
+          recordTrade({ ts: now(), code: it.symbol, name: it.name, side: 'SELL', px: fpx, limitPx: lpx, fillSrc: filled.fillPx ? 'actual' : 'limit', qty: fq, orderQty: sellQty, partialFill: under || undefined, entry, ret: Number(fret.toFixed(1)), reason, forecast: harvest ? fc : undefined });
+          if (under) {
+            // 수량 미달 → 상태 전이 없음. 남은 수량은 기존(검증된) 규칙이 다음 판정에서 계속 관리한다.
+            log(`  ⚠️ 체결수량 미달 — meta·예약 유지, 다음 판정에서 재시도`);
+            tgNotify(`⚠️ 청산 수량 미달: ${it.name} ${fq}/${sellQty}주만 체결됐습니다.\n잔량은 기존 청산 규칙이 계속 관리합니다(상태 변경 없음).`);
+          } else if (partial) {
             // 부분익절: 포지션 유지. tp 플래그를 세워 다음 판정에서 같은 단계가 재발동하지 않게 한다.
             if (/tp1/.test(reason)) m.tp1 = true; else if (/tp2/.test(reason)) m.tp2 = true;
             delete m.exitAt; delete m.exitFrac; delete m.exitDay;
@@ -899,7 +1060,37 @@ while (true) {
         }
         // ★ 매도는 백오프를 걸지 않는다 (2026-07-29). 청산을 막으면 손실이 무한정 열린다 —
         //   매수와 달리 재시도 낭비보다 미청산 리스크가 크다. 오류 전문만 300자로 늘린다.
-      } catch (e) { log(`매도 오류 ${it.name}(${it.symbol}): ${String(e.message).slice(0, 300)}`); }
+      } catch (e) {
+        const msg = String(e.message).slice(0, 300);
+        log(`매도 오류 ${it.name}(${it.symbol}): ${msg}`);
+        // ★ 2026-08-01: **하한가 잠김 종목은 원리적으로 매도 불가**였다.
+        //   limitSellPx 는 항상 현재가 × 0.995 라, 하한가에 잠기면 지정가가 하한가보다 낮게 나가
+        //   거래소가 하루 종일 거부한다(하한가는 연속되는 경우가 많아 손실이 그대로 열린다).
+        //   4xx 거부면 **현재가 그대로**(할인 없이) 1회 재시도한다. 그것도 실패하면 경보로 사람에게.
+        if (/:\s*4\d\d\s/.test(msg) && m.sellRetryDay !== today) {
+          m.sellRetryDay = today;
+          try {
+            const t = tick(px), lpx2 = Math.round(px / t) * t;   // 할인 없는 현재가 지정가
+            log(`  매도 재시도 (할인 없는 지정가 ${lpx2.toLocaleString()}) — 하한가 잠김 대응`);
+            const o2 = await createOrder(seq, { symbol: it.symbol, side: 'SELL', orderType: 'LIMIT', price: String(lpx2), quantity: String(qty) });
+            const f2 = await settleOrder(o2?.orderId ?? o2?.id, it.symbol, 'SELL', qty, `매도재시도 ${it.symbol}`, entry);
+            if (f2.ok && Number(f2.filledQty ?? 0) >= qty) {
+              const fpx2 = f2.fillPx ?? lpx2, fret2 = (fpx2 / entry - 1) * 100;
+              log(`매도 ${it.name}(${it.symbol}) ${qty}주 @${fpx2.toLocaleString()} (${reason} · 재시도 성공, 실현 ${fret2.toFixed(1)}%)`);
+              recordTrade({ ts: now(), code: it.symbol, name: it.name, side: 'SELL', px: fpx2, limitPx: lpx2, qty, entry, ret: Number(fret2.toFixed(1)), reason: `${reason} (할인없는 지정가 재시도)` });
+              delete state.meta[it.symbol];
+              (state.soldToday ??= {})[it.symbol] = today;
+              saveState();
+            } else {
+              tgNotify(`🚨 청산 실패: ${it.name}(${it.symbol}) ${ret.toFixed(1)}%\n사유 ${reason}\n지정가·현재가 둘 다 거부됐습니다(하한가 잠김 의심). 토스 앱에서 직접 확인이 필요합니다.`);
+            }
+          } catch (e2) {
+            log(`  매도 재시도도 실패: ${String(e2.message).slice(0, 200)}`);
+            tgNotify(`🚨 청산 2회 실패: ${it.name}(${it.symbol}) ${ret.toFixed(1)}% — ${reason}\n하한가 잠김·거래정지 의심. 토스 앱 확인이 필요합니다.`);
+          }
+          saveState();
+        }
+      }
     }
   }
   // ★ 2026-07-31 계측 추가: 청산 루프가 실제로 어떤 종목을 봤는지 사이클당 1줄로 남긴다.
@@ -911,7 +1102,7 @@ while (true) {
     return `${i.symbol}@${Number(i.lastPrice).toLocaleString()}${mm?.exitAt ? `[예약 ${mm.exitAt}/${mm.exitDay}]` : ''}${mm?.caHold ? '[CA보류]' : ''}${mm?.sub ? '' : '[sub없음]'}`;
   }).join(' ')}`, `hold|${items.map(i => `${i.symbol}:${state.meta[i.symbol]?.exitAt ? 'R' : '-'}`).join(',')}`);
 
-  writeFileSync(STATE, JSON.stringify(state, null, 1));
+  saveState();
 
   // ★ rsi2 종가 판정 (2026-07-29) — 15:35 이후 하루 1회. 판정만, 집행은 익일.
   {
@@ -1024,7 +1215,7 @@ while (true) {
       state.aiSellCount = (state.aiSellCount ?? 0) + 1; n++;
       log(`AI청산예약 ${code} (${state.aiSellCount}/${AI_TRADER.sellMaxPerDay}) — ${why}`);
     }
-    if (n) { writeFileSync(STATE, JSON.stringify(state, null, 1)); tgNotify(`📌 AI 청산예약 ${n}건 — 익일 개장 집행 예정`); }
+    if (n) { saveState(); tgNotify(`📌 AI 청산예약 ${n}건 — 익일 개장 집행 예정`); }
   }
   // ★ AI 손절유예 플래그를 포지션에 심는다. 실제 유예는 15:35 종가판정에서 1회만 소비된다.
   //   장중엔 rsi2 청산 판정이 없으므로(장중 무개입) 여기서 심어두면 된다. 단 **오늘 판정이 이미
@@ -1034,12 +1225,15 @@ while (true) {
     for (const [code, why] of ai.defer) {
       const m = state.meta[code];
       if (!m || m.stopDeferDay === today || m.stopDefer === today) continue;   // 미보유·당일 소비·이미 심음
+      // ★ 같은 판단에서 sell 과 defer 가 동시에 나올 수 있다(둘은 서로를 검사하지 않는다).
+      //   청산이 예약된 종목에 유예를 심으면 "유예했다"는 오보가 되고, 실제로는 예약청산이 집행된다.
+      if (m.exitAt) { log(`AI 손절유예 무효 ${code}: 청산예약(${m.exitAt})이 우선`); continue; }
       if (m.judgedDay === today) { log(`AI 손절유예 무효 ${code}: 오늘 종가판정 이미 완료(${m.exitAt ?? '보유유지'}) — 다음 거래일에 재판단`); continue; }
       if (Number(m.deferCount ?? 0) >= AI_TRADER.deferMaxPerPosition) { log(`AI 손절유예 거부 ${code}: 포지션 유예 상한 ${AI_TRADER.deferMaxPerPosition}회 소진`); continue; }
       m.stopDefer = today; m.stopDeferWhy = String(why).slice(0, 120); n++;
       log(`AI 손절유예 예정 ${code} — ${why}`);
     }
-    if (n) writeFileSync(STATE, JSON.stringify(state, null, 1));
+    if (n) saveState();
   }
 
   // ② 진입 — 자본기반 게이트. 매수·즉시교체만 이 블록 안에서 한다.
@@ -1108,7 +1302,7 @@ while (true) {
         //   그대로 남겨 당일 재시도를 막는다 — 즉시교체는 못 해서 잃는 것보다 잘못해서 잃는 게 크다.
         rt[rot.sell_code] = { day: today, n: (rt[rot.sell_code]?.day === today ? (rt[rot.sell_code].n ?? 0) : 0) + 1 };
         state.rotCount = (state.rotCount ?? 0) + 1; state.rotDay = today;
-        writeFileSync(STATE, JSON.stringify(state, null, 1));
+        saveState();
         try {
           const lpx = limitSellPx(px);
           const o = await createOrder(seq, { symbol: it.symbol, side: 'SELL', orderType: 'LIMIT', price: String(lpx), quantity: String(qty) });
@@ -1128,7 +1322,7 @@ while (true) {
             //   top1Unjudged·hold·closed 에 막혀 현금이 종일 유휴가 될 수 있다(리뷰 확정 critical).
             rotProceeds = fpx * fq * 0.9967;
             state.rotPendingBuy = { code: rot.buy_code, day: today, at: now(), proceeds: Math.round(rotProceeds), tries: 0 };
-            writeFileSync(STATE, JSON.stringify(state, null, 1));
+            saveState();
             tgNotify(`🔄 AI 즉시교체: ${it.name} 매도 ${fret >= 0 ? '+' : ''}${fret.toFixed(1)}% → ${buyPick.name}(${rot.buy_code}) 매수 예정\n사유: ${rot.reason}\n※ 왕복비용 약 0.33%p 발생 · 오늘 ${state.rotCount}/${AI_TRADER.rotate.maxPerDay}회`);
             clearRotate();          // 남은 교체 지시 비움 → 재판단 강제(낡은 2번째 교체·스킵로그 도배 방지)
             rotBuyFirst = rot.buy_code;
@@ -1141,7 +1335,7 @@ while (true) {
             recordTrade({ ts: now(), code: it.symbol, name: it.name, side: 'SELL', px: filled.fillPx ?? lpx, limitPx: lpx,
               fillSrc: filled.fillPx ? 'actual' : 'limit', qty: fq, entry, reason: `AI 즉시교체 부분체결(${fq}/${qty})`, partial: true });
             tgNotify(`🚨 즉시교체 부분체결: ${it.name} ${fq}/${qty}주만 체결됐습니다.\n잔량 ${qty - fq}주는 기존 청산 규칙이 계속 관리합니다. 매수는 진행하지 않습니다.`);
-            writeFileSync(STATE, JSON.stringify(state, null, 1));
+            saveState();
             clearRotate();
             break;
           }
@@ -1203,13 +1397,13 @@ while (true) {
     //   현금이 종일 유휴가 될 수 있다(리뷰 확정 critical. 왕복비용은 이미 지출됐다).
     //   ※ 반드시 top1Unjudged 계산 **앞**에 있어야 한다 — 뒤에 두면 복원한 의도가 그 가드를 못 넘는다.
     const pend = state.rotPendingBuy;
-    if (pend && pend.day !== today) { delete state.rotPendingBuy; writeFileSync(STATE, JSON.stringify(state, null, 1)); }
+    if (pend && pend.day !== today) { delete state.rotPendingBuy; saveState(); }
     else if (!rotBuyFirst && pend?.day === today) {
-      if (heldSet.has(pend.code)) { delete state.rotPendingBuy; writeFileSync(STATE, JSON.stringify(state, null, 1)); }  // 결국 샀다
+      if (heldSet.has(pend.code)) { delete state.rotPendingBuy; saveState(); }  // 결국 샀다
       else if ((state.orderErr?.[pend.code]?.n ?? 0) >= ORDER_ERR_MAX || (pend.tries ?? 0) >= 20) {
         log(`교체 미완 포기: ${pend.code} (주문거부 ${state.orderErr?.[pend.code]?.n ?? 0}회 · 시도 ${pend.tries ?? 0}회) — 확보 현금은 일반 매수 대상으로`);
         tgNotify(`⚠️ 즉시교체 매수 포기: ${pend.code} 를 끝내 못 샀습니다(거부 ${state.orderErr?.[pend.code]?.n ?? 0}회 · 시도 ${pend.tries ?? 0}회).\n확보한 현금 ${Math.round((pend.proceeds ?? 0) / 10000).toLocaleString()}만원은 일반 매수 후보로 배정됩니다.`);
-        delete state.rotPendingBuy; writeFileSync(STATE, JSON.stringify(state, null, 1));
+        delete state.rotPendingBuy; saveState();
       } else {
         rotBuyFirst = pend.code;
         pend.tries = (pend.tries ?? 0) + 1;
@@ -1298,7 +1492,8 @@ while (true) {
           recordTrade({ ts: now(), code: pick.code, name: pick.name, side: 'BUY', px: fpx, limitPx: lpx, fillSrc: filled.fillPx ? 'actual' : 'limit', qty, sub: pick.sub, regime, conviction: Number(pick.conviction.toFixed(1)), sizing: strong ? 'concentrate' : 'diversify' });
           // signalCache는 더 이상 여기서 비우지 않음(2026-07-24) — signalScanLoop가 독립적으로 계속 갱신하므로
           // 비우면 다음 백그라운드 스캔 완료까지 후보가 빈 채로 대기하게 돼 불필요하게 매수 기회를 놓침.
-          writeFileSync(STATE, JSON.stringify(state, null, 1));
+          saveState();
+          bought = pick.code;   // ★ 체결 확인된 경우에만 세운다 (아래 주석 참조)
         }
       } catch (e) {
         // ★ 오류 전문 300자 (2026-07-29). 기존 80자는 토스 422 본문의 code 필드가 잘려
@@ -1311,12 +1506,15 @@ while (true) {
         if (definitive) {
           const rec = (state.orderErr ??= {})[pick.code] ??= { n: 0, day: today };
           rec.day = today; rec.n++; rec.msg = msg.slice(0, 120); n = rec.n;
-          writeFileSync(STATE, JSON.stringify(state, null, 1));
+          saveState();
         }
         log(`매수 오류 ${pick.name}(${pick.code})${definitive ? ` 확정거부 ${n}/${ORDER_ERR_MAX}회` : ' 일시장애(카운트 제외)'}: ${msg}`);
         if (definitive && n >= ORDER_ERR_MAX) log(`  → ${pick.name}(${pick.code}) 당일 진입 제외 — 연속 확정거부 ${n}회`);
       }
-      bought = pick.code;
+      // ★ 2026-08-01 결함 수정: `bought` 를 여기(catch 밖)에 세우면 **주문이 거부·미체결이어도
+      //   "샀다"가 된다.** 그러면 (a) rotPendingBuy 가 지워져 교체 미완 복구가 죽고
+      //   (b) "팔고 안 사기" 경보가 영원히 안 울린다 — 오늘 만든 방어 두 개가 동시에 무력화된다.
+      //   체결 확인 지점(`if (filled.ok)` 안)으로 옮겼다. break 는 그대로 — 사이클당 시도 1건.
       break;  // 사이클당 진입 1건 (나머지 슬롯은 다음 폴에서 잔여현금 재계산 후 평가)
     }
     // ★ 교체 짝이 완결되면 미완 상태를 지운다. 다른 종목을 샀으면 짝은 깨진 것이므로 그것도 종료한다
@@ -1328,7 +1526,7 @@ while (true) {
         tgNotify(`⚠️ 즉시교체 짝 불일치: 목표 ${rotBuyFirst} 대신 ${bought} 를 매수했습니다.\n(목표 종목의 예산·신호 조건이 맞지 않았습니다.)`);
       }
       if (state.rotPendingBuy) { delete state.rotPendingBuy; }
-      writeFileSync(STATE, JSON.stringify(state, null, 1));
+      saveState();
     }
     // ★ "팔고 안 사는" 사건은 조용히 지나가서는 안 된다 — 왕복비용을 확정 지출했는데 포지션이 없다.
     //   다음 사이클(30초)에 rotPendingBuy 로 재시도되지만, 사용자가 알아야 하는 상태다.
@@ -1338,7 +1536,7 @@ while (true) {
         state.rotAlertDay = today;
         tgNotify(`🚨 즉시교체 미완: 매도는 됐는데 ${rotBuyFirst} 매수가 안 됐습니다.\n현금이 유휴 상태이고 30초마다 재시도합니다(최대 20회). 이후엔 일반 매수로 배정됩니다.`);
       }
-      writeFileSync(STATE, JSON.stringify(state, null, 1));
+      saveState();
     }
   } else if (marketOpen()) {
     logGate(`진입보류: 슬롯 ${bigCount}/${LIVE_SLOTS} · 현금 ${Math.round(cash / 10000).toLocaleString()}만(슬롯예산 ${Math.round(perSlot / 10000).toLocaleString()}만)${bear && !FORECAST_GUARD.shadow ? ' · 하락경보' : ''}`,

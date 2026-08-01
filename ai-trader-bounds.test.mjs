@@ -142,12 +142,23 @@ console.log('\n[충돌] sell 과 rotate 에 같은 종목 — rotate 우선, sel
   eq('충돌이 dropped 에 태그로 남는다', d.dropped.sellRotConflict, ['H2']);
 }
 {
-  // rotate 가 경계에서 기각되면 sell 은 그대로 살아 있어야 한다(과잉 제거 방지)
+  // ★ rotate 가 경계·상한으로 기각돼도 **그 매도 레그는 sell 에서 제거한다.**
+  //   AI 는 "이걸 팔아 저걸 산다"고 짝으로 지명한 것이고, 매수가 안 될 거면 매도도 하면 안 된다.
+  //   남겨두면 매수 없는 단독 매도가 익일 집행돼 왕복비용만 나가고 현금이 유휴가 된다.
+  //   방향은 "거래를 줄이는" 쪽 = 통과한 3축과 같은 방향.
   const d = parseDecision(J({ skipAll: false, buy: [],
     sell: [{ code: 'H2', reason: '익일청산' }],
     rotate: [{ sell_code: 'H2', buy_code: 'C1' }] }), ctxOf());
-  eq('rotate 기각 시 sell 은 유지', codes(d.sell), ['H2']);
-  eq('충돌 태그 없음', d.dropped.sellRotConflict, []);
+  eq('rotate 기각 시 그 매도 레그도 sell 에서 제거(단독 매도 방지)', codes(d.sell), []);
+  eq('제거가 충돌 태그로 계측된다', d.dropped.sellRotConflict, ['H2']);
+}
+{
+  // 상한으로 잘린 짝의 매도 레그도 같은 규칙 — 새어나가면 안 된다
+  const d = parseDecision(J({ skipAll: false, buy: [{ code: 'C1' }, { code: 'C2' }],
+    sell: [{ code: 'H1', reason: '이건 순수 청산' }],
+    rotate: [{ sell_code: 'H2', buy_code: 'C1' }, { sell_code: 'H1', buy_code: 'C2' }] }), ctxOf({ rotateLeft: 1 }));
+  eq('상한으로 잘린 짝의 sell_code 도 sell 에서 제거', codes(d.sell), []);
+  eq('rotate 는 1건만 살아남는다', pairs(d.rotate).length, 1);
 }
 
 console.log('\n[파싱] 깨진 응답은 null 로 떨어져 실패 카운트로 간다');

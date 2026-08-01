@@ -87,6 +87,9 @@ function loadState() {
     st.failClosedDay = j.failClosedDay ?? null;
     st.failOpenDay = j.failOpenDay ?? null;
     st.seenDay = j.seenDay ?? null;
+    st.wantSince = j.wantSince ?? null;
+    st.staleAlertDay = j.staleAlertDay ?? null;
+    st.blockedWhy = j.blockedWhy ?? null;
   } catch { /* 없으면 기본값 */ }
 }
 function saveState() {
@@ -94,6 +97,10 @@ function saveState() {
     writeFileSync(STATE_F, JSON.stringify({
       failStreak: st.failStreak, failClosedDay: st.failClosedDay,
       failOpenDay: st.failOpenDay, seenDay: st.seenDay, savedAt: kstNow(),
+      // ★ 2026-08-01: stale 폴백 판정 시각도 영속화한다. 메모리에만 두면 systemd 재기동이
+      //   staleFallbackMin(10분)보다 잦을 때 wantSince 가 매번 0부터 다시 세어져
+      //   **폴백이 영구히 발동하지 않고 종일 무경보 'hold'(매수 전면중단)로 남는다.**
+      wantSince: st.wantSince, staleAlertDay: st.staleAlertDay, blockedWhy: st.blockedWhy,
     }));
   } catch { /* 저장 실패가 매매를 막으면 안 됨 */ }
 }
@@ -270,7 +277,14 @@ export function parseDecision(text, ctx) {
     const buy = j.skipAll ? [] : pick(j.buy).filter(x => candSet.has(x.code));
     // (B) 매도는 보유분만, 이미 예약된 건 제외(중복 방지) + **일일 상한**.
     //   상한이 없으면 한 번의 판단으로 보유 전량 회전이 매일 가능하다(리뷰 확정 critical).
-    const sellOk = (x) => heldMap.has(x.code) && !heldMap.get(x.code).exit_reserved;
+    // ★ 2026-08-01: ca_hold 검사 추가. rotOk 는 검사하는데 sellOk 는 빠져 있었다.
+    //   CA서킷(권리락 의심으로 자동매도 전면보류) 종목에 exitAt 이 심기면 **집행도 판정도 안 된다**:
+    //   청산루프는 CA가드에서 continue 하고, 종가판정은 기계예약으로 보고 스킵한다 → 손절 규칙 없는
+    //   무기한 보유가 된다. 게다가 유일한 복구 경로(텔레그램 CA해제)도 방금까지 깨져 있었다.
+    const sellOk = (x) => {
+      const h = heldMap.get(x.code);
+      return !!h && !h.exit_reserved && !h.ca_hold;
+    };
     const sellCap = Math.max(0, ctx.sellLeft ?? AI_TRADER.sellMaxPerDay);
     const sellElig = pick(j.sell).filter(sellOk);
     const sell = sellElig.slice(0, sellCap);
@@ -299,8 +313,12 @@ export function parseDecision(text, ctx) {
       if (!R.enabled || ctx.rotateLeft <= 0) return false;
       const h = heldMap.get(x.sell_code);
       if (!h || h.exit_reserved || h.ca_hold) return false;
-      if (typeof h.ret_pct === 'number' && h.ret_pct < -R.maxSellLossPct) return false;   // 큰 손실은 손절 규칙에 맡긴다
-      if (typeof h.hold_days === 'number' && h.hold_days < R.minHoldDays) return false;   // 당일 진입분 교체 금지
+      // ★ 2026-08-01: `typeof === 'number' &&` 조건은 **값을 모를 때 가드를 통과시킨다.**
+      //   averagePurchasePrice 나 boughtAt 이 0·null 이면 ret_pct·hold_days 가 null 이 되고,
+      //   그러면 손실상한·최소보유일 두 가드가 동시에 무력화돼 -30% 종목도 교체 매도된다.
+      //   알 수 없는 값은 **거부**한다(즉시 장중 매도는 확실할 때만 한다).
+      if (typeof h.ret_pct !== 'number' || h.ret_pct < -R.maxSellLossPct) return false;
+      if (typeof h.hold_days !== 'number' || h.hold_days < R.minHoldDays) return false;
       return candSet.has(x.buy_code) && buySet.has(x.buy_code);
     };
     const rotCap = Math.max(0, ctx.rotateLeft ?? 0);
@@ -313,7 +331,11 @@ export function parseDecision(text, ctx) {
     //   `if (m.exitAt)` 에서 죽는다. 그러면 장중 즉시교체 0건 + 만석이라 매수 0건이 되어
     //   **사용자가 고쳐달라고 한 증상(만석이면 기회가 사라진다)으로 조용히 되돌아간다.**
     //   그리고 한 번 exitAt 이 찍히면 다음 판단에서 exit_reserved 로 그 짝이 영구 기각된다.
-    const rotSellCodes = new Set(rotate.map(x => x.sell_code));
+    // ★ 2026-08-01: **살아남은 rotate 가 아니라 rotRaw 전체**의 sell_code 를 본다.
+    //   살아남은 것만 보면, 상한(rotateLeft)으로 잘린 짝이나 경계로 기각된 짝의 매도 레그가
+    //   sell 목록에 그대로 남아 **매수 없는 단독 매도**로 익일 집행된다. AI 는 "이걸 팔아서
+    //   저걸 산다"고 지명한 것이고 매수가 안 될 거면 매도도 하면 안 된다. 방향은 거래 감소.
+    const rotSellCodes = new Set(rotRaw.map(x => x.sell_code));
     const sellConflict = sell.filter(x => rotSellCodes.has(x.code)).map(x => x.code);
     const sellFinal = sell.filter(x => !rotSellCodes.has(x.code));
     const dropped = {
@@ -466,8 +488,9 @@ export function consultTrader(ctx, { log, notify }) {
     //   원인별로 따로 세면(메모리만, 락만) claude 자체 실패·타임아웃 경로가 빠져
     //   minCallGapMin(10분) × failOpenAfter(3) = 20분 넘게 'hold'(매수 전면중단)로 조용히 남는다.
     //   여기서 필요한 판정은 "왜 못 했나"가 아니라 "얼마나 오래 못 했나"다.
-    if (!fresh) st.wantSince ??= Date.now();
-    else { st.wantSince = null; st.blockedWhy = null; }
+    // 값이 실제로 바뀔 때만 파일에 쓴다(30초마다 쓰기 방지).
+    if (!fresh) { if (st.wantSince == null) { st.wantSince = Date.now(); saveState(); } }
+    else if (st.wantSince != null || st.blockedWhy != null) { st.wantSince = null; st.blockedWhy = null; saveState(); }
 
     if (want && !st.pending && (st.lastCallAt === 0 || gapOk)) {
       const mem = memAvailableMb();
@@ -488,7 +511,7 @@ export function consultTrader(ctx, { log, notify }) {
       if (staleMs > AI_TRADER.staleFallbackMin * 60_000) {
         const why = st.blockedWhy ?? (st.failStreak ? `claude 호출 실패 ${st.failStreak}회` : '판단 미수신');
         if (st.staleAlertDay !== ctx.today) {
-          st.staleAlertDay = ctx.today;
+          st.staleAlertDay = ctx.today; saveState();
           log(`⚠️ AI판단 ${Math.round(staleMs / 60_000)}분간 불가(${why}) → 기계 로직으로 폴백`);
           notify(`⚠️ AI 판단을 ${Math.round(staleMs / 60_000)}분 넘게 못 받고 있습니다(${why}).\n검증된 기계 전략(combo-v2)으로 계속 매매합니다. AI 매도·손절유예·즉시교체는 이 동안 작동하지 않습니다.`);
         }

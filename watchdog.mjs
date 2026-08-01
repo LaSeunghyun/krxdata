@@ -89,12 +89,29 @@ function diagnose(prompt) {
     const ALLOWED = ['Read', 'Glob', 'Grep', 'Bash(node status.mjs:*)', 'Bash(node shadow-1m.mjs --report:*)'].join(',');
     const args = ['-p', prompt, '--append-system-prompt', SYS, '--allowedTools', ALLOWED,
       '--disallowedTools', 'Write,Edit,WebFetch,WebSearch'];
-    const cp = spawn('claude', args, { cwd: __dirname, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    /**
+     * ★ 2026-08-01: claude 실행을 **공용 flock 에 참여**시킨다.
+     *   claude 를 띄우는 경로가 3개(stock-live 의 ai-trader · telegram-agent · 여기)인데
+     *   여기만 락 밖에 있었다. 하필 이 프로세스는 **장애가 터진 순간**에 뜨므로 —
+     *   그때 ai-trader 도 판단을 시도한다 — VM RAM 956MB(가용 ~380MB)에서 claude 두 개가
+     *   겹쳐 OOM 이 나고, 진단하려던 장애를 진단 시도가 키운다.
+     *   진단은 급하지 않으므로 대기를 길게 주고(-w 120), 못 잡으면 그 사실을 보고에 남긴다.
+     */
+    const HAS_FLOCK = existsSync('/usr/bin/flock') || existsSync('/bin/flock');
+    const LOCK = join(__dirname, '.claude-spawn.lock');
+    const [bin, spawnArgs] = HAS_FLOCK
+      ? ['flock', ['-w', '120', '-E', '99', LOCK, 'claude', ...args]]
+      : ['claude', args];
+    const cp = spawn(bin, spawnArgs, { cwd: __dirname, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '', err = '';
     cp.stdout.on('data', d => out += d);
     cp.stderr.on('data', d => err += d);
     const timer = setTimeout(() => { cp.kill(); resolve('(진단 시간초과 240s)'); }, 240_000);
-    cp.on('close', (c) => { clearTimeout(timer); resolve(out.trim() || `(claude 종료 ${c}) ${err.slice(0, 200)}`); });
+    cp.on('close', (c) => {
+      clearTimeout(timer);
+      if (c === 99) return resolve('(진단 생략: claude 동시실행 락 대기 초과 — 다른 프로세스가 사용 중. 메모리 보호를 위해 양보)');
+      resolve(out.trim() || `(claude 종료 ${c}) ${err.slice(0, 200)}`);
+    });
     cp.on('error', (e) => { clearTimeout(timer); resolve('claude 실행 실패: ' + e.message); });
   });
 }
