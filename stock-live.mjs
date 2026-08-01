@@ -82,6 +82,42 @@ const log = (m) => { const l = `[${now()}] ${m}`; console.log(l); appendFileSync
 //   원장에 거래 불가능한 판단이 섞여 사후측정이 오염된다.
 //   ※ 공휴일은 여기서 못 잡는다 — AI 판단 쪽은 최신 일봉이 stale 하면 자연히 후보가 안 생기고,
 //     주문은 거래소가 거부한다(orderErr 백오프가 당일 3회로 제한). 완전 차단은 캘린더 연동 필요.
+/**
+ * ★ 2026-08-01 싱글턴 게이트. 기존엔 이중 기동을 막는 장치가 **전혀 없었다**.
+ *   두 프로세스가 같이 돌면 state 를 last-write-wins 로 상호 덮어써서
+ *   rotCount·aiSellCount·soldToday·rotPendingBuy 가 소실되고 → 일일 상한이 뚫리고,
+ *   방금 손절한 종목을 같은 날 재매수하며(07-28~29 두산퓨얼셀 4회 휩소 = 계좌 -1.1% 마찰),
+ *   같은 예약청산을 양쪽이 집행한다. systemd 는 같은 유닛의 중복 기동만 막고
+ *   수동 `node stock-live.mjs --go` 는 못 막는다 — 실제로 발생 가능한 경로다.
+ *   (2026-07-09 "B" 이중실행 사건의 재발 방지이기도 하다.)
+ *   판정은 /proc 존재로 한다(리눅스). 살아 있지 않은 pid 면 스테일 파일로 보고 덮어쓴다.
+ */
+if (argv.includes('--go')) {
+  const PIDF = join(__dirname, '.stock-live.pid');
+  try {
+    if (existsSync(PIDF)) {
+      const other = Number(readFileSync(PIDF, 'utf8').trim());
+      if (other && other !== process.pid && existsSync(`/proc/${other}`)) {
+        // ★ tgNotify 는 여기서 쓸 수 없다 — 그 함수가 참조하는 execFileP 가 아래쪽 const 라 TDZ 다.
+        //   경보는 curl 을 직접 부른다(이 시점에 확실히 동작하는 유일한 경로).
+        log(`🚨 이중 기동 차단 — 이미 pid ${other} 가 돌고 있다. 이 프로세스는 종료한다.`);
+        try {
+          const T = process.env.TELEGRAM_BOT_TOKEN, C = process.env.TELEGRAM_CHAT_ID;
+          if (T && C) execFileSync('curl', ['-4', '-s', '-m', '15', '-X', 'POST', '-H', 'Content-Type: application/json',
+            '-d', JSON.stringify({ chat_id: C, text: `🚨 stock-live 이중 기동을 차단했습니다(기존 pid ${other}).\n두 프로세스가 같이 돌면 주문 상한이 뚫리고 같은 청산을 두 번 집행합니다.` }),
+            `https://api.telegram.org/bot${T}/sendMessage`], { stdio: 'ignore' });
+        } catch {}
+        process.exit(1);
+      }
+      if (other) log(`스테일 pid 파일 정리 (pid ${other} 없음)`);
+    }
+    writeFileSync(PIDF, String(process.pid));
+    const clearPid = () => { try { if (existsSync(PIDF) && Number(readFileSync(PIDF, 'utf8').trim()) === process.pid) unlinkSync(PIDF); } catch {} };
+    process.on('exit', clearPid);
+    for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { clearPid(); process.exit(0); });
+  } catch (e) { log(`싱글턴 게이트 오류(계속 진행): ${String(e.message).slice(0, 100)}`); }
+}
+
 const marketOpen = () => { const k = kst(); const d = k.getUTCDay(), h = k.getUTCHours(); return d >= 1 && d <= 5 && h >= 8 && h < 20; };
 // KR 호가단위(2023 개편) — LIMIT 주문가는 틱에 맞아야 함
 function tick(p) { if (p < 2_000) return 1; if (p < 5_000) return 5; if (p < 20_000) return 10; if (p < 50_000) return 50; if (p < 200_000) return 100; if (p < 500_000) return 500; return 1_000; }
@@ -278,41 +314,6 @@ if (argv.includes('--plan')) {
 }
 if (!argv.includes('--go')) { console.log('사용법: --plan 또는 --go'); process.exit(1); }
 
-/**
- * ★ 2026-08-01 싱글턴 게이트. 기존엔 이중 기동을 막는 장치가 **전혀 없었다**.
- *   두 프로세스가 같이 돌면 state 를 last-write-wins 로 상호 덮어써서
- *   rotCount·aiSellCount·soldToday·rotPendingBuy 가 소실되고 → 일일 상한이 뚫리고,
- *   방금 손절한 종목을 같은 날 재매수하며(07-28~29 두산퓨얼셀 4회 휩소 = 계좌 -1.1% 마찰),
- *   같은 예약청산을 양쪽이 집행한다. systemd 는 같은 유닛의 중복 기동만 막고
- *   수동 `node stock-live.mjs --go` 는 못 막는다 — 실제로 발생 가능한 경로다.
- *   (2026-07-09 "B" 이중실행 사건의 재발 방지이기도 하다.)
- *   판정은 /proc 존재로 한다(리눅스). 살아 있지 않은 pid 면 스테일 파일로 보고 덮어쓴다.
- */
-{
-  const PIDF = join(__dirname, '.stock-live.pid');
-  try {
-    if (existsSync(PIDF)) {
-      const other = Number(readFileSync(PIDF, 'utf8').trim());
-      if (other && other !== process.pid && existsSync(`/proc/${other}`)) {
-        // ★ tgNotify 는 여기서 쓸 수 없다 — 그 함수가 참조하는 execFileP 가 아래쪽 const 라 TDZ 다.
-        //   경보는 curl 을 직접 부른다(이 시점에 확실히 동작하는 유일한 경로).
-        log(`🚨 이중 기동 차단 — 이미 pid ${other} 가 돌고 있다. 이 프로세스는 종료한다.`);
-        try {
-          const T = process.env.TELEGRAM_BOT_TOKEN, C = process.env.TELEGRAM_CHAT_ID;
-          if (T && C) execFileSync('curl', ['-4', '-s', '-m', '15', '-X', 'POST', '-H', 'Content-Type: application/json',
-            '-d', JSON.stringify({ chat_id: C, text: `🚨 stock-live 이중 기동을 차단했습니다(기존 pid ${other}).\n두 프로세스가 같이 돌면 주문 상한이 뚫리고 같은 청산을 두 번 집행합니다.` }),
-            `https://api.telegram.org/bot${T}/sendMessage`], { stdio: 'ignore' });
-        } catch {}
-        process.exit(1);
-      }
-      if (other) log(`스테일 pid 파일 정리 (pid ${other} 없음)`);
-    }
-    writeFileSync(PIDF, String(process.pid));
-    const clearPid = () => { try { if (existsSync(PIDF) && Number(readFileSync(PIDF, 'utf8').trim()) === process.pid) unlinkSync(PIDF); } catch {} };
-    process.on('exit', clearPid);
-    for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { clearPid(); process.exit(0); });
-  } catch (e) { log(`싱글턴 게이트 오류(계속 진행): ${String(e.message).slice(0, 100)}`); }
-}
 
 // ── 상태 ─────────────────────────────────────────────────────
 /**
