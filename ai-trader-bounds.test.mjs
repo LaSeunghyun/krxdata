@@ -161,6 +161,20 @@ console.log('\n[충돌] sell 과 rotate 에 같은 종목 — rotate 우선, sel
   eq('rotate 는 1건만 살아남는다', pairs(d.rotate).length, 1);
 }
 
+console.log('\n[계측] 파싱 단계에서 조용히 사라지는 것을 잡는다');
+{
+  // 모델이 다른 키 이름을 쓰면 전 항목이 빈 배열이 되는데, 기존엔 dropped 에도 흔적이 없어
+  // "AI 가 아무것도 안 골랐다"와 구분이 안 됐다(skipAll:false 로 정상 판단처럼 통과 + failStreak 리셋).
+  const d = parseDecision(J({ skipAll: false, buy: [{ ticker: '005930' }], sell_now: ['H1'], hard_stop_pct: 20 }), ctxOf());
+  eq('잘못된 키 구조는 buy 가 비고', codes(d.buy), []);
+  eq('사라진 건수와 미지의 키가 malformed 에 남는다',
+    d.dropped.malformed, ['buy×1', '미지의키:sell_now', '미지의키:hard_stop_pct']);
+}
+{
+  const d = parseDecision(J({ skipAll: false, buy: [{ code: 'C1', reason: '정상' }], sell: [], rotate: [], defer_stop: [] }), ctxOf());
+  eq('정상 응답이면 malformed 는 비어 있다', d.dropped.malformed, []);
+}
+
 console.log('\n[파싱] 깨진 응답은 null 로 떨어져 실패 카운트로 간다');
 eq('비 JSON', parseDecision('죄송합니다 판단 불가', ctxOf()), null);
 eq('skipAll 누락', parseDecision(J({ buy: [] }), ctxOf()), null);

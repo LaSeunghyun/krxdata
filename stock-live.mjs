@@ -666,6 +666,21 @@ async function judgeExitsAtClose(items, state, today) {
     try { cd = (await getDailyCandles(it.symbol, 12)).reverse(); } catch (e) { log(`종가판정 일봉조회 실패 ${it.symbol}: ${String(e.message).slice(0, 60)}`); continue; }
     if (!Array.isArray(cd) || cd.length < 5) continue;
 
+    // ★ 2026-08-01 평일 공휴일 가드. marketOpen() 은 요일·시각만 보므로 공휴일에도 15:35 판정이 돈다.
+    //   그때 hasToday=false → closeToday = 현재가(=직전 거래일 종가, 새 정보 0)이고
+    //   prior 에는 그 최신봉이 그대로 남아 **같은 종가가 이중 계상**된다.
+    //   MA3 = (2·C직전 + C그전)/3 이 되어 `closeToday > ma` 가 "직전 > 그전"이라는 무의미한 비교로
+    //   퇴화하고, 그 결과 심긴 예약이 다음 거래일 개장에 집행돼 **정상 판정(15:35)을 선점**한다.
+    //   새 가격정보가 없으면 판정하지 않는다. judgedDay 도 세우지 않아 다음 거래일에 정상 판정된다.
+    //   ※ 반드시 aiExitPark 파킹 **앞**이어야 한다 — 뒤에 두면 continue 로 AI 예약이 소실된다.
+    {
+      const nb = cd[cd.length - 1];
+      if (barDay(nb.timestamp) !== today.replace(/-/g, '') && Number(nb.close) === Number(it.lastPrice)) {
+        logGate(`종가판정 스킵 ${it.name}(${it.symbol}): 오늘 봉 없음 + 현재가가 최신봉 종가와 동일(휴장 추정) — 새 가격정보 0`, `holi|${it.symbol}`);
+        continue;
+      }
+    }
+
     // ★ 2026-08-01: AI 청산예약이 검증된 청산 사다리를 **선점하지 않게** 한다(리뷰 확정).
     //   AI sell 은 exitFrac=1(전량)로 심긴다. 그런데 같은 날 종가에 부분익절 tp1(+6%) 조건이
     //   성립했다면 검증된 동작은 "절반 익절 후 나머지는 태우기"다. AI 전량청산이 먼저 있으면
@@ -684,10 +699,12 @@ async function judgeExitsAtClose(items, state, today) {
     if (!state.tsFmtLogged) { state.tsFmtLogged = true; log(`[일봉 timestamp 포맷 확인] raw=${JSON.stringify(newest.timestamp)} → barDay=${newestDay} (오늘=${today.replace(/-/g, '')})`); }
     const livePx = Number(it.lastPrice);
     const closeToday = hasToday ? Number(newest.close) : livePx;
-    if (!(closeToday > 0)) continue;
+    // ★ 파킹 이후의 조기 이탈은 반드시 AI 예약을 되돌려놓는다(안 하면 그 예약이 조용히 사라진다).
+    const unpark = () => { if (aiExitPark) { m.exitAt = aiExitPark.exitAt; m.exitDay = today; m.exitFrac = aiExitPark.exitFrac ?? 1; } };
+    if (!(closeToday > 0)) { unpark(); continue; }
     // MA(RSI_MA_N) = 당일 종가 + 직전 (N-1)일 종가. hasToday면 최신봉이 당일이므로 그 앞을 쓴다.
     const prior = (hasToday ? cd.slice(0, -1) : cd).map(b => Number(b.close)).filter(v => v > 0);
-    if (prior.length < RSI_MA_N - 1) continue;
+    if (prior.length < RSI_MA_N - 1) { unpark(); continue; }
     const ma = (closeToday + prior.slice(-(RSI_MA_N - 1)).reduce((a, b) => a + b, 0)) / RSI_MA_N;
 
     // ★ 2026-08-01: 평단 재동기화. 사용자가 토스 앱에서 같은 종목을 추가 매수하면 브로커 평단은
@@ -770,6 +787,7 @@ async function judgeExitsAtClose(items, state, today) {
   saveState();
 }
 
+let scanFail = 0;   // 신호스캔 연속 실패 카운터 (백오프·경보 판정용)
 async function signalScanLoop() {
   while (true) {
     try {
@@ -780,8 +798,19 @@ async function signalScanLoop() {
         signalCache = await pickCandidate(scanCash, scanHeld);
         lastSignal = Date.now();
       }
-    } catch (e) { log(`신호스캔 오류: ${String(e.message).slice(0, 80)}`); }
-    await new Promise(r => setTimeout(r, 5_000)); // 완료 즉시 잠깐 쉬고 재스캔(실제 페이싱은 rateSlot 전역 10TPS가 담당)
+      scanFail = 0;
+    } catch (e) {
+      // ★ 2026-08-01: 기존엔 스로틀 없는 log + 실패해도 5초 고정 재시도 + **어떤 경보 경로에도 안 걸림**
+      //   이었다. 스캔이 죽으면 후보가 안 만들어져 신규매수가 조용히 멈추는데, watchdog ⑦(장중 조회실패)
+      //   정규식이 '조회 실패'를 찾는데 이 메시지는 '신호스캔 오류'라 매칭되지 않았고, ⑥(silent)은
+      //   5초마다 로그가 찍혀 발동하지 않았다. 즉 삼중으로 감지 사각이었다.
+      //   → 문구에 '조회 실패'를 넣어 watchdog ⑦ 에 걸리게 하고, 스로틀·백오프·3연속 경보를 붙인다.
+      scanFail++;
+      logGate(`신호스캔 조회 실패(${scanFail}연속): ${String(e.message).slice(0, 80)}`, 'scan|err');
+      if (scanFail === 3) tgNotify(`🚨 신호스캔 3회 연속 실패 — 신규매수가 멈춥니다.\n청산(예약분)·수동주문은 정상 작동합니다.\n${String(e.message).slice(0, 120)}`);
+    }
+    // 실패 중엔 5초 재시도가 레이트리밋을 더 악화시킨다 → 백오프
+    await new Promise(r => setTimeout(r, scanFail ? 60_000 : 5_000));
   }
 }
 signalScanLoop();
@@ -881,6 +910,20 @@ while (true) {
   const EXCLUDED = new Set([...LIVE_EXCLUDE, ...readBotExclude()]);
   const items = (holdings?.items ?? []).filter(i => i.marketCountry === 'KR' && Number(i.quantity) > 0 && !EXCLUDED.has(i.symbol));
   const today = now().slice(0, 10);
+  // ★ 2026-08-01: 봇이 보유 중인 종목을 사용자가 텔레그램으로 수동 매수하면 tg-order 가 그 종목을
+  //   **보유 여부를 보지 않고** bot-exclude 에 넣는다. 그러면 다음 사이클부터 items 에서 빠져
+  //   청산루프·종가판정 양쪽에서 사라지고, 봇이 걸어둔 예약청산(예: MA3회귀 익절)이 **집행도 정리도
+  //   경보도 없이 영구 잔존**한다. 고아정리는 heldNow 기준이라 이 케이스를 못 잡는다.
+  //   → 격리된 봇 meta 를 하루 1회 알리고 낡은 예약을 폐기해 "봇이 팔아줄 것"이라는 오해를 없앤다.
+  for (const code of EXCLUDED) {
+    const mm = state.meta[code];
+    if (!mm || mm.exclAlertDay === today) continue;
+    mm.exclAlertDay = today;
+    log(`⚠️ 격리된 봇 보유분 ${code} — 예약(${mm.exitAt ?? '없음'}) 집행 불가, 수동 관리로 이관`);
+    tgNotify(`⚠️ ${code} 가 수동 관리(격리) 상태라 봇이 건드리지 않습니다.\n봇 예약청산(${mm.exitAt ?? '없음'})은 **집행되지 않습니다** — 매도하려면 "매도 <종목명>" 으로 직접 지시하거나 "격리해제 <종목명>" 으로 봇에 돌려주세요.`);
+    delete mm.exitAt; delete mm.exitDay; delete mm.exitFrac; delete mm.aiExit;
+    saveState();
+  }
   // ★ meta 고아 정리 (2026-07-28 버그 수정): 사용자가 토스 앱에서 직접 팔면 봇은 매도를 못 봐서 meta가 남는다.
   //   그 종목을 나중에 다시 사면 372행이 **낡은 meta를 그대로 재사용**해 옛 고점으로 트레일을 계산하고
   //   (즉시 매도 위험) 옛 진입가로 하드손절을 잡고 tp1:true가 남아 부분익절을 건너뛴다.
@@ -1108,7 +1151,22 @@ while (true) {
         continue; // 실제 매도 안 함
       }
       try {
-        const lpx = limitSellPx(px);
+        // ★ 2026-08-01: 예약청산만 **주문 직전 가격 갱신이 없었다.** px 는 사이클 시작 시점의 단일
+        //   스냅샷이라, 앞선 포지션들의 settleOrder 폴링(포지션당 최대 24초)·종가판정 일봉조회를
+        //   거치면 수십 초~수 분 낡는다. 같은 파일의 다른 두 주문 경로(즉시교체·매수)는 이미
+        //   이 문제 때문에 재조회를 갖고 있다 — 이쪽만 빠져 있었다.
+        //   낡은 가격으로 limitSellPx(×0.995)를 만들면 급락 중엔 지정가가 시장 위에 앉아 체결이 안 되고,
+        //   급등 중엔 필요 이상으로 싸게 던진다. **청산 여부는 이미 결정된 값이므로 가격만 갱신한다.**
+        let spx = px;
+        try {
+          const pm = await getPricesMap([it.symbol]);
+          const fresh = Number(pm?.get?.(it.symbol)?.price ?? 0);
+          if (fresh > 0) {
+            if (Math.abs(fresh / spx - 1) > 0.003) log(`  예약청산 가격 갱신 ${it.name} ${spx.toLocaleString()} → ${fresh.toLocaleString()} (${((fresh / spx - 1) * 100).toFixed(2)}%)`);
+            spx = fresh;
+          }
+        } catch (e) { log(`  예약청산 현재가 재조회 실패(스냅샷 사용) ${it.symbol}: ${String(e.message).slice(0, 50)}`); }
+        const lpx = limitSellPx(spx);
         // ★ 2026-07-29: 예약청산이 부분익절이면 절반만 팔고 포지션을 유지한다(백테 tp_half/tp_quarter 재현).
         //   m.exitFrac: 1=전량 / 0.5=절반. 전량이 아니면 meta를 지우지 않고 tp1/tp2 플래그만 세운다.
         const frac = Number(m.exitFrac ?? 1);
@@ -1618,6 +1676,26 @@ while (true) {
           // 비우면 다음 백그라운드 스캔 완료까지 후보가 빈 채로 대기하게 돼 불필요하게 매수 기회를 놓침.
           saveState();
           bought = pick.code;   // ★ 체결 확인된 경우에만 세운다 (아래 주석 참조)
+        } else {
+          // ★ 2026-08-01: settleOrder 는 24초(2초×12)만 폴링한다. 그 직후 체결된 주문은
+          //   **포지션은 실재하는데 meta 가 없는** 상태가 된다 → 다음 사이클에 sub 미상으로 잡혀
+          //   검증된 종가판정(손절·MA3·만기)을 못 받고 경보만 나간다. 미결로 보고 취소를 던졌지만
+          //   그것도 실패했을 수 있다. 보유를 1회 재확인해서 실재하면 meta 를 정상 기록한다.
+          //   (성공 경로는 건드리지 않는다 — 이 else 는 기존에 없던 분기다.)
+          try {
+            const h2 = await getHoldings(seq);
+            const it2 = (h2?.items ?? []).find(x => x.symbol === pick.code);
+            const q2 = Number(it2?.quantity ?? 0), a2 = Number(it2?.averagePurchasePrice ?? 0);
+            if (q2 > 0 && a2 > 0 && !state.meta[pick.code]) {
+              const gp2 = await gapPolicyToday(today);
+              state.meta[pick.code] = { hi: a2, entry: a2, sub: pick.sub, boughtAt: now(),
+                trailPct: gp2.trailPct, tp1Pct: gp2.tp1Pct, tp2Pct: gp2.tp2Pct, gapBin: gp2.bin ?? null, lateFill: true };
+              saveState();
+              log(`🚨 지연 체결 감지 ${pick.name}(${pick.code}) ${q2}주 @${a2.toLocaleString()} — 폴링(24초) 초과 후 체결됨. meta 를 기록해 검증된 청산을 적용한다`);
+              tgNotify(`🚨 지연 체결: ${pick.name}(${pick.code}) ${q2}주 @${a2.toLocaleString()}\n주문 확인 시간(24초)을 넘겨 체결됐습니다. 정상 관리 대상으로 등록했습니다.`);
+              bought = pick.code;
+            }
+          } catch (e2) { log(`  지연 체결 확인 실패 ${pick.code}: ${String(e2.message).slice(0, 80)}`); }
         }
       } catch (e) {
         // ★ 오류 전문 300자 (2026-07-29). 기존 80자는 토스 422 본문의 code 필드가 잘려
