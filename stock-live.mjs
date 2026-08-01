@@ -1,27 +1,32 @@
 #!/usr/bin/env node
 /**
  * stock-live.mjs — 주식 실계좌 단일 연속 트레이더 (토스, 2026-07-20 사용자 지시).
- *   코인 live-day를 주식용으로 이식: 08:00~20:00(NXT 포함) 연속 감시, combo-v2 신호 진입,
- *   트레일링(최대익절 지향) 청산, LIVE_SLOTS=3 분산(백테스트+MC 확정) + 확신도 집중(강신호 시 2종목). 단일 프로세스라 이중주문 없음.
+ *   08:00~20:00(NXT 포함) 연속 감시, combo-v2 신호 진입, LIVE_SLOTS=5 분산(uni420, 2026-07-24 재조정)
+ *   + 확신도 집중(강신호 시 현금 50%). 단일 프로세스라 이중주문 없음.
  *   ※ 기존 스케줄러 phase(PaperMorning/PaperClose)는 이중주문 방지 위해 비활성화해야 함.
  *
- *   진입: 레짐(005930 MA20/60) → UP:hi120/rsi2, NEUTRAL/DOWN:rsi2. 시총상위·유동성 필터.
- *         후보를 확신도(conviction 0~10)순 정렬 → 확실(≥strongThreshold)하면 현금 집중(몰빵),
- *         아니면 현금/남은슬롯 균등분산. 살 수 있는 최상위 신호 1종 LIMIT 매수(사이클당 1건).
- *   청산(승자 태우기): 고점대비 트레일 -8% OR 진입대비 하드손절 -7% OR 레짐 DOWN 이탈.
- *         (MA5 조기청산 폐기 — 최대 익절가까지 트레일링)
+ *   진입: 레짐(005930 MA20/60) → UP:hi120/rsi2, NEUTRAL:hi120만(rsi2 스킵), DOWN:rsi2.
+ *         시총상위·유동성 필터 → dd20·거부백오프 등 기계 필터 → ★AI 종합판단(ai-trader.mjs) 승인분만.
+ *   AI 판단(2026-08-01): 매수승인(후보 부분집합) · 청산권고(→종가판정 예약) · 손절 1세션 유예.
+ *         이벤트 기반 재판단(레짐전환·후보변화·손절선 임박). claude 는 flock 으로 telegram-agent 와 배타.
+ *   청산(2026-07-29 종가판정 체계 · 장중 무개입): 15:35 종가판정 → 익일 집행.
+ *         rsi2: 하드손절 -15% / MA3 회귀 익절 / 5거래일 만기. hi120: 부분익절 +6/+12%(갭정책 시 +10/+20)
+ *         / 트레일 -6%(갭정책 시 -10%) / 60거래일 만기. + 수급붕괴 청산(하루 1회) + CA서킷.
  *   실행: node stock-live.mjs --plan   (미리보기, 주문 없음)
  *         node stock-live.mjs --go     (집행+연속감시, 백그라운드)
  */
 import dotenv from 'dotenv';
 import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'fs';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { getAccounts, getHoldings, getBuyingPower, getPricesMap, getDailyCandles, createOrder, getOrder, cancelOrder } from './toss-api.js';
-import { LIVE_SLOTS, LIVE_UNIVERSE_LIMIT, CONVICTION_SIZING, FORECAST_GUARD, PARTIAL_TP, CA_GUARD, LIVE_EXCLUDE, CAPITAL_DEPLOY, SECTOR_CAP, SECTOR_OVERRIDE, applySectorOverride, RSI_ENTRY_FILTER, FLOW_EXIT } from './strategy-contract.mjs';
+import { LIVE_SLOTS, LIVE_UNIVERSE_LIMIT, CONVICTION_SIZING, FORECAST_GUARD, PARTIAL_TP, CA_GUARD, LIVE_EXCLUDE, CAPITAL_DEPLOY, SECTOR_CAP, SECTOR_OVERRIDE, applySectorOverride, RSI_ENTRY_FILTER, FLOW_EXIT, AI_TRADER } from './strategy-contract.mjs';
 import { buildLiveCandidates } from './live-parity.mjs';
 import { readBotExclude } from './bot-exclude.mjs';
 import { executeBuy, executeSell } from './tg-order.mjs';
+import { consultTrader } from './ai-trader.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: join(__dirname, '.env') });
@@ -68,7 +73,14 @@ const LOG = join(__dirname, 'stock-live-log.txt');
 const kst = () => new Date(Date.now() + 9 * 3_600_000);
 const now = () => kst().toISOString().replace('T', ' ').slice(0, 19);
 const log = (m) => { const l = `[${now()}] ${m}`; console.log(l); appendFileSync(LOG, l + '\n'); };
-const marketOpen = () => { const h = kst().getUTCHours(); return h >= 8 && h < 20; }; // 08:00~20:00 KST (NXT 포함)
+// 08:00~20:00 KST (NXT 프리·애프터 포함) · 평일만.
+// ★ 2026-08-01 요일 가드 추가: 기존엔 시각만 봐서 **주말에도 메인루프·신호스캔이 12시간 돌았다.**
+//   금요일 일봉으로 만든 rsi2 신호가 주말 내내 동일하게 살아 있어 매수 시도 → 토스 4xx 거부가 반복되고
+//   (07-28 프리마켓 422 × 31회 전례), AI 판단까지 붙으면 비거래일에 claude 를 하루 24회 호출하고
+//   원장에 거래 불가능한 판단이 섞여 사후측정이 오염된다.
+//   ※ 공휴일은 여기서 못 잡는다 — AI 판단 쪽은 최신 일봉이 stale 하면 자연히 후보가 안 생기고,
+//     주문은 거래소가 거부한다(orderErr 백오프가 당일 3회로 제한). 완전 차단은 캘린더 연동 필요.
+const marketOpen = () => { const k = kst(); const d = k.getUTCDay(), h = k.getUTCHours(); return d >= 1 && d <= 5 && h >= 8 && h < 20; };
 // KR 호가단위(2023 개편) — LIMIT 주문가는 틱에 맞아야 함
 function tick(p) { if (p < 2_000) return 1; if (p < 5_000) return 5; if (p < 20_000) return 10; if (p < 50_000) return 50; if (p < 200_000) return 100; if (p < 500_000) return 500; return 1_000; }
 const roundTick = (p) => Math.round(p / tick(p)) * tick(p);
@@ -212,17 +224,21 @@ const accounts = await getAccountsResilient();
 const seq = accounts?.[0]?.accountSeq;
 if (seq == null) { log('토스 계좌 조회 실패(10회 소진) — 중단, keeper 재기동 대기'); process.exit(1); }
 
-// 섹터 캡용 code→sector 맵 (1회 로드, Supabase stock_analysis). 실패 시 빈 맵 = 캡 무효화(안전 기본).
+// code→sector 맵 (1회 로드, Supabase stock_analysis). 실패 시 빈 맵 = 캡 무효화(안전 기본).
+// ★ 2026-08-01: SECTOR_CAP.enabled 조건을 뺐다. AI 판단이 "보유와 같은 섹터 과집중"을 근거로
+//   쓰는데 SECTOR_CAP 이 false 라 맵이 {} 였고, 그러면 AI 가 보유 섹터를 **종목명으로 추정**해야 했다.
+//   SECTOR_OVERRIDE 가 문서화한 함정이 바로 그것이다(SK스퀘어는 DB조차 '금융'이지만 실제 반도체 프록시).
+//   섹터캡이 꺼져 있으므로 현재 유일한 섹터 방어선이 AI 판단이다 → 정확한 라벨을 반드시 줘야 한다.
 let SECTOR = {};
-if (SECTOR_CAP.enabled) {
+{
   try {
     // ★ 2026-07-30: stock_analysis.sector 가 SK스퀘어→금융·LG전자→반도체 등으로 틀려 있어
     //   보정 맵을 덮어쓴다(도출 근거는 strategy-contract.mjs SECTOR_OVERRIDE 주석 = 잔차상관 실측).
     SECTOR = applySectorOverride(Object.fromEntries((await dbQuery(`SELECT stock_code, sector FROM stock_analysis`)).map(r => [r.stock_code, r.sector])));
     const ov = Object.entries(SECTOR_OVERRIDE).filter(([c]) => SECTOR[c]);
-    log(`섹터맵 로드 ${Object.keys(SECTOR).length}종목 (섹터캡 max ${SECTOR_CAP.max}) · 보정 ${ov.length}종목 적용`);
+    log(`섹터맵 로드 ${Object.keys(SECTOR).length}종목 (섹터캡 ${SECTOR_CAP.enabled ? `max ${SECTOR_CAP.max}` : 'off — AI 판단용'}) · 보정 ${ov.length}종목 적용`);
     log(`  반도체복합: ${Object.entries(SECTOR).filter(([, s]) => s === '반도체복합').map(([c]) => c).join(' ')}`);
-  } catch (e) { log(`섹터맵 로드 실패(캡 무효화): ${String(e.message).slice(0, 60)}`); }
+  } catch (e) { log(`섹터맵 로드 실패: ${String(e.message).slice(0, 60)}`); }
 }
 
 // ── PLAN: 미리보기 ────────────────────────────────────────────
@@ -260,6 +276,10 @@ if (!argv.includes('--go')) { console.log('사용법: --plan 또는 --go'); proc
 let state = existsSync(STATE) ? JSON.parse(readFileSync(STATE, 'utf8')) : { meta: {}, ipAlerted: false };
 const loadJournal = () => { try { return JSON.parse(readFileSync(JOURNAL, 'utf8')); } catch { return { trades: [] }; } };
 function recordTrade(t) { const j = loadJournal(); j.trades.push(t); writeFileSync(JOURNAL, JSON.stringify(j, null, 1)); }
+// AI게이트 컨텍스트용: 최근 실현 매도 n건 (연패 흐름을 판단 근거로 제공)
+function recentSells(n = 5) {
+  try { return loadJournal().trades.filter(t => t.side === 'SELL').slice(-n).map(t => ({ name: t.name, ret: t.ret, reason: t.reason, ts: t.ts })); } catch { return []; }
+}
 
 // 체결 확인: 주문상태 필드명 불확실 → 보유수량 변화로 검증(견고). 미체결이면 주문 취소해 스테일 방지.
 /**
@@ -343,13 +363,16 @@ async function flowBreaking(codes, today) {
 // 스윙 보유(수일)엔 일간 예측(session=KRX_REGULAR, hm NULL)이 맞는 지평 → 일간 우선, 없으면 최신 아무거나.
 async function marketForecast() {
   try {
-    const rows = await dbQuery(`SELECT call_direction, probability_up, probability_down, confidence, forecast_median, forecast_created_at, session
+    // ★ 2026-08-01: drivers(예측 근거 서술, jsonb) 추가 — AI게이트 프롬프트에 "오늘 아침 시장 이슈"
+    //   컨텍스트로 전달된다(사용자 요청: 매일 아침 이슈 확인 후 전략 수립). 08:35 예측 런이 원천.
+    const rows = await dbQuery(`SELECT call_direction, probability_up, probability_down, confidence, forecast_median, forecast_created_at, session, drivers
       FROM forecast_ledger WHERE target_kind='market' AND sector='KOSPI_PROXY'
       ORDER BY (session='KRX_REGULAR') DESC, forecast_created_at DESC LIMIT 1`);
     if (!Array.isArray(rows) || !rows.length) return null;
     const r = rows[0];
     return { dir: r.call_direction, up: Number(r.probability_up), down: Number(r.probability_down),
-             conf: Number(r.confidence), median: Number(r.forecast_median), at: r.forecast_created_at, session: r.session };
+             conf: Number(r.confidence), median: Number(r.forecast_median), at: r.forecast_created_at, session: r.session,
+             drivers: r.drivers ?? null };
   } catch { return null; }
 }
 // 하락경보: call_direction=='down' 이거나 (하락확률−상승확률 ≥ probDiff AND confidence ≥ minConf)
@@ -357,13 +380,33 @@ function isBearish(f) {
   if (!f) return false;
   return f.dir === 'down' || (f.down - f.up >= FORECAST_GUARD.probDiff && f.conf >= FORECAST_GUARD.minConf);
 }
-// 텔레그램 경보 (CA 서킷 등 사람이 즉시 알아야 할 이벤트용). 실패해도 매매 무영향.
+// 텔레그램 경보 (CA서킷·매도사인·주문큐 결과 등). 실패해도 매매 무영향 — 단, 실패는 로그로 남긴다.
+// ★ 2026-08-01: fetch → curl 전환. 이 VM에서 Node fetch는 api.telegram.org에 도달하지 못한다
+//   (149.154.166.110:443 ETIMEDOUT 3/3 · curl은 같은 IP에 0.27s 성공 — watchdog·telegram-agent와 동일 실측).
+//   즉 이 파일의 기존 알림(CA경보·매도사인·주문큐 결과)은 배포 이후 전부 조용히 유실되고 있었다.
+//   기존 tgNotify/tgSend 두 함수가 동일 동작 중복이라 하나로 합친다. `catch {}` 침묵 금지(watchdog 96분 무경보의 원인).
+const execFileP = promisify(execFile);
+let tgFailStreak = 0;
 async function tgNotify(text) {
+  const T = process.env.TELEGRAM_BOT_TOKEN, C = process.env.TELEGRAM_CHAT_ID;
+  if (!T || !C) return;
   try {
-    const T = process.env.TELEGRAM_BOT_TOKEN, C = process.env.TELEGRAM_CHAT_ID;
-    if (!T || !C) return;
-    await fetch(`https://api.telegram.org/bot${T}/sendMessage`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: C, text }) });
-  } catch {}
+    const t = String(text ?? '');
+    for (let i = 0; i < t.length; i += 3800) {
+      const { stdout } = await execFileP('curl', [
+        '-4', '-s', '-m', '20', '-X', 'POST', '-H', 'Content-Type: application/json',
+        '-d', JSON.stringify({ chat_id: C, text: t.slice(i, i + 3800) }),
+        `https://api.telegram.org/bot${T}/sendMessage`,
+      ], { timeout: 25_000 });
+      const j = JSON.parse(stdout);
+      if (!j.ok) throw new Error(String(stdout).slice(0, 120));
+    }
+    if (tgFailStreak >= 3) log(`텔레그램 발신 복구(연속실패 ${tgFailStreak}건 후)`);
+    tgFailStreak = 0;
+  } catch (e) {
+    tgFailStreak++;
+    if (tgFailStreak <= 3 || tgFailStreak % 20 === 0) log(`텔레그램 발신 실패(${tgFailStreak}연속): ${String(e.message).slice(0, 100)}`);
+  }
 }
 
 log(`=== 주식 연속 트레이더 시작 (계좌 ${accounts[0].accountSeq}, 08:00~20:00, LIVE_SLOTS=${LIVE_SLOTS}, 트레일-${TRAIL_PCT}%/하드-${HARD_STOP_PCT}%, 예측가드 ${FORECAST_GUARD.enabled ? (FORECAST_GUARD.shadow ? 'SHADOW' : 'LIVE') : 'off'}) ===`);
@@ -441,7 +484,22 @@ async function judgeExitsAtClose(items, state, today) {
     let why = null, frac = 1, extra = '';
     if (m.sub === 'rsi2') {
       // 검증된 rsi2 청산: 하드손절 / MA(rsiMa=3) 회귀 익절 / maxHoldR 만기
-      if (closeToday <= entry * (1 - HARD_STOP_PCT / 100)) why = `손절 -${HARD_STOP_PCT}%`;
+      if (closeToday <= entry * (1 - HARD_STOP_PCT / 100)) {
+        // ★ 2026-08-01 손절 1세션 유예 (사용자 요청 "폭락 과매도 구간이면 손절하지 않는다").
+        //   AI 가 당일 유예를 냈고 아직 안 쓴 경우에만 1회. 다음 판정일에는 다시 손절 후보가 된다.
+        //   ⚠️ 손절 15%는 60시드 MC 55승5패로 채택된 값이고 "손절 없음"은 폭락구간에서 더 나빴다
+        //   (MDD 33.0% vs 29.3%). 그래서 무기한이 아니라 **1세션**이고, deferFloorPct 하한이 있다.
+        //   하한 판정은 ai-trader.parseDecision 에서 이미 걸러 defer 목록에 안 들어온다.
+        // ★ 유예는 **당일 심은 것만** 유효하다(m.stopDefer 에 날짜를 저장). 날짜를 안 넣으면
+        //   플래그가 meta 에 남아 몇 주 뒤 다른 국면에서 조용히 소비된다 — AI 가 판단한 적 없는 상황이다.
+        if (m.stopDefer === today && m.stopDeferDay !== today) {
+          m.stopDeferDay = today; delete m.stopDefer;
+          log(`손절유예 ${it.name}(${it.symbol}) ${ret.toFixed(1)}% — AI 판단(1세션). 다음 판정일 재검토`);
+          tgNotify(`⏸️ 손절 1세션 유예: ${it.name} ${ret.toFixed(1)}%\n사유: ${m.stopDeferWhy ?? 'AI 판단'}\n※ 다음 거래일 종가판정에서 재검토됩니다.`);
+        } else {
+          why = `손절 -${HARD_STOP_PCT}%${m.stopDeferDay ? ` (유예 후 집행, ${m.stopDeferDay} 유예)` : ''}`;
+        }
+      }
       else if (closeToday > ma) why = `MA${RSI_MA_N}회귀 익절`;
       else if (holdDays >= MAX_HOLD_R) why = `만기 ${MAX_HOLD_R}거래일`;
       extra = ` / MA${RSI_MA_N} ${Math.round(ma).toLocaleString()}`;
@@ -481,8 +539,8 @@ async function signalScanLoop() {
 signalScanLoop();
 
 // 매도 사인 (수동픽 보유분이 AI 목표/손절 도달 시 텔레그램 알림, 자동매도 X). 30초 루프의 holdings 재사용 = Toss 추가호출 0.
-const TG_T = process.env.TELEGRAM_BOT_TOKEN, TG_C = process.env.TELEGRAM_CHAT_ID;
-const tgSend = async (t) => { if (!TG_T || !TG_C) return; try { await fetch(`https://api.telegram.org/bot${TG_T}/sendMessage`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: TG_C, text: t }) }); } catch {} };
+// ★ 2026-08-01: 기존 fetch 구현(이 VM에서 불통)을 위 curl 기반 tgNotify로 통합.
+const tgSend = tgNotify;
 async function emitSellSignals(holdings, manualCodes, today) {
   const held = (holdings?.items ?? []).filter(i => i.marketCountry === 'KR' && Number(i.quantity) > 0 && manualCodes.has(i.symbol));
   if (!held.length) return;
@@ -800,21 +858,162 @@ while (true) {
   const bigCount = CAPITAL_DEPLOY.enabled
     ? items.filter(it => Number(it.quantity) * Number(it.lastPrice) >= perSlot * CAPITAL_DEPLOY.dustFraction).length
     : items.length;
-  const canDeploy = CAPITAL_DEPLOY.enabled
+  const canDeployRaw = CAPITAL_DEPLOY.enabled
     ? (bigCount < LIVE_SLOTS && cash >= perSlot * CAPITAL_DEPLOY.minFillFraction && cash >= MIN_PRICE)
     : (items.length < LIVE_SLOTS && cash >= MIN_PRICE);
-  if (canDeploy && !(bear && !FORECAST_GUARD.shadow)) {
+  // ★ 2026-08-01: AI 판단·즉시교체는 **만석일 때도 실행돼야 한다.**
+  //   즉시교체(rotate)는 정의상 "슬롯이 만석인데 지금 꼭 사야 할 후보가 있을 때" 쓰는 기능인데,
+  //   만석이면 canDeploy 가 false 라 이 블록 전체가 스킵돼 **rotate 가 존재 이유인 상황에서 죽는다.**
+  //   백테 `--rotate` 가 만석 break 뒤에 배선돼 죽어 있던 것과 같은 유형의 결함이다(2026-07-30 기록).
+  //   → 진입 블록 진입 조건을 "매수 가능 OR 교체 가능"으로 넓히고, 실제 매수는 아래에서 canDeploy 로 다시 가른다.
+  if (state.rotDay !== today) { state.rotDay = today; state.rotCount = 0; }
+  const rotLeft = AI_TRADER.rotate.enabled ? Math.max(0, AI_TRADER.rotate.maxPerDay - (state.rotCount ?? 0)) : 0;
+  const bearBlock = bear && !FORECAST_GUARD.shadow;
+  if ((canDeployRaw || rotLeft > 0) && !bearBlock) {
+    let canDeploy = canDeployRaw;
     const heldSet = new Set(items.map(i => i.symbol));
-    const remainingSlots = Math.max(1, LIVE_SLOTS - bigCount);
-    const diversified = Math.min(cash, perSlot);   // 한 슬롯 예산(초과 현금은 다음 폴에서 추가 편입)
+    let remainingSlots = Math.max(1, LIVE_SLOTS - bigCount);
+    let diversified = Math.min(cash, perSlot);   // 한 슬롯 예산(초과 현금은 다음 폴에서 추가 편입)
     // 전액현금 기준으로 최상위 신호 탐색(집중매수 시 비싼 확신종목도 후보에 포함). 스캔은 signalScanLoop가 독립수행.
     scanCash = cash; scanHeld = heldSet; // 다음 백그라운드 스캔부터 최신 현금·보유현황 반영
     const { regime, cands } = signalCache ?? { regime: null, cands: [] }; // 재시작 직후 첫 스캔 완료 전 = 빈 후보로 안전 대기
     // 진입대기 가시성(2026-07-27): 후보 0건이면 아무 로그도 안 남아 "왜 안 사는지"를 매번 수동확인해야 했음.
     //   레짐 변경·후보 유무 반전 시, 그리고 최소 10분마다 1줄. (5초 스캔마다 찍으면 로그 폭발)
     const blockedToday = Object.values(state.soldToday ?? {}).filter(d => d === today).length;
-    logGate(`진입대기: 레짐 ${regime ?? '스캔중'} · 후보 ${cands?.length ?? 0}건 · 현금 ${Math.round(cash / 10000).toLocaleString()}만 · 슬롯 ${bigCount}/${LIVE_SLOTS}${blockedToday ? ` · 당일재진입금지 ${blockedToday}종목` : ''}`,
-      `${regime ?? '스캔중'}|${(cands?.length ?? 0) > 0 ? 'cand' : 'none'}`);
+    logGate(`${canDeploy ? '진입대기' : '교체검토(만석)'}: 레짐 ${regime ?? '스캔중'} · 후보 ${cands?.length ?? 0}건 · 현금 ${Math.round(cash / 10000).toLocaleString()}만 · 슬롯 ${bigCount}/${LIVE_SLOTS}${rotLeft ? ` · 교체가능 ${rotLeft}회` : ''}${blockedToday ? ` · 당일재진입금지 ${blockedToday}종목` : ''}`,
+      `${canDeploy ? 'buy' : 'rot'}|${regime ?? '스캔중'}|${(cands?.length ?? 0) > 0 ? 'cand' : 'none'}`);
+
+    // ★ 2026-08-01 AI 종합판단 레이어 (사용자 요청 — "조건에 맞는게 있을 때마다 사고 팔 수 있게,
+    //   자유로운 판단"). 기계 필터를 다 통과한 후보를 claude 가 보고 매수승인·청산권고·손절유예를 낸다.
+    //   consultTrader 는 항상 즉시 반환(claude 호출은 백그라운드) — 30초 청산루프를 절대 막지 않는다.
+    //   권한 비대칭 근거(매수는 후보 부분집합 / 매도는 종가판정 예약만 / 손절유예 하한)는 ai-trader.mjs 헤더.
+    //
+    // ★ eligible: **기계 필터를 실제로 통과한 것만** 판단에 넘긴다.
+    //   pickCandidate 는 보유·정적제외만 걸러서 soldToday(당일 재진입금지)·orderErr(확정거부 3회)가 남아 있다.
+    //   그걸 그대로 넘기면 폭락일에 top8 이 전부 "판단은 되지만 살 수 없는 종목"으로 채워지고
+    //   (휩소 손절분은 깊은 과매도라 conviction 최상위로 재등장한다 — 07-28~29 두산퓨얼셀 4회 전례)
+    //   9위 이하가 승인목록에 없어서 종일 매수 0이 된다. 판단 대상 = 실제로 살 수 있는 상위 N.
+    const soldT0 = state.soldToday ?? {}, errT0 = state.orderErr ?? {};
+    const eligible = (cands ?? []).filter(p =>
+      !heldSet.has(p.code) && soldT0[p.code] !== today && (errT0[p.code]?.n ?? 0) < ORDER_ERR_MAX);
+    let ai = { mode: 'off' };
+    if (eligible.length > 0) {
+      ai = consultTrader({
+        today, nowKst: now(), regime, cands: eligible, forecast: fc, cash, perSlot, bigCount,
+        slots: LIVE_SLOTS, hardStopPct: HARD_STOP_PCT, trigger: null,
+        rotate: AI_TRADER.rotate, rotateLeft: rotLeft,
+        holdings: items.map(i => {
+          const mm = state.meta[i.symbol];
+          const e = Number(i.averagePurchasePrice) || 0, p = Number(i.lastPrice) || 0;
+          const r = e > 0 && p > 0 ? (p / e - 1) * 100 : null;
+          const bd = String(mm?.boughtAt ?? '').slice(0, 10);
+          return { code: i.symbol, name: i.name, sub: mm?.sub ?? null, sector: SECTOR[i.symbol] ?? null,
+                   ret_pct: r == null ? null : Number(r.toFixed(1)),
+                   // 손절선 임박 = AI 판단 트리거이자 손절유예 판단 대상
+                   near_stop: r != null && r <= -(HARD_STOP_PCT - AI_TRADER.nearStopPct),
+                   exit_reserved: mm?.exitAt ?? null, stop_deferred: mm?.stopDeferDay ?? null,
+                   ca_hold: !!mm?.caHold,
+                   // 즉시교체 최소보유일 판정용(달력일 근사 — 정확한 거래일수는 종가판정이 계산한다)
+                   hold_days: bd ? Math.max(0, Math.round((new Date(today) - new Date(bd)) / 86_400_000)) : null };
+        }),
+        recentSells: recentSells(),
+      }, { log, notify: tgNotify });
+      if (ai.mode === 'hold') logGate(`AI판단 보류: ${ai.reason}`, 'ai|hold');
+      else if (ai.mode === 'closed') logGate(`AI판단 매수중단(오늘): ${ai.reason}`, 'ai|closed');
+      else if (ai.mode === 'live' && ai.skipAll) logGate(`AI판단 전면보류 — ${ai.strategy}`, 'ai|skipall');
+    }
+    // ★ AI 청산권고를 **종가판정 예약**으로 등록한다(즉시 매도 아님 — 익일 개장 집행).
+    //   장중 즉시 매도로 만들지 않는 이유: 분봉 782쌍 실측에서 장중 개입은 트레일·손절 모두 악화였고,
+    //   "종가판정 → 익일집행"이 백테와 라이브를 일치시킨 구조다. 이걸 깨면 검증 전체가 무효가 된다.
+    if (ai.mode === 'live' && ai.sell?.size) {
+      let n = 0;
+      for (const [code, why] of ai.sell) {
+        const m = state.meta[code];
+        if (!m || m.exitAt) continue;                      // 미보유·기존예약은 스킵
+        m.exitAt = `AI판단(${String(why).slice(0, 60)})`; m.exitDay = today; m.exitFrac = 1; m.aiExit = true;
+        n++;
+        log(`AI청산예약 ${code} — ${why}`);
+      }
+      if (n) { writeFileSync(STATE, JSON.stringify(state, null, 1)); tgNotify(`📌 AI 청산예약 ${n}건 — 익일 개장 집행 예정`); }
+    }
+    // ★ AI 손절유예 플래그를 포지션에 심는다. 실제 유예는 15:35 종가판정에서 1회만 소비된다.
+    //   지금 손절선에 닿아 있어도 장중엔 rsi2 청산 판정 자체가 없으므로(장중 무개입) 여기서 심어두면 된다.
+    if (ai.mode === 'live' && ai.defer?.size) {
+      let n = 0;
+      for (const [code, why] of ai.defer) {
+        const m = state.meta[code];
+        if (!m || m.stopDeferDay === today) continue;     // 미보유·당일 이미 소비분은 스킵
+        if (m.stopDefer === today) continue;              // 이미 심어둠
+        m.stopDefer = today; m.stopDeferWhy = String(why).slice(0, 120); n++;
+        log(`AI 손절유예 예정 ${code} — ${why}`);
+      }
+      if (n) writeFileSync(STATE, JSON.stringify(state, null, 1));
+    }
+    // ★ 즉시 교체(rotate) 집행 — **이 코드가 유일하게 장중에 매도한다.** 사용자 요청의 핵심 경로다.
+    //   ("살 종목 생겼다 → 보유 모멘텀 없어졌다 → 판다 → 새로 산다". 일반 sell 은 익일 집행이라
+    //    만석이면 기회가 사라진다.) 기각된 로테이션 축을 되살리는 것이므로 가드를 두껍게 둔다:
+    //   ai-trader 가 이미 짝·상한·손실·보유일을 검증했고, 여기서 **집행 직전 상태를 다시 확인**한다
+    //   (판단 시점과 집행 시점 사이에 예약청산·CA서킷·수급청산이 끼어들 수 있다).
+    if (ai.mode === 'live' && ai.rotate?.length && rotLeft > 0) {
+      for (const rot of ai.rotate) {
+        if ((state.rotCount ?? 0) >= AI_TRADER.rotate.maxPerDay) break;
+        const it = items.find(i => i.symbol === rot.sell_code);
+        const m = state.meta[rot.sell_code];
+        if (!it || !m) { log(`즉시교체 스킵 ${rot.sell_code}: 미보유`); continue; }
+        if (m.exitAt) { log(`즉시교체 스킵 ${rot.sell_code}: 이미 청산예약(${m.exitAt})`); continue; }
+        if (m.caHold) { log(`즉시교체 스킵 ${rot.sell_code}: CA서킷 보류중`); continue; }
+        if (flowBrk.has(rot.sell_code)) { log(`즉시교체 스킵 ${rot.sell_code}: 수급청산 대상(그 경로로 처리)`); continue; }
+        const px = Number(it.lastPrice), entry = Number(it.averagePurchasePrice), qty = Number(it.quantity);
+        const ret = entry > 0 ? (px / entry - 1) * 100 : 0;
+        if (ret < -AI_TRADER.rotate.maxSellLossPct) { log(`즉시교체 스킵 ${rot.sell_code}: 손실 ${ret.toFixed(1)}% > 상한 ${AI_TRADER.rotate.maxSellLossPct}% (손절 규칙에 맡김)`); continue; }
+        // 매수측이 지금도 유효한지 재확인 — 승인·후보·미보유·당일미매도
+        const buyOk = ai.buy.has(rot.buy_code) && eligible.some(p => p.code === rot.buy_code);
+        if (!buyOk) { log(`즉시교체 스킵 ${rot.sell_code}→${rot.buy_code}: 매수측 무효(승인·후보 이탈)`); continue; }
+        try {
+          const lpx = limitSellPx(px);
+          const o = await createOrder(seq, { symbol: it.symbol, side: 'SELL', orderType: 'LIMIT', price: String(lpx), quantity: String(qty) });
+          const filled = await settleOrder(o?.orderId ?? o?.id, it.symbol, 'SELL', qty, `즉시교체 ${it.symbol}`, entry);
+          if (filled.ok) {
+            const fpx = filled.fillPx ?? lpx, fret = (fpx / entry - 1) * 100;
+            const rsn = `AI 즉시교체(→${rot.buy_code}: ${String(rot.reason).slice(0, 60)})`;
+            state.rotCount = (state.rotCount ?? 0) + 1; state.rotDay = today;
+            log(`매도 ${it.name}(${it.symbol}) ${qty}주 @${fpx.toLocaleString()}${filled.fillPx ? '' : '(지정가)'} (${rsn}, 실현 ${fret.toFixed(1)}%) · 교체 ${state.rotCount}/${AI_TRADER.rotate.maxPerDay}회`);
+            recordTrade({ ts: now(), code: it.symbol, name: it.name, side: 'SELL', px: fpx, limitPx: lpx,
+              fillSrc: filled.fillPx ? 'actual' : 'limit', qty, entry, ret: Number(fret.toFixed(1)),
+              reason: rsn, aiRotate: { to: rot.buy_code, why: rot.reason } });
+            delete state.meta[it.symbol];
+            (state.soldToday ??= {})[it.symbol] = today;   // 되사기 금지(플립플롭 방어)
+            writeFileSync(STATE, JSON.stringify(state, null, 1));
+            tgNotify(`🔄 AI 즉시교체: ${it.name} 매도 ${fret >= 0 ? '+' : ''}${fret.toFixed(1)}% → ${rot.buy_code} 매수 예정\n사유: ${rot.reason}\n※ 왕복비용 약 0.33%p 발생 · 오늘 ${state.rotCount}/${AI_TRADER.rotate.maxPerDay}회`);
+            break;   // 사이클당 교체 1건 — 매수는 아래 루프가 같은 사이클에 집행한다
+          }
+        } catch (e) { log(`즉시교체 매도 오류 ${it.symbol}: ${String(e.message).slice(0, 200)}`); }
+      }
+      // ★ 교체 매도로 현금·슬롯이 바뀌었다. 매수 루프가 낡은 값을 쓰면 (a) 예산이 0에 가까워 아무것도
+      //   못 사고 (b) canDeploy 가 false 로 남아 **팔기만 하고 안 사는** 최악 결과가 된다.
+      //   그래서 현금·보유를 재조회하고 canDeploy·예산을 다시 계산한다.
+      try {
+        cash = Number((await getBuyingPower(seq, { currency: 'KRW' }))?.cashBuyingPower ?? cash);
+        const h2 = await getHoldings(seq);
+        const it2 = (h2?.items ?? []).filter(i => i.marketCountry === 'KR' && Number(i.quantity) > 0 && !EXCLUDED.has(i.symbol));
+        heldSet.clear(); for (const i of it2) heldSet.add(i.symbol);
+        const pv2 = it2.reduce((s, i) => s + Number(i.quantity) * Number(i.lastPrice), 0);
+        const eq2 = cash + pv2;
+        const ps2 = Math.max(MIN_PRICE, Math.floor(eq2 / LIVE_SLOTS));
+        const bc2 = CAPITAL_DEPLOY.enabled
+          ? it2.filter(i => Number(i.quantity) * Number(i.lastPrice) >= ps2 * CAPITAL_DEPLOY.dustFraction).length
+          : it2.length;
+        canDeploy = CAPITAL_DEPLOY.enabled
+          ? (bc2 < LIVE_SLOTS && cash >= ps2 * CAPITAL_DEPLOY.minFillFraction && cash >= MIN_PRICE)
+          : (it2.length < LIVE_SLOTS && cash >= MIN_PRICE);
+        remainingSlots = Math.max(1, LIVE_SLOTS - bc2);
+        diversified = Math.min(cash, ps2);
+        scanCash = cash; scanHeld = heldSet;
+        log(`교체 후 재계산: 현금 ${Math.round(cash / 10000).toLocaleString()}만 · 슬롯 ${bc2}/${LIVE_SLOTS} · 매수가능 ${canDeploy ? 'Y' : 'N'}`);
+        if (!canDeploy) log(`⚠️ 교체 매도했는데 매수 조건 미충족 — 다음 사이클에 재시도(현금은 유휴 상태)`);
+      } catch (e) { log(`교체 후 재조회 실패(다음 사이클 반영): ${String(e.message).slice(0, 80)}`); }
+    }
+    const aiBlocksAll = ai.mode === 'hold' || ai.mode === 'closed' || (ai.mode === 'live' && ai.skipAll);
 
     // 확신도순으로 훑어 각 후보의 예산(집중 or 분산)에 맞는 첫 종목 1건 매수
     // ★ 당일 재진입 금지 (2026-07-29 사용자 승인). 폭락장 휩소 대응.
@@ -823,9 +1022,20 @@ while (true) {
     //   일봉 백테는 하루 1회만 판정해 이 동작이 아예 없다 = "DOWN에서 rsi2 유지"(10시드 1승9패) 검증 범위 밖.
     //   비용도 실재: 청산 16회 × 왕복 0.33%p ≈ 계좌 -1.1%가 순수 마찰.
     //   진입만 막는다(청산 로직 불변). 다음 거래일부터 재진입 허용.
+    // ★ 순서 역전 방지 (2026-08-01): 판단 후 새로 올라온 **미판정 1위**가 있으면 이번 사이클은 매수하지 않는다.
+    //   그냥 진행하면 미판정 1위를 건너뛰고 기존 승인분(더 약한 신호)을 사게 되는데, 그게
+    //   conviction ≥ 7 이면 CONVICTION_SIZING 이 현금 50%를 그 약한 신호에 몰아넣는다(집중몰빵).
+    //   기계 기준선은 1위를 먼저·집중으로 샀을 상황이라 하루 배분이 뒤집힌다.
+    //   지연 상한은 minCallGapMin(10분)+판단시간으로 유한하고, 방향은 "거래를 늦추는" 쪽이다.
+    const top1Unjudged = ai.mode === 'live' && !ai.skipAll && eligible[0] && !ai.judged?.has(eligible[0].code);
+    if (top1Unjudged) logGate(`AI 재판단 대기: 신규 1위 ${eligible[0].name}(확신도 ${eligible[0].conviction?.toFixed(1)}) 미판정`, 'ai|top1new');
     const soldT = state.soldToday ?? {};
     const errT = state.orderErr ?? {};
-    for (const pick of (cands ?? [])) {
+    // canDeploy: 만석 상태로 이 블록에 들어온 경우(교체 검토 목적)엔 매수 루프를 돌지 않는다.
+    //   교체가 성사됐으면 위에서 canDeploy 가 true 로 갱신돼 있다.
+    if (!canDeploy) logGate(`매수보류(만석): 슬롯 ${bigCount}/${LIVE_SLOTS} · 교체 ${state.rotCount ?? 0}/${AI_TRADER.rotate.maxPerDay}회 사용`, `full|${bigCount}`);
+    if (canDeploy && !aiBlocksAll && !top1Unjudged) for (const pick of eligible) {
+      if (ai.mode === 'live' && !ai.buy.has(pick.code)) continue;   // ★ AI 미승인 후보 스킵
       if (heldSet.has(pick.code)) continue;
       if (soldT[pick.code] === today) continue;
       if ((errT[pick.code]?.n ?? 0) >= ORDER_ERR_MAX) continue;   // 당일 주문거부 누적 → 다음 후보로

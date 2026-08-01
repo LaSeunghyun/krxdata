@@ -112,7 +112,7 @@ async function monitorSells() {
 }
 
 const SYS = `너는 krxdata 주식 자동매매 시스템(~/krxdata, VM)의 텔레그램 어시스턴트다.
-매매는 stock-live 시스템이 조건(combo-v2 신호·트레일 고점-8%·하드손절 진입-7%)에 따라 08:00~20:00 자동 집행한다. 너는 그걸 조회·분석·운영하는 조수다.
+매매는 stock-live 시스템이 평일 08:00~20:00 자동 집행한다: combo-v2 신호(rsi2 과매도·hi120 돌파) → AI 종합판단(claude가 매수승인·청산권고·손절 1세션유예를 판단, 원장 ai-trader-decisions.jsonl) → 집행. 청산은 15:35 종가판정 → 익일 개장 집행(rsi2: 손절-15%/MA3익절/5일만기 · hi120: 부분익절+6/12%·트레일-6%·갭정책 오버라이드). 시장예측은 매일 07:00(NXT 08:00 개장 전) forecast-run pre 페이즈. 너는 그걸 조회·분석·운영하는 조수다.
 적극 답할 것(★분석·예측 포함★):
  - 계좌·포지션·손익(node status.mjs 또는 toss-api), 예측(forecast_ledger)·수급(stock_investor_flows) 조회
  - "내일 뭐 팔아?/살아?" 같은 질문은 반드시 '분석'으로 답한다: 각 보유 종목의 현재가·손절선·여유%를 근거로 어느 게 청산 임박인지, 조건상 무엇을 사고팔 가능성이 있는지 설명. 절대 거부하지 마라.
@@ -130,12 +130,24 @@ const ALLOWED = [
   'Bash(sudo systemctl restart stock-live:*)',
   'Bash(sudo journalctl -u stock-live:*)',
 ].join(',');
+/**
+ * ★ 2026-08-01: claude 실행을 flock 으로 감쌌다 — stock-live 의 AI 판단(ai-trader.mjs)과
+ *   **동시 실행을 막는다.** VM RAM 956MB(available ~374MB)에 claude 1프로세스가 ~300-400MB라
+ *   둘이 겹치면 OOM 이다. 여기(사용자 질의)가 우선이므로 대기시간을 길게 준다(-w 300).
+ *   ai-trader 는 -w 20 으로 짧게 기다리고 못 잡으면 양보한다(다음 주기 재시도).
+ *   flock 이 없는 환경이면 그대로 직접 실행(로컬 개발).
+ */
+const CLAUDE_LOCK = join(__dirname, '.claude-spawn.lock');
+const HAS_FLOCK = existsSync('/usr/bin/flock') || existsSync('/bin/flock');
 function ask(prompt) {
   return new Promise((resolve) => {
     const args = ['-p', prompt, '--append-system-prompt', SYS,
       '--allowedTools', ALLOWED, '--disallowedTools', 'Write,Edit,WebFetch,WebSearch'];
+    const [bin, spawnArgs] = HAS_FLOCK
+      ? ['flock', ['-w', '300', CLAUDE_LOCK, 'claude', ...args]]
+      : ['claude', args];
     // stdin 무시: 안 닫으면 claude가 파이프 stdin 입력을 기다리며 멈춰 응답이 안 나감(프롬프트는 -p 인자로 전달)
-    const cp = spawn('claude', args, { cwd: __dirname, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const cp = spawn(bin, spawnArgs, { cwd: __dirname, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '', err = '';
     cp.stdout.on('data', d => out += d);
     cp.stderr.on('data', d => err += d);

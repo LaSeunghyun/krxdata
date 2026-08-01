@@ -82,3 +82,12 @@ candles-daily-krx.jsonl
 candles-daily-krx-clean.jsonl
 candles-daily-toss-clean.jsonl
 candles-pert-*.jsonl
+
+# AI 매수 게이트 판단 원장 (런타임 산출물, VM에서 생성)
+ai-trader-decisions.jsonl
+.ai-trader-state.json
+.claude-spawn.lock
+# MC/연구 출력물 (재생성 가능)
+gap-rsi-*.json
+mc-exposure-out.txt
+verify-*.jsonl
