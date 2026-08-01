@@ -416,7 +416,7 @@ function recentSells(n = 5) {
  *   즉시교체에서는 부분체결로 rotCount·슬롯개방까지 진행돼 상한이 어긋난다(리뷰 확정).
  *   호출자가 전량 여부를 판정할 수 있게 실제 체결수량을 돌려준다.
  */
-let orderKeysLogged = false;
+let orderKeysLogged = false, orderKeysWarned = false;
 async function settleOrder(orderId, symbol, side, qtyBefore, tag, avgBefore = 0) {
   for (let i = 0; i < 12; i++) {
     await new Promise(r => setTimeout(r, 2000));
@@ -435,14 +435,27 @@ async function settleOrder(orderId, symbol, side, qtyBefore, tag, avgBefore = 0)
       }
       if (side === 'SELL' && cur < qtyBefore) {
         let fillPx = null;
+        /**
+         * ★ 2026-08-01 계측 추가. 라이브 저널 실측에서 **매도 21건 전부 fillSrc 가 'actual' 이 아니었고**
+         *   `[getOrder 필드 확인]` 로그가 **한 번도 뜬 적이 없다**(매수는 7건이 actual). 즉 이 try 안에서
+         *   매번 예외가 나고 `catch {}` 가 조용히 삼켜, 매도 체결가가 항상 지정가 폴백으로 기록돼 왔다.
+         *   크로싱 지정가(현재가×0.995)는 실제 체결이 그 이상이므로 **실현손익이 체계적으로 과소** 기록된다.
+         *   이 값은 AI 프롬프트의 recentSells 로도 들어가 "최근 연패"를 과장할 수 있고,
+         *   원장 사후측정(승인분 vs 거부분)의 기준값도 흔든다.
+         *   원인을 추측하지 않는다 — 실패 사유와 응답 원문을 1회 남겨 다음 매도에서 실측으로 확정한다.
+         *   (내 메모리 규칙: "원인 불명이면 추론하지 말고 계측을 먼저 넣는다")
+         */
         try {
           const od = await getOrder(seq, orderId);
-          if (!orderKeysLogged && od) { orderKeysLogged = true; log(`  [getOrder 필드 확인] ${JSON.stringify(od).slice(0, 300)}`); }
+          if (!orderKeysLogged) { orderKeysLogged = true; log(`  [getOrder 응답 확인] orderId=${orderId} → ${JSON.stringify(od).slice(0, 400)}`); }
           for (const k of ['executedPrice', 'avgExecutedPrice', 'filledPrice', 'averagePrice', 'execPrice']) {
             const v = Number(od?.[k]);
             if (v > 0) { fillPx = Math.round(v); break; }
           }
-        } catch {}
+          if (fillPx == null && !orderKeysWarned) { orderKeysWarned = true; log(`  ⚠️ getOrder 응답에 알려진 체결가 필드가 없다 — 지정가 폴백. 위 응답 원문에서 실제 필드명을 확인해야 한다`); }
+        } catch (e) {
+          if (!orderKeysWarned) { orderKeysWarned = true; log(`  ⚠️ getOrder 실패(매도 체결가를 지정가로 폴백): orderId=${orderId} · ${String(e.message).slice(0, 200)}`); }
+        }
         return { ok: true, fillPx, filledQty: qtyBefore - cur };
       }
     } catch {}
