@@ -254,6 +254,27 @@ const FLOW_EXIT = argv.includes('--flowexit') ? Number(argOf('--flowexit', 0)) :
 const FLOWEXIT_DAYS = Number(argOf('--flowexitdays', 5));
 // 2026-07-27: 수급붕괴 청산 적용 범위. hi120(배포본 기본) | rsi2 | both. --flowexitsub
 const FLOWEXIT_SUB = String(argOf('--flowexitsub', 'hi120'));
+/**
+ * ★ 2026-08-01 `--flowexitnow` — 수급청산 집행 시점.
+ *
+ * 라이브(stock-live.mjs)는 수급붕괴를 감지하면 청산 루프에서 `createOrder` 로 **장중 즉시** 판다.
+ * 백테는 `exitAtOpen` 이라 **익일 시가**에 팔았다. 정보집합은 같고(둘 다 전일까지 확정 수급)
+ * 집행 시점만 정확히 **1거래일** 다르다 — 신호는 X일 마감 후 확정 → 라이브 X+1 시가 / 백테 X+2 시가.
+ *
+ * 30시드 MC 로 두 타이밍을 재봤다(노이즈 바닥 0.380, 전 arm 30/30 완주):
+ *   A 익일시가(백테 기존)  CAGR 35.3% MDD 25.7% **Calmar 1.37**  최악시드 19.9%
+ *   B 당일시가(라이브)     CAGR 45.5% MDD 23.2% **Calmar 1.96**  최악시드 24.9%  ← Δ+0.59, 시드 28승2패
+ *   C 수급청산 off         CAGR 39.6% MDD 24.6% Calmar 1.61
+ * **라이브가 맞고 백테가 틀렸다.** 바닥(0.380)을 넘는 실질 개선이고 꼬리(최악시드·최대MDD)도 B 가 낫다.
+ * → `--live-parity` 면 자동으로 당일 시가 집행을 쓴다. 그래야 백테가 라이브를 재현한다.
+ *
+ * ※ 남은 미결: **규칙 자체의 존치**는 아직 미확정이다. 올바른 타이밍끼리 비교하면
+ *   B(1.96) vs C(1.61) = Δ+0.35 로 바닥 0.380 **바로 아래**다 = 경계값이라 판정 불가.
+ *   경계값에서는 기각·채택이 아니라 **시드를 늘리는 것**이 올바른 대응이다(손절 15% 가 30시드
+ *   미통과 → 60시드 통과로 갈린 전례). 라이브에서 이 규칙은 hi120 전용이고 hi120 진입이
+ *   아직 0건이라 발동한 적이 없으므로 급하지 않다 — UP 레짐 전환 전에 60시드로 매듭지을 것.
+ */
+const FLOWEXIT_NOW = argv.includes('--flowexitnow') || argv.includes('--live-parity');
 const FLOWS = (() => {
   if (!FLOW_OUT && !FLOW_SELL && FLOW_EXIT == null && RSI_FLOW == null) return null;
   try { return JSON.parse(readFileSync(join(__dirname, 'krx-flows.json'), 'utf8')); }
@@ -914,6 +935,24 @@ for (let di = 0; di < tradingDays.length; di++) {
       const i = cd ? indexOfDate(cd, day) : null;
       if (i == null) continue;
       if (p.exitAtOpen) { sell(book, day, code, cd.o[i], p.exitAtOpen, p.exitQty); delete p.exitAtOpen; delete p.exitQty; continue; }
+      /**
+       * ★ 2026-08-01 `--flowexitnow`: **라이브 수급청산의 실제 동작**을 재현한다.
+       *
+       * 라이브(stock-live.mjs)는 수급붕괴를 감지하면 청산 루프에서 `createOrder` 로 **장중 즉시** 판다.
+       * 반면 백테는 `p.exitAtOpen = 'flow_break'` 로 두어 **익일 시가**에 판다.
+       * 정보집합은 같다(둘 다 전일까지 확정 수급) — 다른 것은 집행 시점이고, 그 차이가 정확히
+       * **1거래일**이다. 신호는 X일 마감 후 확정 → 라이브는 X+1 시가, 백테는 X+2 시가에 집행.
+       * 즉 MC 로 검증된 값(MDD 22.3→20.5%·Calmar 1.65→1.82)은 X+2 타이밍의 것이고
+       * 라이브가 실제로 하는 X+1 타이밍은 **한 번도 측정된 적이 없다.**
+       *
+       * 이 플래그는 그 미측정 구간을 재현한다: 같은 flowSum(전일까지) 으로 판정하되 **당일 시가**에 판다.
+       * look-ahead 아님 — flowSum 은 `k < day` 라 당일 시가 이전에 이미 알 수 있는 정보만 쓴다.
+       */
+      if (FLOW_EXIT != null && FLOWEXIT_NOW && p.holdDays >= 1
+          && (FLOWEXIT_SUB === 'both' || p.sub === FLOWEXIT_SUB)) {
+        const f = flowSum(code, day, FLOWEXIT_DAYS);
+        if (f && f.both <= -FLOW_EXIT) { sell(book, day, code, cd.o[i], 'flow_break'); continue; }
+      }
       p.hiPrev = p.hi; // 전일까지의 고점 (장중 트레일링 레벨용 — 당일 고가 lookahead 방지)
       p.hi = Math.max(p.hi, cd.h[i]);
     }
