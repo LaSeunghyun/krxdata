@@ -352,8 +352,43 @@ function saveState() {
     console.error(`[state] 원자쓰기 실패(직접쓰기 폴백): ${String(e.message).slice(0, 120)}`);
   }
 }
-const loadJournal = () => { try { return JSON.parse(readFileSync(JOURNAL, 'utf8')); } catch { return { trades: [] }; } };
-function recordTrade(t) { const j = loadJournal(); j.trades.push(t); writeFileSync(JOURNAL, JSON.stringify(j, null, 1)); }
+/**
+ * ★ 2026-08-01: 저널도 원자쓰기로 바꿨다.
+ *   기존 `catch { return { trades: [] } }` 는 파일이 절단되면 **거래이력을 조용히 0건으로 리셋**하고
+ *   그 위에 새로 쓴다 — 전체 매매 기록이 소실되는데 로그도 경보도 없다.
+ *   이 저널은 AI 판단 사후측정(승인분 vs 거부분)과 실현손익 집계의 원천이라 소실이 곧 검증 불가다.
+ *   → .bak 폴백 + tmp→rename. 그래도 못 읽으면 **경보를 남기고** 새로 시작한다(조용한 리셋 금지).
+ */
+const loadJournal = () => {
+  for (const [path, label] of [[JOURNAL, '본파일'], [JOURNAL + '.bak', '백업']]) {
+    if (!existsSync(path)) continue;
+    try {
+      const j = JSON.parse(readFileSync(path, 'utf8'));
+      if (j && Array.isArray(j.trades)) {
+        if (label !== '본파일') log(`저널 본파일 손상 → 백업에서 복구(${j.trades.length}건)`);
+        return j;
+      }
+    } catch (e) { log(`저널 ${label} 파싱 실패: ${String(e.message).slice(0, 100)}`); }
+  }
+  if (existsSync(JOURNAL)) {
+    log(`🚨 저널 손상 — 이력 소실. 새 저널로 시작한다(손상본은 .corrupt 로 보존)`);
+    try { renameSync(JOURNAL, `${JOURNAL}.corrupt.${Date.now()}`); } catch {}
+    tgNotify(`🚨 거래 저널이 손상돼 이력을 읽을 수 없습니다. 손상본을 .corrupt 로 보존하고 새로 시작합니다.\n실현손익 집계·AI 사후측정에 공백이 생깁니다.`);
+  }
+  return { trades: [] };
+};
+function recordTrade(t) {
+  const j = loadJournal(); j.trades.push(t);
+  const tmp = JOURNAL + '.tmp';
+  try {
+    writeFileSync(tmp, JSON.stringify(j, null, 1));
+    if (existsSync(JOURNAL)) { try { renameSync(JOURNAL, JOURNAL + '.bak'); } catch {} }
+    renameSync(tmp, JOURNAL);
+  } catch (e) {
+    try { writeFileSync(JOURNAL, JSON.stringify(j, null, 1)); } catch {}
+    log(`저널 원자쓰기 실패(직접쓰기 폴백): ${String(e.message).slice(0, 100)}`);
+  }
+}
 // AI게이트 컨텍스트용: 최근 실현 매도 n건 (연패 흐름을 판단 근거로 제공)
 function recentSells(n = 5) {
   try { return loadJournal().trades.filter(t => t.side === 'SELL').slice(-n).map(t => ({ name: t.name, ret: t.ret, reason: t.reason, ts: t.ts })); } catch { return []; }
@@ -896,7 +931,15 @@ while (true) {
           }
           m.lastPx = px;
           saveState();
-          continue; // 이 종목 자동매도(부분익절·손절·트레일) 전면 스킵
+          // ★ 2026-08-01: CA서킷이 **이미 예약된 청산까지** 막고 있었다.
+          //   예약은 CA 발생 **이전 종가**로 판정된 검증된 지시이고(전량·부분 모두 비율 집행이라
+          //   권리락에서도 가치중립이다), 그걸 막으면 금요일에 판정한 -15% 손절이 월요일 갭하락
+          //   오탐 하나로 봉인된다. 신규 판정(부분익절·트레일·손절)만 보류하고 기존 예약은 통과시킨다.
+          if (m.exitAt && m.exitDay !== today) {
+            logGate(`CA서킷 보류중이나 기존 예약청산은 집행 ${it.name}(${it.symbol}) ${m.exitAt}`, `capass|${it.symbol}`);
+          } else {
+            continue; // 신규 자동매도(부분익절·손절·트레일) 판정만 전면 스킵
+          }
         }
       }
       m.lastPx = px;
@@ -1257,7 +1300,13 @@ while (true) {
     //   (판단 시점과 집행 시점 사이에 예약청산·CA서킷·수급청산이 끼어들 수 있다).
     let rotBuyFirst = null;   // 교체 매도 성공 시 그 짝의 매수측을 최우선으로 사기 위한 표시
     let rotProceeds = 0;      // 교체 매도대금(수수료 차감) — 재조회 실패 시 예산 재구성에 쓴다
-    if (ai.mode === 'live' && ai.rotate?.length && rotLeft > 0) {
+    // ★ 즉시교체 시간창 — 두 다리가 다 붙어야 하므로 KRX 정규장 안에서만 개시한다(위 주석 참조).
+    const rotHm = (() => { const k = kst(); return k.getUTCHours() * 100 + k.getUTCMinutes(); })();
+    const rotTimeOk = rotHm >= AI_TRADER.rotate.startHm && rotHm < AI_TRADER.rotate.endHm;
+    if (ai.mode === 'live' && ai.rotate?.length && rotLeft > 0 && !rotTimeOk) {
+      logGate(`즉시교체 시간창 밖(${String(rotHm).padStart(4, '0')} · 허용 ${AI_TRADER.rotate.startHm}~${AI_TRADER.rotate.endHm}) — 교체 보류(유동성 얇은 구간에서 한쪽만 체결되는 것을 막는다)`, 'rot|time');
+    }
+    if (ai.mode === 'live' && ai.rotate?.length && rotLeft > 0 && rotTimeOk) {
       for (const rot of ai.rotate) {
         if ((state.rotCount ?? 0) >= AI_TRADER.rotate.maxPerDay) break;
         const it = items.find(i => i.symbol === rot.sell_code);
@@ -1321,7 +1370,7 @@ while (true) {
             //   매수가 실패했을 때(4xx 거부·예산·qty<1) 다음 사이클엔 그 사실이 아무 곳에도 없어서
             //   top1Unjudged·hold·closed 에 막혀 현금이 종일 유휴가 될 수 있다(리뷰 확정 critical).
             rotProceeds = fpx * fq * 0.9967;
-            state.rotPendingBuy = { code: rot.buy_code, day: today, at: now(), proceeds: Math.round(rotProceeds), tries: 0 };
+            state.rotPendingBuy = { code: rot.buy_code, day: today, at: now(), proceeds: Math.round(rotProceeds), tries: 0, pid: process.pid };
             saveState();
             tgNotify(`🔄 AI 즉시교체: ${it.name} 매도 ${fret >= 0 ? '+' : ''}${fret.toFixed(1)}% → ${buyPick.name}(${rot.buy_code}) 매수 예정\n사유: ${rot.reason}\n※ 왕복비용 약 0.33%p 발생 · 오늘 ${state.rotCount}/${AI_TRADER.rotate.maxPerDay}회`);
             clearRotate();          // 남은 교체 지시 비움 → 재판단 강제(낡은 2번째 교체·스킵로그 도배 방지)
@@ -1404,6 +1453,14 @@ while (true) {
         log(`교체 미완 포기: ${pend.code} (주문거부 ${state.orderErr?.[pend.code]?.n ?? 0}회 · 시도 ${pend.tries ?? 0}회) — 확보 현금은 일반 매수 대상으로`);
         tgNotify(`⚠️ 즉시교체 매수 포기: ${pend.code} 를 끝내 못 샀습니다(거부 ${state.orderErr?.[pend.code]?.n ?? 0}회 · 시도 ${pend.tries ?? 0}회).\n확보한 현금 ${Math.round((pend.proceeds ?? 0) / 10000).toLocaleString()}만원은 일반 매수 후보로 배정됩니다.`);
         delete state.rotPendingBuy; saveState();
+      } else if (pend.pid && pend.pid !== process.pid && !pend.crashChecked) {
+        // ★ 다른 pid 가 남긴 미완 = **그 프로세스가 매수 주문을 낸 직후 죽었을 수 있다.**
+        //   미결 주문 조회 API 가 없으므로(toss-api 에 목록 함수 부재) 확인할 방법이 없다.
+        //   그대로 재매수하면 두 주문이 다 체결돼 슬롯예산의 2배가 노출된다.
+        //   → 한 사이클(30초) 기다려 holdings 에 반영될 기회를 주고 그 다음에만 재시도한다.
+        pend.crashChecked = true; saveState();
+        log(`교체 미완 이어받기 보류: ${pend.code} — 다른 프로세스(pid ${pend.pid})가 남긴 미완이다. 미결 주문 체결 여부를 한 사이클 확인 후 재시도`);
+        tgNotify(`⚠️ 재기동 후 교체 미완 발견: ${pend.code}\n이전 프로세스가 매수 주문을 낸 직후 종료됐을 수 있습니다. 중복 매수를 막기 위해 한 사이클 대기 후 재시도합니다.\n토스 앱에서 미결 주문을 확인해주시면 확실합니다.`);
       } else {
         rotBuyFirst = pend.code;
         pend.tries = (pend.tries ?? 0) + 1;
@@ -1435,6 +1492,11 @@ while (true) {
       //   비운 슬롯·확보한 현금이 그 매수를 위한 것이다. 여기서 막으면 팔고 안 사는 상태가 된다.
       const isRotBuy = pick.code === rotBuyFirst;
       if (!isRotBuy && ai.mode === 'live' && !ai.buy.has(pick.code)) continue;
+      // ★ 2026-08-01: 봇제외 목록을 **주문 직전에 다시 읽는다.** 사용자가 텔레그램으로 수동 매수하면
+      //   그 종목이 .bot-exclude.json 에 추가되는데, signalCache 는 그 전에 만들어진 것이라
+      //   후보에 남아 있다. 그대로 사면 봇 물량이 수동 물량과 섞여 평단이 왜곡되고,
+      //   다음 사이클부터 EXCLUDED 라 items 에서 빠져 **그 물량이 영구 미관리**가 된다.
+      if (readBotExclude().has(pick.code)) { logGate(`매수 스킵 ${pick.code}: 수동 관리 종목으로 방금 등록됨`, `exnew|${pick.code}`); continue; }
       if (heldSet.has(pick.code)) continue;
       if (soldT[pick.code] === today) continue;
       if ((errT[pick.code]?.n ?? 0) >= ORDER_ERR_MAX) continue;   // 당일 주문거부 누적 → 다음 후보로

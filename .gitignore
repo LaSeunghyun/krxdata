@@ -91,3 +91,8 @@ ai-trader-decisions.jsonl
 gap-rsi-*.json
 mc-exposure-out.txt
 verify-*.jsonl
+
+# 런타임 산출물 (원자쓰기·싱글턴)
+.stock-live.pid
+stock-live-state.json.*
+stock-live-journal.json.*
