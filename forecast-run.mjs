@@ -1232,6 +1232,20 @@ async function main() {
       report = fmtRunReport({ made, verified, rolling, quality, dry, fx, disc, nxt: nxtInfo, now, flow });
     }
     console.log(report);
+    // ★ 2026-08-01: 보고서를 paper_state 에 저장한다 (사용자 요청 — "매일 아침 전날 미국장의 이슈와
+    //   사회적인 이슈들을 확인하여 전략을 수립한다"). 이 보고서가 그 정보의 **유일한 원천**이다:
+    //   composeReport 는 allow_websearch(pre/close)로 해외장·뉴스를 넣고 공시·환율·수급·NXT까지 합성한다.
+    //   그런데 지금까지 **console + 텔레그램으로만 나가고 어디에도 저장되지 않았다** → stock-live 의
+    //   AI 판단이 읽을 수 없었다. forecast_ledger.drivers 는 순수 통계(EWMA·평균)뿐이라 대체가 안 된다.
+    //   ai-trader 가 pre 보고서를 morning_brief 로 읽는다(stock-live.marketForecast).
+    if (!dry) {
+      try {
+        await dbQuery(`
+          INSERT INTO paper_state (k, data, updated_at)
+          VALUES ('fc_report:${phase}:${kstDate()}', ${jsonb({ phase, date: kstDate(), hm: kstHM(), engine: ENGINE_VERSION, quality: quality.grade, text: report })}, NOW())
+          ON CONFLICT (k) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`);
+      } catch (e) { log(`보고서 저장 실패(비치명): ${e.message}`); }
+    }
     if (!dry) await notifyTelegram(report);
   }
 

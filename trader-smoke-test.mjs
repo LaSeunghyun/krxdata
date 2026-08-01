@@ -23,12 +23,12 @@ const ctx = {
   ],
   forecast: { dir: 'down', up: 28, down: 57, conf: 62, median: -0.9, session: 'KRX_REGULAR',
     drivers: { us: '나스닥 -2.1% 반도체 주도 하락, 필라델피아 반도체지수 -3.4%', issues: '엔캐리 청산 우려 재점화' } },
-  cash: 1_400_000, perSlot: 1_200_000, bigCount: 4, slots: 5, rotateLeft: 2,
+  cash: 1_400_000, perSlot: 1_200_000, bigCount: 4, slots: 5, rotateLeft: 1, sellLeft: 2,
   holdings: [
-    { code: '000150', name: '두산', sub: 'hi120', sector: '지주·발전설비', ret_pct: 16.9, near_stop: false, exit_reserved: '부분익절 tp2 +12%', stop_deferred: null },
-    { code: '011070', name: 'LG이노텍', sub: 'rsi2', sector: '전자부품', ret_pct: -13.1, near_stop: true, exit_reserved: null, stop_deferred: null },
-    { code: '161390', name: '한국타이어', sub: 'rsi2', sector: '자동차부품', ret_pct: -1.2, near_stop: false, exit_reserved: null, stop_deferred: null },
-    { code: '443060', name: 'HD현대마린솔루션', sub: 'hi120', sector: '조선·기계', ret_pct: 0.4, near_stop: false, exit_reserved: null, stop_deferred: null },
+    { code: '000150', name: '두산', sub: 'hi120', sector: '지주·발전설비', ret_pct: 16.9, near_stop: false, exit_reserved: '부분익절 tp2 +12%', stop_deferred: null, defer_used: 0, judged_today: false, ca_hold: false, hold_days: 5, defer_used: 0, judged_today: false },
+    { code: '011070', name: 'LG이노텍', sub: 'rsi2', sector: '전자부품', ret_pct: -13.1, near_stop: true, exit_reserved: null, stop_deferred: null, defer_used: 0, judged_today: false, ca_hold: false, hold_days: 3, defer_used: 0, judged_today: false },
+    { code: '161390', name: '한국타이어', sub: 'rsi2', sector: '자동차부품', ret_pct: -1.2, near_stop: false, exit_reserved: null, stop_deferred: null, defer_used: 0, judged_today: false, ca_hold: false, hold_days: 4, defer_used: 0, judged_today: false },
+    { code: '443060', name: 'HD현대마린솔루션', sub: 'hi120', sector: '조선·기계', ret_pct: 0.4, near_stop: false, exit_reserved: null, stop_deferred: null, defer_used: 0, judged_today: false, ca_hold: false, hold_days: 6, defer_used: 0, judged_today: false },
   ],
   recentSells: [
     { name: '두산퓨얼셀', ret: -5.2, reason: '하드손절 -7%', ts: '2026-07-29 09:10:00' },
@@ -39,7 +39,7 @@ const ctx = {
 // 시나리오 B — 만석(5/5) + 현금 거의 없음 + 강한 신규 후보 + 모멘텀 죽은 보유분.
 //   사용자 요청 "살 종목 생겼다 → 모멘텀 없는 걸 청산 → 판다 → 새로 산다"가 성립해야 하는 상황.
 const ctxFull = {
-  ...ctx, regime: 'UP', cash: 90_000, bigCount: 5, perSlot: 1_200_000, rotate: (await import('./strategy-contract.mjs')).AI_TRADER.rotate, rotateLeft: 2,
+  ...ctx, regime: 'UP', cash: 90_000, bigCount: 5, perSlot: 1_200_000, rotate: (await import('./strategy-contract.mjs')).AI_TRADER.rotate, rotateLeft: 1, sellLeft: 2,
   forecast: { dir: 'up', up: 58, down: 26, conf: 61, median: +0.7, session: 'KRX_REGULAR',
     drivers: { us: '나스닥 +1.8%, 반도체 강세 주도', issues: '금리 인하 기대 확대' } },
   cands: [
@@ -47,11 +47,11 @@ const ctxFull = {
     { code: '017670', name: 'SK텔레콤', sub: 'rsi2', px: 52000, conviction: 3.2, rsi2: 6.8, dd20: -2.0, volRatio: 1.1, sector: '통신' },
   ],
   holdings: [
-    { code: '000150', name: '두산', sub: 'hi120', sector: '지주·발전설비', ret_pct: 16.9, near_stop: false, exit_reserved: '부분익절 tp2 +12%', stop_deferred: null, ca_hold: false, hold_days: 5 },
-    { code: '161390', name: '한국타이어', sub: 'rsi2', sector: '자동차부품', ret_pct: 0.3, near_stop: false, exit_reserved: null, stop_deferred: null, ca_hold: false, hold_days: 4 },
-    { code: '443060', name: 'HD현대마린솔루션', sub: 'hi120', sector: '조선·기계', ret_pct: 0.4, near_stop: false, exit_reserved: null, stop_deferred: null, ca_hold: false, hold_days: 6 },
-    { code: '005930', name: '삼성전자', sub: 'rsi2', sector: '반도체복합', ret_pct: -11.5, near_stop: false, exit_reserved: null, stop_deferred: null, ca_hold: false, hold_days: 3 },
-    { code: '034020', name: '두산에너빌리티', sub: 'rsi2', sector: '발전설비', ret_pct: -0.8, near_stop: false, exit_reserved: null, stop_deferred: null, ca_hold: false, hold_days: 2 },
+    { code: '000150', name: '두산', sub: 'hi120', sector: '지주·발전설비', ret_pct: 16.9, near_stop: false, exit_reserved: '부분익절 tp2 +12%', stop_deferred: null, defer_used: 0, judged_today: false, ca_hold: false, hold_days: 5 },
+    { code: '161390', name: '한국타이어', sub: 'rsi2', sector: '자동차부품', ret_pct: 0.3, near_stop: false, exit_reserved: null, stop_deferred: null, defer_used: 0, judged_today: false, ca_hold: false, hold_days: 4 },
+    { code: '443060', name: 'HD현대마린솔루션', sub: 'hi120', sector: '조선·기계', ret_pct: 0.4, near_stop: false, exit_reserved: null, stop_deferred: null, defer_used: 0, judged_today: false, ca_hold: false, hold_days: 6 },
+    { code: '005930', name: '삼성전자', sub: 'rsi2', sector: '반도체복합', ret_pct: -11.5, near_stop: false, exit_reserved: null, stop_deferred: null, defer_used: 0, judged_today: false, ca_hold: false, hold_days: 3 },
+    { code: '034020', name: '두산에너빌리티', sub: 'rsi2', sector: '발전설비', ret_pct: -0.8, near_stop: false, exit_reserved: null, stop_deferred: null, defer_used: 0, judged_today: false, ca_hold: false, hold_days: 2 },
   ],
 };
 const argv = process.argv.slice(2);

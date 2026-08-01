@@ -160,7 +160,9 @@ export function buildPrompt(ctx) {
       슬롯이 남아 있으면 rotate 대신 그냥 buy 를 쓴다. 참고: 기계적 무조건 교체는 과거 측정에서
       최악이었다(Calmar 1.73→0.37, 시드 0승30패). 근거 없는 교체는 확실한 마이너스다.
  3. defer_stop — 손절선에 닿았지만 시장 전체 과매도라 지금 손절이 최악의 선택인 경우 **1세션 유예**.
-    ※ ret_pct 가 -${AI_TRADER.deferFloorPct}% 아래면 유예는 무시된다(하한). 하루 단위로만 유예되고 다음 판단에서 재검토된다.
+    ※ 대상은 near_stop=true 인 rsi2 보유분만. ret_pct 가 -${AI_TRADER.deferFloorPct}% 아래면 무시된다(하한).
+    ※ **포지션당 생애 ${AI_TRADER.deferMaxPerPosition}회**다(defer_used 참고). 검증된 손절 -15%를 무기한 미루는 수단이 아니다.
+    ※ 유예는 손절만 미룬다 — 5거래일 만기 청산은 그대로 집행된다. 이미 예약된 청산도 취소되지 않는다.
  4. skipAll — 시장 상황상 지금은 아무것도 사지 않는 게 낫다면 true. buy는 빈 배열이 된다.
 
 할 수 없는 것 (요청해도 무시된다):
@@ -176,6 +178,12 @@ export function buildPrompt(ctx) {
   참고: 기계적 무조건 로테이션은 과거 측정에서 크게 나빴다(Calmar 1.73→0.37). 근거 없는 교체는 마이너스다.
 - 폭락 과매도 구간에서 rsi2는 원래 "떨어지는 것을 사는" 전략이다. 하락 자체가 거부 사유는 아니다.
 
+${ctx.brief ? `# 오늘 아침 시장 브리핑 (07:00 예측 런 — 전일 미국장·해외 이슈·공시·환율·수급 포함)
+이게 "전날 미국장과 사회적 이슈"의 원천이다. 여기 나온 사건과 후보 종목의 섹터를 연결해서 판단하라.
+\`\`\`
+${ctx.brief}
+\`\`\`
+` : '# 오늘 아침 브리핑: 없음 (예측 보고서 미저장 — 통계 지표만으로 판단)\n'}
 # 데이터
 ${JSON.stringify(data, null, 1)}
 
@@ -247,14 +255,24 @@ export function parseDecision(text, ctx) {
 
     // (A) 매수는 후보 부분집합만 — AI가 종목을 창작해 넣을 수 없다
     const buy = j.skipAll ? [] : pick(j.buy).filter(x => candSet.has(x.code));
-    // (B) 매도는 보유분만, 이미 예약된 건 제외(중복 방지)
-    const sell = pick(j.sell).filter(x => heldMap.has(x.code) && !heldMap.get(x.code).exit_reserved);
+    // (B) 매도는 보유분만, 이미 예약된 건 제외(중복 방지) + **일일 상한**.
+    //   상한이 없으면 한 번의 판단으로 보유 전량 회전이 매일 가능하다(리뷰 확정 critical).
+    const sellOk = (x) => heldMap.has(x.code) && !heldMap.get(x.code).exit_reserved;
+    const sellCap = Math.max(0, ctx.sellLeft ?? AI_TRADER.sellMaxPerDay);
+    const sellElig = pick(j.sell).filter(sellOk);
+    const sell = sellElig.slice(0, sellCap);
+    const sellTrunc = sellElig.slice(sellCap).map(x => x.code);   // 상한으로 잘린 것 — 조용히 버리지 않는다
     // (C) 손절 유예는 **손절선 임박 보유분** + 하한 위에서만.
     //   near_stop 을 요구하는 이유: 임박하지 않은 종목에 유예 플래그를 심으면 그게 meta 에 남아
     //   몇 주 뒤 전혀 다른 국면에서 조용히 소비된다(당시 AI 는 그 상황을 판단한 적이 없다).
     const deferOk = (x) => {
       const h = heldMap.get(x.code);
-      return !!h && h.near_stop === true && typeof h.ret_pct === 'number' && h.ret_pct > -AI_TRADER.deferFloorPct;
+      if (!h || h.near_stop !== true) return false;
+      if (h.exit_reserved) return false;                       // 이미 예약된 청산은 유예로 취소되지 않는다
+      if (h.sub !== 'rsi2') return false;                      // hi120 엔 하드손절이 없어 유예 대상 자체가 없다
+      if (h.defer_used >= AI_TRADER.deferMaxPerPosition) return false;  // 포지션 생애 상한
+      if (h.judged_today) return false;                        // 오늘 종가판정이 끝났으면 유예가 무효다
+      return typeof h.ret_pct === 'number' && h.ret_pct > -AI_TRADER.deferFloorPct;
     };
     const defer = pick(j.defer_stop).filter(deferOk);
 
@@ -272,12 +290,15 @@ export function parseDecision(text, ctx) {
       if (typeof h.hold_days === 'number' && h.hold_days < R.minHoldDays) return false;   // 당일 진입분 교체 금지
       return candSet.has(x.buy_code) && buySet.has(x.buy_code);
     };
-    const rotate = j.skipAll ? [] : rotRaw.filter(rotOk).slice(0, Math.max(0, ctx.rotateLeft ?? 0));
+    const rotCap = Math.max(0, ctx.rotateLeft ?? 0);
+    const rotElig = j.skipAll ? [] : rotRaw.filter(rotOk);
+    const rotate = rotElig.slice(0, rotCap);
+    const rotTrunc = rotElig.slice(rotCap).map(x => `${x.sell_code}→${x.buy_code}`);
     const dropped = {
       buy: pick(j.buy).filter(x => !candSet.has(x.code)).map(x => x.code),
-      sell: pick(j.sell).filter(x => !heldMap.has(x.code) || heldMap.get(x.code).exit_reserved).map(x => x.code),
+      sell: [...pick(j.sell).filter(x => !sellOk(x)).map(x => x.code), ...sellTrunc],
       defer: pick(j.defer_stop).filter(x => !deferOk(x)).map(x => x.code),
-      rotate: rotRaw.filter(x => !rotOk(x)).map(x => `${x.sell_code}→${x.buy_code}`),
+      rotate: [...rotRaw.filter(x => !rotOk(x)).map(x => `${x.sell_code}→${x.buy_code}`), ...rotTrunc],
     };
     return {
       buy, sell, defer, rotate, skipAll: j.skipAll,
@@ -417,17 +438,32 @@ export function consultTrader(ctx, { log, notify }) {
     if (want && !st.pending && (st.lastCallAt === 0 || gapOk)) {
       const mem = memAvailableMb();
       if (mem != null && mem < AI_TRADER.minMemMb) {
-        log(`AI판단 지연(메모리 ${mem}MB < ${AI_TRADER.minMemMb}MB) — 다음 주기 재시도`);
+        // ★ 자원 조건이 거래를 **조용히** 멈추게 두지 않는다(리뷰 확정 critical).
+        //   원하는데 못 한 시각을 기록하고, staleFallbackMin 을 넘기면 아래에서 경보+기계폴백으로 넘어간다.
+        st.blockedSince ??= Date.now();
+        st.blockedWhy = `메모리 ${mem}MB < ${AI_TRADER.minMemMb}MB`;
       } else {
+        st.blockedSince = null;
         callTrader(snapshot(ctx), { log, notify })
           .catch(e => { st.pending = false; log(`AI판단 내부오류: ${String(e.message).slice(0, 120)}`); });
       }
-    }
+    } else if (!want) st.blockedSince = null;
 
-    // 판단이 없으면(또는 만료) 매수 보류. 있으면 그대로 쓴다.
-    // ★ 상황 변화(changed)만으로는 매수를 멈추지 않는다 — 단, 미판정 종목이 매수되지는 않으므로
-    //   기존 판단이 남긴 승인분만 사고 신규 1위는 재판단 후 매수된다(순서 역전 방지는 아래 stock-live 쪽).
-    if (!fresh) return { mode: 'hold', reason: st.pending ? 'AI 판단 진행 중' : 'AI 판단 대기' };
+    if (!fresh) {
+      // ★ 판단 없는 상태가 오래 지속되면 경보 1회 + 기계 로직 폴백.
+      //   'hold' 로 무한정 두면 신규매수가 하루 종일 경보 없이 멈춘다 — "후보가 없어서 안 산 날"과
+      //   구분조차 안 된다. 검증된 기준선으로 계속 도는 것이 자원문제로 멈추는 것보다 낫다.
+      const stale = st.blockedSince && (Date.now() - st.blockedSince) > AI_TRADER.staleFallbackMin * 60_000;
+      if (stale) {
+        if (st.staleAlertDay !== ctx.today) {
+          st.staleAlertDay = ctx.today;
+          log(`⚠️ AI판단 ${AI_TRADER.staleFallbackMin}분+ 불가(${st.blockedWhy}) → 기계 로직으로 폴백`);
+          notify(`⚠️ AI 판단을 ${AI_TRADER.staleFallbackMin}분 넘게 못 하고 있습니다(${st.blockedWhy}).\n검증된 기계 전략(combo-v2)으로 계속 매매합니다. AI 매도·손절유예·즉시교체는 이 동안 작동하지 않습니다.`);
+        }
+        return { mode: 'open', reason: st.blockedWhy };
+      }
+      return { mode: 'hold', reason: st.pending ? 'AI 판단 진행 중' : (st.blockedWhy ?? 'AI 판단 대기') };
+    }
     return { mode: 'live', buy: st.buy, sell: st.sell, defer: st.defer, rotate: st.rotate,
              judged: st.judged, skipAll: st.skipAll, reason: st.reason, strategy: st.strategy };
   } catch (e) {
@@ -435,6 +471,17 @@ export function consultTrader(ctx, { log, notify }) {
     return { mode: 'hold', reason: '내부 오류' };
   }
 }
+
+/**
+ * 즉시교체를 1건 집행했을 때 호출 — 남은 교체 지시를 비운다.
+ *
+ * 왜 필요한가: st.rotate 는 판단 TTL(30분) 동안 캐시된다. 비우지 않으면
+ *  ① 집행된 교체가 목록에 남아 30초마다 "미보유" 스킵 로그를 60번 찍는다
+ *  ② AI 가 2건을 냈을 때 2번째가 **낡은 판단으로** 다음 사이클에 자동 집행된다
+ *     (AI 는 두 건이 동시에 성립한다고 보고 낸 것이고, 1건 집행 후 상황은 이미 달라졌다)
+ * → 교체 1건마다 재판단을 강제한다. 방향은 "거래를 줄이는" 쪽이고 minCallGapMin(10분)이 상한이다.
+ */
+export function clearRotate() { st.rotate = []; }
 
 /** ctx 고정 — 비동기 호출 중 메인루프가 배열을 갱신해도 프롬프트가 흔들리지 않게. */
 function snapshot(ctx) {
