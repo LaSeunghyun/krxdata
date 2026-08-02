@@ -54,7 +54,7 @@ import { AI_TRADER } from './strategy-contract.mjs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const LEDGER = join(__dirname, 'ai-trader-decisions.jsonl');
 const STATE_F = join(__dirname, '.ai-trader-state.json');
-// telegram-agent 와 공유하는 claude 동시실행 방지 락 (양쪽이 같은 경로를 flock 한다)
+// telegram-agent · watchdog 과 공유하는 claude 동시실행 방지 락 (셋이 같은 경로를 flock 한다)
 const CLAUDE_LOCK = join(__dirname, '.claude-spawn.lock');
 const CLAUDE_BIN = existsSync('/usr/bin/claude') ? '/usr/bin/claude' : 'claude';
 const kstNow = () => new Date(Date.now() + 9 * 3_600_000).toISOString().replace('T', ' ').slice(0, 19);
@@ -254,7 +254,7 @@ function runClaude(prompt, { timeoutMs, model }) {
     cp.on('close', (code) => {
       if (done) return; done = true; clearTimeout(timer);
       // 락 획득 실패(-E 99)만 '양보'로 분리 — claude 오류(exit 1)는 실패로 카운트해야 한다
-      if (useLock && code === LOCK_BUSY_CODE) return resolve({ ok: false, err: 'claude 동시실행 락 대기 초과(telegram-agent 사용 중)', locked: true });
+      if (useLock && code === LOCK_BUSY_CODE) return resolve({ ok: false, err: 'claude 동시실행 락 대기 초과(telegram-agent/watchdog 사용 중)', locked: true });
       if (code === 0 && out.trim()) return resolve({ ok: true, out: out.trim(), model: model ?? '(default)' });
       resolve({ ok: false, err: `exit ${code}: ${(err || out).slice(0, 200)}` });
     });
