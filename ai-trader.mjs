@@ -382,7 +382,7 @@ async function callTrader(ctx, { log, notify }) {
 
   let res = await runClaude(buildPrompt(ctx), AI_TRADER);
   // ★ 재시도는 **모델 별칭 오류에만.** 타임아웃 재시도는 wedged 프로세스와 겹쳐 OOM을 만든다.
-  //   락 대기 초과도 재시도하지 않는다(telegram-agent 가 쓰는 중 = 다음 gap 에 다시 온다).
+  //   락 대기 초과도 여기서 재시도하지 않는다(락 보유자가 쓰는 중 = lockRetryGapMin 뒤에 다시 온다).
   const aliasErr = !res.ok && !res.timedOut && !res.locked && /model|alias|unknown|invalid/i.test(res.err ?? '');
   if (aliasErr && AI_TRADER.model) res = await runClaude(buildPrompt(ctx), { ...AI_TRADER, model: null });
   const ms = Date.now() - t0;
@@ -391,8 +391,21 @@ async function callTrader(ctx, { log, notify }) {
   //   단 사유(blockedWhy)는 남긴다: 양보가 계속되면 판단이 무기한 안 되는데 그게 조용히 지나가면
   //   메모리 게이트와 같은 "무경보 정지"가 된다(리뷰 확정). staleFallbackMin 을 넘기면 경보+폴백.
   if (res.locked) {
-    st.blockedWhy = 'claude 동시실행 락 대기 초과(telegram-agent 사용 중)';
-    logThrottled(log, `AI판단 양보(claude 동시실행 회피, ${(ms / 1000).toFixed(0)}s) — 다음 주기 재시도`, 'lock');
+    st.blockedWhy = 'claude 동시실행 락 대기 초과(telegram-agent/watchdog 사용 중)';
+    /**
+     * ★ lastCallAt 을 되감아 lockRetryGapMin 뒤 재시도시킨다.
+     *   이 함수는 **시작 시점에** lastCallAt 을 찍으므로(:379) 그대로 두면 양보가
+     *   minCallGapMin(10분) 전액을 물고, staleFallbackMin 도 10분이라 첫 재시도와 폴백 경보가
+     *   같은 시각에 걸린다 = 락 경합 한 번에 **재시도 없이 기계 폴백**으로 떨어진다.
+     *   클램프 두 방향 모두 **기존 동작(전액 대기)** 으로 degrade 한다:
+     *    · lockRetryGapMin ≥ minCallGapMin → backoff 0
+     *    · lockRetryGapMin 미정의(구 strategy-contract.mjs 와 어긋나게 배포된 경우) → 기본값을
+     *      minCallGapMin 으로 잡아 backoff 0. ★ 여기를 `?? 0` 으로 두면 backoff 가 전액이 되어
+     *      재시도 간격이 **0분**(매 사이클 재시도)이 된다 — degrade 방향이 거꾸로다.
+     */
+    const backoffMin = Math.max(0, AI_TRADER.minCallGapMin - (AI_TRADER.lockRetryGapMin ?? AI_TRADER.minCallGapMin));
+    st.lastCallAt = Date.now() - backoffMin * 60_000;
+    logThrottled(log, `AI판단 양보(claude 동시실행 회피, ${(ms / 1000).toFixed(0)}s) — ${AI_TRADER.minCallGapMin - backoffMin}분 뒤 재시도`, 'lock');
     st.pending = false;
     return;
   }
