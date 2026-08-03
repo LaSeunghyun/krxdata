@@ -140,7 +140,13 @@ export function buildPrompt(ctx) {
       conviction: num(c.conviction),
       rsi2: c.sub === 'rsi2' ? num(c.rsi2) : undefined,
       breakout_pct: c.sub === 'hi120' ? num(c.breakout) : undefined,
-      dd20_pct: num(c.dd20), vol_ratio: num(c.volRatio, 2), sector: c.sector ?? null,
+      dd20_pct: num(c.dd20),
+      // ★ 2026-08-03: vol_ratio 는 **당일 누적 거래량 / 20일 평균**이라 장 초반에는 원리적으로 무의미하다.
+      //   실측(08-03 09:03, 개장 3분): 후보 8종 전원 0.02~0.05 였다. 프롬프트는 "1.5+ = 투매 확인"이라고
+      //   설명하는데 실제로는 전부 0.05 를 주고 있었으니 오독 유발이다(그날 AI 는 다행히 근거로 안 썼다).
+      //   정규장 경과가 minVolMinutes 미만이면 **필드를 아예 넣지 않는다** — 없는 게 틀린 값보다 낫다.
+      vol_ratio: ctx.krxMinutes != null && ctx.krxMinutes < AI_TRADER.minVolMinutes ? undefined : num(c.volRatio, 2),
+      sector: c.sector ?? null,
     })),
   };
   return `너는 한국주식 실계좌 자동매매 시스템의 판단 주체다. 아래 데이터만으로 종합판단한다(도구·검색 없음).
@@ -158,7 +164,9 @@ export function buildPrompt(ctx) {
   따라서 **DOWN 레짐에서는 최대 5.0**이다. DOWN의 4.5는 낮은 게 아니라 사실상 최상위다.
   hi120은 돌파%(최대 10). 절대값으로 레짐 간 비교하지 마라.
 - dd20_pct: 20일 점대점 수익률. **음수 = 낙폭.** -50% 초과는 기계 필터가 이미 배제했다.
-- vol_ratio: 당일 거래량 / 20일 평균. 1.5+ = 투매·관심 급증 동반.
+- vol_ratio: 당일 **누적** 거래량 / 20일 평균. 1.5+ = 투매·관심 급증 동반.
+  ※ 장 초반에는 누적이 적어 값이 작게 나오는 게 정상이다. 정규장 경과가 짧으면 이 필드는 **제공되지 않는다**
+    — 없으면 없는 것으로 두고 거래량을 근거로 쓰지 마라(0.05 를 "관심 없음"으로 읽으면 안 된다).
 - ret_pct(보유): 진입가 대비 현재 수익률.
 
 # 너의 권한과 한계

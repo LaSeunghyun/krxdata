@@ -274,6 +274,28 @@ const FLOWEXIT_SUB = String(argOf('--flowexitsub', 'hi120'));
  *   미통과 → 60시드 통과로 갈린 전례). 라이브에서 이 규칙은 hi120 전용이고 hi120 진입이
  *   아직 0건이라 발동한 적이 없으므로 급하지 않다 — UP 레짐 전환 전에 60시드로 매듭지을 것.
  */
+/**
+ * ★ 2026-08-02 `--exitsameday <mode>` — 청산 **집행 시점**을 당일 종가로 바꾼다.
+ *
+ * 현행: 15:35 종가로 판정하고 `exitAtOpen` 으로 **익일 시가**에 집행한다.
+ *   판정 가격과 체결 가격 사이에 하룻밤이 들어가므로 갭만큼 실현손익이 벌어진다.
+ *   손절이 특히 나쁘다 — 이미 -15% 인 포지션이 갭하락하면 실현이 -30% 가 될 수 있고 상한이 없다.
+ *   봇이 금요일 종가에 팔 수 없다는 구조적 제약(판정=종가·집행=익일개장)에서 나온다.
+ * 대안: KRX 마감(15:30) 후에도 NXT 애프터마켓(15:40~20:00)이 열려 있으므로 **당일 청산이 가능**하다.
+ *
+ * mode: stop = 하드손절만 당일 집행 / all = 종가판정 청산 전부 당일 집행 / off(기본) = 현행
+ *
+ * ⚠️ 이 시뮬레이션의 한계를 명시한다(백테로 못 잡는 것):
+ *   ① Toss 일봉 종가는 **20:00 NXT 애프터 종가**다. KRX 15:30 종가가 아니다
+ *      (완전일치율 2024년 91.4% → 2026년 51.5%. NXT 는 2025년 가동).
+ *      즉 여기서 `cd.c[i]` 로 파는 것은 "15:40 에 즉시" 가 아니라 "애프터마켓 종료 시점"에 가깝다.
+ *      실제 라이브는 15:35 판정 직후 체결을 시도하므로 그 사이 가격이 다르다.
+ *   ② NXT 애프터마켓은 **유동성이 얇다.** 백테는 종가에 전량 체결을 가정하지만 실제로는
+ *      부분체결·슬리피지가 난다(07-28 프리마켓 422 거부 31회 전례). 그 비용은 여기 반영되지 않는다.
+ *   → 따라서 이 측정이 개선을 보여도 **그대로 배포 근거가 되지 않는다.** 개선 폭이 위 두 비용을
+ *      덮을 만큼 큰지가 판단 기준이고, 그 비용은 라이브 관측으로만 확정된다.
+ */
+const EXIT_SAMEDAY = String(argOf('--exitsameday', 'off'));
 const FLOWEXIT_NOW = argv.includes('--flowexitnow') || argv.includes('--live-parity');
 const FLOWS = (() => {
   if (!FLOW_OUT && !FLOW_SELL && FLOW_EXIT == null && RSI_FLOW == null) return null;
@@ -935,6 +957,8 @@ for (let di = 0; di < tradingDays.length; di++) {
       const i = cd ? indexOfDate(cd, day) : null;
       if (i == null) continue;
       if (p.exitAtOpen) { sell(book, day, code, cd.o[i], p.exitAtOpen, p.exitQty); delete p.exitAtOpen; delete p.exitQty; continue; }
+      // ★ --exitsameday: 전일 종가판정에서 '당일 집행' 으로 표시된 건은 이미 그날 팔렸으므로 여기 오지 않는다.
+      //   (아래 종가판정부에서 sell 을 직접 호출한다 — 이 큐는 익일 집행분 전용이다.)
       /**
        * ★ 2026-08-01 `--flowexitnow`: **라이브 수급청산의 실제 동작**을 재현한다.
        *
@@ -1210,6 +1234,23 @@ for (let di = 0; di < tradingDays.length; di++) {
           // C27 (--rsicut N): N일째에도 진입가 미회복이면 조기 타임컷 (만기 전패 버킷 공략)
           else if (cfg.rsiCut > 0 && p.holdDays >= cfg.rsiCut && cd.c[i] < p.entry) p.exitAtOpen = 'time_cut';
           else if (p.holdDays >= (p.scenMaxHold ?? cfg.maxHoldR)) p.exitAtOpen = 'max_hold';
+        }
+      }
+      /**
+       * ★ 2026-08-02 `--exitsameday`: 방금 판정된 청산을 **익일 시가 대기 없이 당일 종가에** 집행한다.
+       *   판정은 위에서 이미 `cd.c[i]`(당일 종가)로 끝났다 — 여기서는 집행 시점만 바꾼다.
+       *   look-ahead 아님: 판정 근거와 체결 가격이 **같은 종가**다(익일 정보를 쓰지 않는다).
+       *   부분익절(exitQty 지정분)은 제외한다 — 잔량 관리·tp 플래그가 익일 집행 전제로 짜여 있고,
+       *   그걸 같이 바꾸면 측정 대상이 둘로 섞인다(집행시점 vs 부분청산 회계).
+       */
+      if (EXIT_SAMEDAY !== 'off') {
+        for (const [code, p] of Object.entries(book.positions)) {
+          if (!p.exitAtOpen || p.exitQty) continue;               // 부분익절은 익일 집행 유지
+          if (EXIT_SAMEDAY === 'stop' && p.exitAtOpen !== 'stop_loss') continue;
+          const cd = candles.get(code); const i = cd ? indexOfDate(cd, day) : null;
+          if (i == null) continue;
+          sell(book, day, code, cd.c[i], p.exitAtOpen + '_sameday');
+          delete p.exitAtOpen;
         }
       }
       const countSub = (sub) => Object.values(book.positions).filter(p => p.sub === sub).length;

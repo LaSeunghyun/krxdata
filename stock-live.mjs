@@ -450,7 +450,7 @@ async function settleOrder(orderId, symbol, side, qtyBefore, tag, avgBefore = 0)
         return { ok: true, fillPx, filledQty: cur - qtyBefore };
       }
       if (side === 'SELL' && cur < qtyBefore) {
-        let fillPx = null;
+        let fillPx = null, exQty = 0;   // ★ try 밖에 둔다 — 안에서 선언하면 return 지점에서 스코프 밖(ReferenceError)
         /**
          * ★ 2026-08-01 계측 추가. 라이브 저널 실측에서 **매도 21건 전부 fillSrc 가 'actual' 이 아니었고**
          *   `[getOrder 필드 확인]` 로그가 **한 번도 뜬 적이 없다**(매수는 7건이 actual). 즉 이 try 안에서
@@ -464,15 +464,30 @@ async function settleOrder(orderId, symbol, side, qtyBefore, tag, avgBefore = 0)
         try {
           const od = await getOrder(seq, orderId);
           if (!orderKeysLogged) { orderKeysLogged = true; log(`  [getOrder 응답 확인] orderId=${orderId} → ${JSON.stringify(od).slice(0, 400)}`); }
-          for (const k of ['executedPrice', 'avgExecutedPrice', 'filledPrice', 'averagePrice', 'execPrice']) {
-            const v = Number(od?.[k]);
+          /**
+           * ★ 2026-08-03 필드명 확정 — 어제 넣은 계측이 답을 냈다. 실제 응답:
+           *   { orderId, symbol, side, status:"FILLED", price:"503000", quantity:"6",
+           *     execution: { filledQuantity:"6", **averageFilledPrice:"505000"**, filledAmount... } }
+           *   체결가는 **최상위가 아니라 `execution` 안**에 있다. 기존 코드가 최상위에서만
+           *   executedPrice·avgExecutedPrice 등을 찾아 전부 못 찾고 지정가로 폴백했다
+           *   → 매도 21건 전부 fillSrc='limit'. 크로싱 지정가(현재가×0.995)는 실제 체결이 그 이상이므로
+           *   **실현손익이 체계적으로 과소** 기록됐다. 실측: LG이노텍 지정가 503,000 vs 실체결 505,000
+           *   = 6주 12,000원 과소, 수익률 8.8% → 실제 9.2%.
+           *   `price` 는 주문 지정가이므로 절대 쓰지 않는다(그게 지금까지의 폴백값과 같다).
+           */
+          const ex = od?.execution ?? od;
+          for (const k of ['averageFilledPrice', 'avgFilledPrice', 'executedPrice', 'avgExecutedPrice', 'filledPrice', 'averagePrice', 'execPrice']) {
+            const v = Number(ex?.[k] ?? od?.[k]);
             if (v > 0) { fillPx = Math.round(v); break; }
           }
+          exQty = Number(od?.execution?.filledQuantity ?? 0) || 0;
           if (fillPx == null && !orderKeysWarned) { orderKeysWarned = true; log(`  ⚠️ getOrder 응답에 알려진 체결가 필드가 없다 — 지정가 폴백. 위 응답 원문에서 실제 필드명을 확인해야 한다`); }
         } catch (e) {
           if (!orderKeysWarned) { orderKeysWarned = true; log(`  ⚠️ getOrder 실패(매도 체결가를 지정가로 폴백): orderId=${orderId} · ${String(e.message).slice(0, 200)}`); }
         }
-        return { ok: true, fillPx, filledQty: qtyBefore - cur };
+        // 체결수량은 보유 변화(qtyBefore-cur)를 1차로 쓴다 — 브로커 확정값이라 가장 신뢰도가 높다.
+        // getOrder 의 execution.filledQuantity 가 더 크면(보유 반영 지연) 그쪽을 쓴다.
+        return { ok: true, fillPx, filledQty: Math.max(qtyBefore - cur, exQty) };
       }
     } catch {}
   }
@@ -1342,6 +1357,10 @@ while (true) {
       today, nowKst: now(), regime, cands: eligible, forecast: fc, cash, perSlot, bigCount,
       slots: LIVE_SLOTS, hardStopPct: HARD_STOP_PCT, trigger: null,
       rotate: AI_TRADER.rotate, rotateLeft: rotLeft, sellLeft, brief: await morningBrief(today),
+      // ★ 2026-08-03: KRX 정규장(09:00) 경과 분. vol_ratio(당일누적/20일평균)가 장 초반에
+      //   무의미한 값(개장 3분에 0.02~0.05)을 주는 것을 AI 프롬프트에서 차단하는 데 쓴다.
+      //   09:00 이전(NXT 프리)은 0, 15:30 이후는 정규장 전체(390분)로 캡한다.
+      krxMinutes: (() => { const k = kst(); return Math.max(0, Math.min(390, k.getUTCHours() * 60 + k.getUTCMinutes() - 540)); })(),
       holdings: aiHoldings, recentSells: recentSells(),
     }, { log, notify: tgNotify });
     if (ai.mode === 'hold') logGate(`AI판단 보류: ${ai.reason}`, 'ai|hold');
@@ -1597,26 +1616,37 @@ while (true) {
     const buyOrder = rotPick
       ? [rotPick, ...eligible.filter(p => p.code !== rotBuyFirst)]
       : eligible;
+    /**
+     * ★ 2026-08-03 계측 추가 — 행동 변경 0. "왜 안 샀나"를 사유별로 남긴다.
+     *
+     * 실제 사건: 08-03 09:03 AI 가 신한지주·S-Oil·삼성바이오 3종을 승인했는데 신한지주만 안 샀고,
+     *   09:06~09:13 12사이클 동안 **로그가 한 줄도 없어서** 원인을 로그로 특정할 수 없었다.
+     *   (후보 정렬이 시총 내림차순이라는 점에서 "신호 소멸"로 역추론은 됐지만, 그건 운이 좋았던 것이다.)
+     *   승인분이 eligible 에서 빠진 것인지 · 예산에 막힌 것인지 · 주문이 거부된 것인지를 구분할 수 있어야 한다.
+     * logGate 라 사유·종목이 같으면 10분에 1줄이므로 평시 로그량은 거의 안 늘어난다.
+     */
+    const skipTally = {};
+    const noteSkip = (code, why) => { (skipTally[why] ??= []).push(code); };
     if (canDeploy && (rotBuyFirst || (!aiBlocksAll && !top1Unjudged))) for (const pick of buyOrder) {
       // ★ AI 미승인 후보 스킵. 단 교체 매수측은 예외 — 매도 시점에 이미 승인받은 짝이고,
       //   비운 슬롯·확보한 현금이 그 매수를 위한 것이다. 여기서 막으면 팔고 안 사는 상태가 된다.
       const isRotBuy = pick.code === rotBuyFirst;
-      if (!isRotBuy && ai.mode === 'live' && !ai.buy.has(pick.code)) continue;
+      if (!isRotBuy && ai.mode === 'live' && !ai.buy.has(pick.code)) { noteSkip(pick.code, 'AI미승인'); continue; }
       // ★ 2026-08-01: 봇제외 목록을 **주문 직전에 다시 읽는다.** 사용자가 텔레그램으로 수동 매수하면
       //   그 종목이 .bot-exclude.json 에 추가되는데, signalCache 는 그 전에 만들어진 것이라
       //   후보에 남아 있다. 그대로 사면 봇 물량이 수동 물량과 섞여 평단이 왜곡되고,
       //   다음 사이클부터 EXCLUDED 라 items 에서 빠져 **그 물량이 영구 미관리**가 된다.
       if (readBotExclude().has(pick.code)) { logGate(`매수 스킵 ${pick.code}: 수동 관리 종목으로 방금 등록됨`, `exnew|${pick.code}`); continue; }
-      if (heldSet.has(pick.code)) continue;
-      if (soldT[pick.code] === today) continue;
-      if ((errT[pick.code]?.n ?? 0) >= ORDER_ERR_MAX) continue;   // 당일 주문거부 누적 → 다음 후보로
+      if (heldSet.has(pick.code)) { noteSkip(pick.code, '이미보유'); continue; }
+      if (soldT[pick.code] === today) { noteSkip(pick.code, '당일재진입금지'); continue; }
+      if ((errT[pick.code]?.n ?? 0) >= ORDER_ERR_MAX) { noteSkip(pick.code, '주문거부누적'); continue; }
       // 섹터 캡: 후보와 같은 섹터를 이미 SECTOR_CAP.max개 보유 중이면 스킵(금융 편중 차단). sector 미상(null)은 캡 미적용.
       if (SECTOR_CAP.enabled) { const psec = SECTOR[pick.code]; if (psec && items.filter(it => SECTOR[it.symbol] === psec).length >= SECTOR_CAP.max) continue; }
       const strong = CONVICTION_SIZING.enabled && pick.conviction >= CONVICTION_SIZING.strongThreshold;
       const minRemainForSlots = MIN_PRICE * 2 * (LIVE_SLOTS - 1);
       const strongBudgetCap = Math.max(MIN_PRICE, cash - minRemainForSlots);
       const budget = strong ? Math.min(Math.floor(cash * CONVICTION_SIZING.strongFraction), strongBudgetCap) : diversified;
-      if (pick.px >= budget) continue;   // 이 예산으론 못 삼 → 다음 후보
+      if (pick.px >= budget) { noteSkip(pick.code, `예산부족(${Math.round(pick.px/10000)}만>${Math.round(budget/10000)}만)`); continue; }   // 이 예산으론 못 삼 → 다음 후보
       // ★ 주문 직전 현재가 재조회 (2026-07-29 진단으로 발견한 결함 수정)
       //   pick.px는 신호스캔이 그 종목을 훑던 시점의 가격이다. uni420 스캔이 최소 44초(420×105ms rateSlot),
       //   메인루프 30초 폴링까지 겹치면 **1~2분 낡는다**. 여기에 limitBuyPx가 +0.5%를 더 얹으므로
@@ -1721,6 +1751,17 @@ while (true) {
     }
     // ★ 교체 짝이 완결되면 미완 상태를 지운다. 다른 종목을 샀으면 짝은 깨진 것이므로 그것도 종료한다
     //   (경보로 남긴다 — 의도와 다른 결과이므로 조용히 넘기면 안 된다).
+    // ★ 2026-08-03: 승인분이 있는데 매수가 0건이면 **사유를 남긴다.** 08-03 신한지주 사례처럼
+    //   12사이클 무로그로 지나가면 "신호 소멸"과 "예산에 막힘"을 사후에 구분할 수 없다.
+    //   승인 목록과 eligible 의 교집합까지 찍어 "승인분이 후보에서 빠졌는지"를 바로 판정할 수 있게 한다.
+    if (!bought && ai.mode === 'live' && !ai.skipAll && ai.buy?.size) {
+      const eligCodes = new Set(eligible.map(p => p.code));
+      const approvedStillCand = [...ai.buy].filter(c => eligCodes.has(c));
+      const approvedGone = [...ai.buy].filter(c => !eligCodes.has(c) && !heldSet.has(c));
+      const tally = Object.entries(skipTally).map(([w, cs]) => `${w}:${cs.length}`).join(' ');
+      logGate(`매수 0건 · 승인 ${ai.buy.size}종(후보잔존 ${approvedStillCand.join(',') || '없음'}${approvedGone.length ? ` / 후보이탈 ${approvedGone.join(',')}` : ''})${tally ? ` · 스킵[${tally}]` : ''}`,
+        `nobuy|${approvedStillCand.join(',')}|${approvedGone.join(',')}|${tally}`);
+    }
     if (rotBuyFirst && bought) {
       if (bought === rotBuyFirst) log(`교체 완결: ${rotBuyFirst} 매수 체결`);
       else {
