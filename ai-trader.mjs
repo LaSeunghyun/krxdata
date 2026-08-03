@@ -77,6 +77,8 @@ const st = {
   seenDay: null,
   // 이벤트 트리거용: 마지막 판단 시점의 상황 지문
   lastFingerprint: '',
+  // 텔레그램 중복 억제용: 마지막으로 통지한 **행동 집합**과 그 날짜
+  notifiedKey: null, notifiedDay: null,
 };
 
 // ── 실패상태 영속 (재시작해도 "그날 매수중단" 유지) ─────────────────────
@@ -444,12 +446,36 @@ async function callTrader(ctx, { log, notify }) {
     const rejected = top.map(c => c.code).filter(c => !st.buy.has(c));
     log(`AI판단(${(ms / 1000).toFixed(0)}s): ${parts.join(' / ')}${rejected.length ? ` · 미승인 ${rejected.map(nm).join('·')}` : ''} — ${dec.strategy}`);
     if (Object.values(dec.dropped).some(a => a.length)) log(`  ⚠️ 권한초과 무시: ${JSON.stringify(dec.dropped)}`);
-    notify([`🤖 AI 판단 (${ctx.regime})`, ...parts.map(p => `· ${p}`),
+    /**
+     * ★ 2026-08-03 (사용자 요청): **결론이 같으면 텔레그램을 보내지 않는다.**
+     *
+     * 판단은 이벤트(레짐·후보·보유 변화)마다 돌고 최소 간격이 10분이라, 만석·후보없음 상태가 이어지면
+     * "매수 전면보류"가 하루 수십 번 나간다. 실측 08-03: 08:05·08:15·08:46·09:31·09:42·09:48 …
+     * 경보 채널이 그걸로 덮이면 정작 중요한 경보(손절유예·CA서킷·교체미완)를 놓친다.
+     *
+     * 비교는 **행동 집합만** 한다(buy·sell·rotate·defer·skipAll). strategy·market 문장은 같은
+     * 결론에도 매번 표현이 달라지므로 비교에서 뺀다 — 넣으면 억제가 사실상 동작하지 않는다.
+     * 행동이 바뀌면 무조건 보낸다: **실제 매수·매도 체결은 별도 텔레그램이 없어서**
+     * 이 메시지가 유일한 통지다(교체·유예·경보만 자체 발신이 있다).
+     * 날이 바뀌면 첫 판단은 항상 보낸다 — 봇이 살아서 판단하고 있다는 확인이 하루 한 번은 필요하다.
+     */
+    const actionKey = JSON.stringify({
+      s: dec.skipAll,
+      b: dec.buy.map(x => x.code).sort(),
+      l: dec.sell.map(x => x.code).sort(),
+      r: (dec.rotate ?? []).map(x => `${x.sell_code}>${x.buy_code}`).sort(),
+      d: dec.defer.map(x => x.code).sort(),
+    });
+    const sameAsLast = st.notifiedKey === actionKey && st.notifiedDay === ctx.today;
+    if (sameAsLast) {
+      logThrottled(log, `AI 판단 동일 — 텔레그램 생략(${parts.join(' / ')})`, 'ai|samenotify');
+    } else notify([`🤖 AI 판단 (${ctx.regime})`, ...parts.map(p => `· ${p}`),
       dec.strategy && `전략: ${dec.strategy}`, dec.market && `시장: ${dec.market}`,
       ...dec.sell.map(x => `청산사유 ${nm(x.code)}: ${x.reason}`),
       ...(dec.rotate ?? []).map(x => `교체사유 ${nm(x.sell_code)}→${nm(x.buy_code)}: ${x.reason}`),
       ...dec.defer.map(x => `유예사유 ${nm(x.code)}: ${x.reason}`),
     ].filter(Boolean).join('\n'));
+    st.notifiedKey = actionKey; st.notifiedDay = ctx.today;   // 보냈든 생략했든 최신 결론을 기준으로 삼는다
 
     ledger({
       ts: kstNow(), ok: true, ms, model: res.model, engine: 'ai-trader-1',
