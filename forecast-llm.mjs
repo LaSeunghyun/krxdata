@@ -333,6 +333,14 @@ function buildBriefPrompt(payload) {
 4. 매수·매도·종목 추천 금지. 공시는 지수 영향 가능한 것만 [사실→의미] 형식으로.
 5. 가독성: 섹션 사이 빈 줄 1개, 한 줄 45자 이내, 불릿("- ") 사용. 수치는 소수 2자리.
 6. 아래 템플릿 섹션 헤더를 그대로 사용한다. 다른 섹션 추가 금지.
+7. 데이터에 holdings 가 있으면 【보유 종목】 섹션을 종목마다 쓴다:
+   - 밤사이 관련 이슈: 그 종목 업종의 미국 관련주·섹터 흐름, 종목 뉴스 (웹검색, 출처·시각)
+   - 오늘 일정: 실적·공시 등 확인된 것만. 봇 규칙: 데이터의 stop_level/trail_level 값 그대로
+   - 시초 갭: 오름/내림/보합 중 하나 + 근거 1줄 — **이 항목만 방향 표현 허용**
+     (밤사이 관측에 근거한 시초가 갭 한정. 하루 전체 방향 전망은 여전히 금지)
+   그리고 본문 맨 끝에 기계 판독 블록을 정확히 이 형식으로 붙인다(다른 설명 없이):
+   [CALLS]{"calls":[{"code":"6자리코드","gap_bias":"up|down|flat","why":"근거 1줄"}]}[/CALLS]
+   holdings 가 없거나 비어 있으면 이 섹션과 블록을 생략한다.
 
 템플릿:
 📰 아침 브리핑 · {날짜} (KST)
@@ -350,6 +358,9 @@ function buildBriefPrompt(payload) {
 【공시】
 - 지수 영향 가능한 것만. 없으면 "특이 공시 없음"
 
+【보유 종목】 (holdings 있을 때만)
+- {종목명} ({수익률}%): 밤사이 이슈 → 오늘 일정·봇 규칙 → 시초 갭: {오름/내림/보합} ({근거})
+
 【오늘 유의점】
 - 관찰 가능한 일정·사건 2~3개 (실적 발표·지표 발표·만기 등)
 
@@ -360,13 +371,17 @@ function buildBriefPrompt(payload) {
 ${JSON.stringify(payload, null, 1)}`;
 }
 
-export function validateBrief(text) {
+export function validateBrief(text, payload = null) {
   if (!text || text.length < 200) return '너무 짧음';
   for (const b of BANNED_PHRASES) if (text.includes(b)) return `금지 문구: ${b}`;
   for (const h of ['【어제 시장】', '【밤사이 해외】']) {
     if (!text.includes(h)) return `섹션 누락: ${h}`;
   }
-  const over = text.match(/[+-]?\d+\.\d{3,}\s*%/);
+  if (payload?.holdings?.length) {
+    if (!text.includes('【보유 종목】')) return '섹션 누락: 【보유 종목】 (holdings 제공됨)';
+    if (!/\[CALLS\][\s\S]*\[\/CALLS\]/.test(text)) return '[CALLS] 기계 판독 블록 누락 (holdings 제공됨)';
+  }
+  const over = text.replace(/\[CALLS\][\s\S]*?\[\/CALLS\]/, '').match(/[+-]?\d+\.\d{3,}\s*%/);
   if (over) return `소수 2자리 초과: ${over[0]}`;
   return null;
 }
@@ -380,7 +395,7 @@ export function composeBrief(payload, { invoke, retries = 1 } = {}) {
       ? base
       : `${base}\n\n---\n직전 시도가 아래 기계 검증에 걸렸다. 해당 부분만 고쳐 전체를 다시 출력하라:\n${lastErr}`;
     const out = (call(prompt) ?? '').trim();
-    const err = validateBrief(out);
+    const err = validateBrief(out, payload);
     if (!err) return { text: out, error: null, attempts: attempt + 1 };
     lastErr = err;
   }

@@ -920,6 +920,23 @@ function markTgSent(made) {
   try { writeFileSync(TG_STATE_FILE, JSON.stringify({ date: kstDate(), key: tgStanceKey(made), at: kstHM() })); } catch { /* 비치명 */ }
 }
 
+/**
+ * 브리핑 본문에서 [CALLS] 기계 판독 블록을 뽑아낸다 (2026-08-16, 사용자 목표 2 — 갭 콜 원장).
+ * 파싱 실패 = 원장만 스킵하고 브리핑은 그대로 나간다(알림 유실 금지 원칙).
+ * 채점·폐기 기준(60건 & 55%)은 daily-review.mjs 가 집행한다.
+ */
+function extractCallsBlock(text) {
+  const m = String(text ?? '').match(/\[CALLS\]([\s\S]*?)\[\/CALLS\]/);
+  if (!m) return { calls: [], cleaned: text };
+  let calls = [];
+  try {
+    const p = JSON.parse(m[1].trim());
+    calls = (Array.isArray(p?.calls) ? p.calls : []).filter(c =>
+      c && /^\d{6}$/.test(String(c.code)) && ['up', 'down', 'flat'].includes(c.gap_bias));
+  } catch { /* 원장 스킵 */ }
+  return { calls, cleaned: String(text).replace(m[0], '').trim() };
+}
+
 /** 일일 결산 텔레그램용 — 성적 요점만. 통계 상세·개선루프·LLM 해설은 전문(콘솔·원장)에만. */
 function fmtTgDaily(s) {
   try {
@@ -946,7 +963,7 @@ function tgHead(report, max = 700) {
   return t + (t.length < String(report ?? '').trim().length ? '\n… (전문은 원장·콘솔)' : '');
 }
 
-function fmtRunReport({ made, verified, rolling, quality, dry, fx = null, disc = null, nxt = null, now = [], flow = null }) {
+function fmtRunReport({ made, verified, rolling, quality, dry, fx = null, disc = null, nxt = null, now = [], flow = null, holdings = null }) {
   const L = [];
   const markets = made.filter(x => x.kind === 'market');
   if (made.length) {
@@ -997,6 +1014,15 @@ function fmtRunReport({ made, verified, rolling, quality, dry, fx = null, disc =
   if (nxt?.preObs) {
     L.push('');
     L.push(`【개장 전 시간외(NXT)】 어제 종가 대비 ${sgn(nxt.preObs.ret)}% (대형주 ${nxt.preObs.n}종목, 참고용)`);
+  }
+  // 브리핑 기계 폴백용 — LLM 실패 시에도 보유종목·봇 규칙은 나가야 한다 (갭 바이어스는 LLM 전용이라 없음)
+  if (holdings?.length) {
+    L.push('');
+    L.push('【보유 종목】 (전일 기준)');
+    for (const h of holdings) {
+      const lvl = h.stop_level ? `손절 ${Number(h.stop_level).toLocaleString()}` : h.trail_level ? `트레일 ${Number(h.trail_level).toLocaleString()}` : '자동청산 없음 ⚠️';
+      L.push(`  ${h.name}: ${sgn(h.ret_pct, 1)}% [${h.strategy}] · ${lvl}`);
+    }
   }
   if (fx || flow || (disc && !disc.is_stale && disc.sectors.length)) {
     L.push('');
@@ -1305,6 +1331,21 @@ async function main() {
       context: { fx, investor_flow: flow, nxt_after_obs: nxtInfo?.obs ?? null, nxt_pre_obs: nxtInfo?.preObs ?? null, disclosures: disc },
     });
     const now = marketNowContext({ etfSeries, etf1m, phase });
+    // ★ 2026-08-16 사용자 목표 1: 브리핑에 보유종목 섹션 — account-snapshot 크론이 적재한 최신 계좌를 읽는다.
+    //   스냅샷은 전일 20:00 이 최신(07:00 시점) — 보유 구성은 밤사이 안 변하므로 유효, 가격만 전일 기준.
+    let holdings = null;
+    if (briefOnly) {
+      try {
+        const r = await dbQuery(`SELECT data FROM paper_state WHERE k = 'account:latest'`);
+        const acc = r[0]?.data;
+        if (acc?.positions?.length) {
+          holdings = acc.positions.map(p => ({
+            code: p.code, name: p.name, ret_pct: p.ret_pct, strategy: p.sub ?? '수동/미상',
+            stop_level: p.stop ?? null, trail_level: p.trail ?? null, last_price: p.cur,
+          }));
+        }
+      } catch (e) { log(`보유종목 조회 실패(비치명): ${e.message}`); }
+    }
     // 최종 보고서: 규칙 템플릿(v2)에 따라 LLM이 합성 — 엔진 숫자 불변, 금지문구·섹션 코드 검증.
     // 합성 실패 시 기계 형식 폴백 (보고 결측 금지)
     let report = null;
@@ -1353,6 +1394,7 @@ async function main() {
             abs_error: v.abs_error, cause: causeById.get(v.id)?.error_cause ?? '확인 불가',
           })),
           rolling_buckets: rollingBuckets,
+          holdings,
         };
         const composed = briefOnly ? composeBrief(payload) : composeReport(payload);
         if (composed.text) report = composed.text + (dry ? '\n\n[테스트 실행 — 원장 미기록]' : '');
@@ -1360,7 +1402,27 @@ async function main() {
       } catch (e) { log(`보고서 합성 오류(비치명): ${e.message}`); }
     }
     if (!report) {
-      report = fmtRunReport({ made, verified, rolling, quality, dry, fx, disc, nxt: nxtInfo, now, flow });
+      report = fmtRunReport({ made, verified, rolling, quality, dry, fx, disc, nxt: nxtInfo, now, flow, holdings });
+    }
+    // 갭 콜 원장 기록 + 기계 블록 제거 (사용자에게 JSON 노출 안 함)
+    if (briefOnly && report) {
+      const { calls, cleaned } = extractCallsBlock(report);
+      report = cleaned;
+      if (calls.length && dry) log(`갭 콜 파싱 ${calls.length}건 (DRY — 기록 안 함): ${calls.map(c => `${c.code}:${c.gap_bias}`).join(' ')}`);
+      if (calls.length && !dry) {
+        try {
+          await dbQuery(`CREATE TABLE IF NOT EXISTS morning_calls (
+            d date, code text, name text, gap_bias text, why text,
+            actual_gap_pct numeric, hit boolean, scored_at timestamptz, PRIMARY KEY (d, code))`);
+          const k = kstDate();
+          const iso = `${k.slice(0, 4)}-${k.slice(4, 6)}-${k.slice(6, 8)}`;
+          const nameOf = new Map((holdings ?? []).map(h => [h.code, h.name]));
+          const vals = calls.map(c =>
+            `('${iso}', ${esc(c.code)}, ${esc(nameOf.get(c.code) ?? '')}, ${esc(c.gap_bias)}, ${esc(String(c.why ?? '').slice(0, 200))})`).join(',');
+          await dbQuery(`INSERT INTO morning_calls (d, code, name, gap_bias, why) VALUES ${vals} ON CONFLICT (d, code) DO NOTHING`);
+          log(`갭 콜 원장 ${calls.length}건 기록 (채점은 당일 16:50 복기)`);
+        } catch (e) { log(`갭 콜 기록 실패(비치명): ${e.message}`); }
+      }
     }
     console.log(report);
     // ★ 2026-08-01: 보고서를 paper_state 에 저장한다 (사용자 요청 — "매일 아침 전날 미국장의 이슈와
