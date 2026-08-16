@@ -21,7 +21,10 @@
  */
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { readFileSync, writeFileSync } from 'fs';
 import { createHash } from 'crypto';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import dotenv from 'dotenv';
 import { isTossConfigured, getDailyCandles, getKrMarketCalendar } from './toss-api.js';
 import { toUtcIso, toKstDateKey, toKstTimeLabel } from './trading-time.mjs';
@@ -86,16 +89,34 @@ const esc = (s) => (s == null ? 'NULL' : `'${String(s).replace(/'/g, "''")}'`);
 const num = (x) => (x == null || !Number.isFinite(Number(x)) ? 'NULL' : String(Number(x)));
 const jsonb = (o) => (o == null ? 'NULL' : `$j$${JSON.stringify(o).replace(/\$/g, '')}$j$::jsonb`);
 
+/**
+ * 텔레그램 전송.
+ *
+ * ★ 2026-08-03: fetch → curl 전환. 이 VM에서 Node fetch 는 api.telegram.org 에 도달하지 못한다
+ *   (149.154.166.110:443 ETIMEDOUT · curl 은 같은 IP 에 성공 — stock-live/watchdog/telegram-agent
+ *   가 2026-08-01 에 이미 같은 이유로 curl 로 옮겼다).
+ *   그 전환에서 이 파일만 빠져서 예측 보고서가 **35회 연속 조용히 유실**됐다(forecast-cron.log 실측).
+ *   api.supabase.com 은 fetch 로 잘 나간다 — 즉 Node fetch 전반이 아니라 텔레그램 대역만 막힌다.
+ *   그래서 dbQuery 의 fetchT 는 그대로 두고 이 함수만 바꾼다.
+ *
+ * 4096자 상한 때문에 3800자씩 쪼개 보낸다. 실패는 반드시 로그로 남긴다(조용한 유실 재발 방지).
+ */
+const execFileP = promisify(execFile);
 async function notifyTelegram(text) {
   const token = process.env.TELEGRAM_BOT_TOKEN, chat = process.env.TELEGRAM_CHAT_ID;
   if (!token || !chat) return;
   try {
-    await fetchT(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chat, text: text.slice(0, 4000) }),
-    }, 10_000);
-  } catch (e) { log(`텔레그램 전송 실패: ${e.message}`); }
+    const t = String(text ?? '');
+    for (let i = 0; i < t.length; i += 3800) {
+      const { stdout } = await execFileP('curl', [
+        '-4', '-s', '-m', '20', '-X', 'POST', '-H', 'Content-Type: application/json',
+        '-d', JSON.stringify({ chat_id: chat, text: t.slice(i, i + 3800) }),
+        `https://api.telegram.org/bot${token}/sendMessage`,
+      ], { timeout: 25_000 });
+      const j = JSON.parse(stdout);
+      if (!j.ok) throw new Error(String(stdout).slice(0, 120));
+    }
+  } catch (e) { log(`텔레그램 전송 실패: ${String(e.message).slice(0, 120)}`); }
 }
 
 // 이중 실행 방지 — paper-swing과 동일 패턴 (paper_state 원자적 INSERT..ON CONFLICT)
@@ -269,12 +290,21 @@ async function sectorMappingVersion() {
 }
 
 // ── 캘린더 ───────────────────────────────────────────────────
+// ★ 2026-08-16: getKrMarketCalendar() 는 배열이 아니라 {today, previousBusinessDay, nextBusinessDay}
+//   **객체**를 반환한다(실측). 기존 코드는 Array.isArray 로만 파싱해 todayCal 이 항상 null →
+//   휴장 체크가 사상 한 번도 발화하지 않았고(로그 '휴장일' 0건) 주말·공휴일에도 보고가 나갔다.
+//   객체 형태를 1차로 지원하고, 혹시 모를 배열 응답은 기존 경로로 남긴다.
 async function loadCalendar() {
   try { return await getKrMarketCalendar(); } catch { return null; }
 }
 const isTrading = (d) => !!(d && (d.integrated || d.regularMarket));
+const calDayKey = (d) => String(d?.date ?? '').replace(/-/g, '');
 function calFind(cal, dateKey) {
-  return Array.isArray(cal) ? cal.find(d => String(d.date).replace(/-/g, '') === dateKey) : null;
+  if (Array.isArray(cal)) return cal.find(d => calDayKey(d) === dateKey) ?? null;
+  for (const k of ['today', 'previousBusinessDay', 'nextBusinessDay']) {
+    if (calDayKey(cal?.[k]) === dateKey) return cal[k];
+  }
+  return null;
 }
 function calTradingKeys(cal) {
   return Array.isArray(cal)
@@ -284,6 +314,9 @@ function calTradingKeys(cal) {
 function nextTradingDate(cal, todayKey) {
   const future = calTradingKeys(cal).filter(k => k > todayKey);
   if (future.length) return future[0];
+  // 객체 형태: nextBusinessDay 가 곧 다음 거래일 (공휴일까지 반영된 정답)
+  const nb = calDayKey(cal?.nextBusinessDay);
+  if (nb && nb > todayKey && isTrading(cal.nextBusinessDay)) return nb;
   // 폴백: 주말만 건너뛴 다음 평일. 공휴일로 빗나가면 검증이 "endDate 이상 첫 거래일 종가"로
   // 해석하므로(etfReturnBetween) 0% 오검증 없이 다음 거래일 기준으로 채점된다.
   const d = new Date(`${todayKey.slice(0, 4)}-${todayKey.slice(4, 6)}-${todayKey.slice(6, 8)}T12:00:00+09:00`);
@@ -294,7 +327,9 @@ function nextTradingDate(cal, todayKey) {
 }
 function prevTradingDate(cal, todayKey) {
   const past = calTradingKeys(cal).filter(k => k < todayKey);
-  return past.length ? past[past.length - 1] : null;
+  if (past.length) return past[past.length - 1];
+  const pb = calDayKey(cal?.previousBusinessDay);
+  return pb && pb < todayKey && isTrading(cal.previousBusinessDay) ? pb : null;
 }
 
 // ── 검증 ─────────────────────────────────────────────────────
@@ -828,6 +863,83 @@ function priceStructureOf(key, etfSeries, etf1m) {
   return out;
 }
 
+/**
+ * 텔레그램용 요약 (★ 2026-08-03 사용자 요청: "요약해서 요점만 파악할 수 있게 — 지금 것도 다 못 읽어").
+ *
+ * 전문(3,000자+)은 console 과 paper_state 에 그대로 남는다. ai-trader 의 아침 브리핑도 전문을 읽는다.
+ * 텔레그램만 **읽히는 길이**로 줄인다: 지금 시장 · 시장별 방향/확률 · 누적성적. 그 외(섹터·NXT·환율·
+ * 공시·수급·LLM 해설)는 전문에만 둔다.
+ *
+ * 절대 예외를 던지지 않는다 — 요약이 깨져서 알림 자체가 유실되면 개선이 아니라 퇴행이다.
+ * 실패하면 null 을 주고 호출측이 전문 앞부분으로 폴백한다.
+ */
+function fmtTgDigest({ made = [], rolling = null, quality = null, dry = false, now = [], phase = '' }) {
+  try {
+    const L = [];
+    const first = made[0];
+    const head = first?.startHm
+      ? `오늘 ${fmtHm(first.startHm)}→${fmtHm(first.endHm)}`
+      : first ? `내일(${dateLabel(first.endDate)})` : String(phase);
+    const q = quality?.grade && quality.grade !== 'A' ? ` · 신뢰도↓(${quality.grade})` : '';
+    L.push(`📊 예측 ${head}${q}${dry ? ' [테스트]' : ''}`);
+    if (now.length) {
+      L.push(`지금 ${now.map(n => `${shortName(n.key)} ${n.today == null ? '-' : `${sgn(n.today)}%`}`).join(' / ')}`);
+    }
+    // ★ 2026-08-16 (사용자 재요청 "너무 길고 복잡해"): 확률 원값 `(↑38/↓33)` 대신 말로 된 입장(dirWord),
+    //   누적 성적 줄은 일일 결산에만 남긴다. 전문은 그대로 원장(paper_state)·콘솔에 있다.
+    for (const r of made.filter(x => x.kind === 'market')) {
+      L.push(`${shortName(r.sector)}: ${dirWord(r.f)} · 예상 ${sgn(r.f.median)}%`);
+    }
+    const t = L.filter(Boolean).join('\n');
+    return t.trim() ? t.slice(0, 700) : null;
+  } catch { return null; }
+}
+
+// ── 장중 "결론 동일" 텔레그램 생략 (2026-08-16, ai-trader 의 08-03 선례와 같은 규칙) ──
+// 장중 4회(10:30/11:30/13:30/14:30) 요약이 직전 발송과 시장별 입장(lean)이 전부 같으면 보내지 않는다.
+// pre/close/daily 는 항상 발송. 상태 파일이 깨지면 "보낸다"로 폴백(알림 유실 방지).
+const TG_STATE_FILE = join(__dirname, '.fc-tg-state.json');
+function tgStanceKey(made) {
+  return (made ?? []).filter(x => x.kind === 'market')
+    .map(r => `${r.sector}:${stanceOf(r.f).lean}`).sort().join('|');
+}
+function sameConclusionAsLastTg(made) {
+  try {
+    const st = JSON.parse(readFileSync(TG_STATE_FILE, 'utf8'));
+    const key = tgStanceKey(made);
+    return !!key && st.date === kstDate() && st.key === key;
+  } catch { return false; }
+}
+function markTgSent(made) {
+  try { writeFileSync(TG_STATE_FILE, JSON.stringify({ date: kstDate(), key: tgStanceKey(made), at: kstHM() })); } catch { /* 비치명 */ }
+}
+
+/** 일일 결산 텔레그램용 — 성적 요점만. 통계 상세·개선루프·LLM 해설은 전문(콘솔·원장)에만. */
+function fmtTgDaily(s) {
+  try {
+    const L = [`📊 예측 결산 ${dateLabel(s.date)}`];
+    L.push(`오늘: ${fmtSummary(s.today)}`);
+    if (s.rolling) L.push(`4주 누적: ${fmtSummary(s.rolling)}`);
+    if (s.structural?.recommend) L.push(`⚠️ 같은 원인("${s.structural.dominantCause}")으로 반복해서 빗나감 — 모델 조정 검토 필요`);
+    L.push('(상세는 원장·콘솔)');
+    const t = L.join('\n');
+    return t.trim() ? t.slice(0, 700) : null;
+  } catch { return null; }
+}
+
+/** 요약 함수가 없는 페이즈(daily 결산)용 — 앞부분만 줄 단위로 자른다. */
+function tgHead(report, max = 700) {
+  const lines = String(report ?? '').split('\n');
+  const out = [];
+  let n = 0;
+  for (const l of lines) {
+    if (n + l.length + 1 > max) break;
+    out.push(l); n += l.length + 1;
+  }
+  const t = out.join('\n').trim();
+  return t + (t.length < String(report ?? '').trim().length ? '\n… (전문은 원장·콘솔)' : '');
+}
+
 function fmtRunReport({ made, verified, rolling, quality, dry, fx = null, disc = null, nxt = null, now = [], flow = null }) {
   const L = [];
   const markets = made.filter(x => x.kind === 'market');
@@ -1077,10 +1189,12 @@ async function main() {
     }
   }
 
-  // 휴장 체크
+  // 휴장 체크 — 공휴일은 캘린더로, 주말은 캘린더가 죽어도 요일로 확정 차단 (2026-08-16 사용자 요청)
   const cal = await loadCalendar();
   const todayCal = calFind(cal, kstDate());
   if (todayCal && !isTrading(todayCal) && !force) { log('휴장일 — 종료'); return; }
+  const kstDow = new Date(Date.now() + 9 * 3600e3).getUTCDay();
+  if (!force && !todayCal && [0, 6].includes(kstDow)) { log('주말(캘린더 확인 불가) — 종료'); return; }
 
   if (!dry && !(await acquireRunLock(phase))) {
     log(`fc_${phase} run_lock 선점됨 — 중복 실행 종료`);
@@ -1248,7 +1362,15 @@ async function main() {
           ON CONFLICT (k) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`);
       } catch (e) { log(`보고서 저장 실패(비치명): ${e.message}`); }
     }
-    if (!dry) await notifyTelegram(report);
+    if (!dry) {
+      // 장중 요약은 직전 발송과 결론(시장별 방향)이 같으면 생략 — 체결·경보는 별도 채널이라 영향 없음
+      if (phase === 'intraday' && sameConclusionAsLastTg(made)) {
+        log('장중 결론 동일(직전 발송과 같음) — 텔레그램 생략 (전문은 원장·콘솔)');
+      } else {
+        await notifyTelegram(fmtTgDigest({ made, rolling, quality, dry, now, phase }) ?? tgHead(report));
+        markTgSent(made);
+      }
+    }
   }
 
   // 3) 일일 결산 (daily) + LLM 해설
@@ -1269,10 +1391,57 @@ async function main() {
       } catch (e) { log(`LLM 결산 해설 실패(비치명): ${e.message}`); }
     }
     console.log(report);
-    if (!dry) await notifyTelegram(report);
+    if (!dry) {
+      // 결산 전문도 원장에 저장 (pre/close/intraday 는 이미 저장 중 — UI·사후분석이 읽는다)
+      try {
+        await dbQuery(`
+          INSERT INTO paper_state (k, data, updated_at)
+          VALUES ('fc_report:daily:${kstDate()}', ${jsonb({ phase: 'daily', date: kstDate(), hm: kstHM(), engine: ENGINE_VERSION, text: report })}, NOW())
+          ON CONFLICT (k) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`);
+      } catch (e) { log(`결산 보고서 저장 실패(비치명): ${e.message}`); }
+      await notifyTelegram(fmtTgDaily(s) ?? tgHead(report));
+    }
   }
 
   log('완료');
+}
+
+/**
+ * 요약 포맷 자기검증 — `node forecast-run.mjs --selftest-digest`
+ *
+ * 왜 필요한가: fmtTgDigest 는 알림 유실을 막으려고 `catch { return null }` 로 감싸여 있다.
+ * 그래서 내부가 통째로 죽어도 호출측이 tgHead 로 폴백해 **정상처럼 보인다**.
+ * (하네스에서 겪은 것과 같은 함정 — exit 0 은 "동작함"이 아니다.)
+ * 네트워크·DB 를 건드리지 않고 실제 문자열이 만들어지는지만 기계 판정한다.
+ */
+if (process.argv.includes('--selftest-digest')) {
+  const made = [
+    { kind: 'market', sector: 'KOSPI_PROXY', startHm: '1331', endHm: '1430', endDate: '20260803', f: { median: 0.11, probs: { up: 35, flat: 22, down: 43 }, conf: 40 } },
+    { kind: 'market', sector: 'KOSDAQ_PROXY', startHm: '1331', endHm: '1430', endDate: '20260803', f: { median: 0.10, probs: { up: 30, flat: 26, down: 44 }, conf: 40 } },
+  ];
+  const now = [
+    { key: 'KOSPI_PROXY', today: -9.25, todayDone: false, prev: 24.17 },
+    { key: 'KOSDAQ_PROXY', today: 2.89, todayDone: false, prev: 14.10 },
+  ];
+  const intraday = fmtTgDigest({ made, rolling: null, quality: { grade: 'A' }, dry: false, now, phase: 'intraday' });
+  const daily = fmtTgDigest({
+    made: made.map(m => ({ ...m, startHm: null, endHm: null })),
+    rolling: null, quality: { grade: 'B' }, dry: false, now: [], phase: 'pre',
+  });
+  const head = tgHead(['머리줄', ...Array.from({ length: 60 }, (_, i) => `본문 ${i} ${'가'.repeat(30)}`)].join('\n'));
+  const dailyDigest = fmtTgDaily({
+    date: '20260803',
+    today: { direction_hit_rate: 0.67, partial_count: 1, coverage_80: 0.83, call_count: 1, call_hit_rate: 1, n: 6 },
+    rolling: { direction_hit_rate: 0.38, partial_count: 27, coverage_80: 0.71, call_count: 5, call_hit_rate: 0.6, n: 516 },
+    structural: { missCount: 2, total: 6, dominantCause: '해외발 갭', dominantN: 2, recommend: true },
+    best_sectors: [], worst_sectors: [],
+  });
+  let ok = true;
+  for (const [name, v, min] of [['장중 요약', intraday, 40], ['일간 요약', daily, 20], ['결산 요약', dailyDigest, 40], ['tgHead 절단', head, 40]]) {
+    if (v == null || v.length < min) { ok = false; console.log(`❌ ${name}: ${v == null ? 'null — 죽었다' : `${v.length}자로 너무 짧다`}`); }
+    else console.log(`✅ ${name} ${v.length}자\n---\n${v}\n---`);
+  }
+  process.exit(ok ? 0 : 1);
 }
 
 main().catch(e => { console.error('[forecast] 치명 오류:', e); process.exit(1); });

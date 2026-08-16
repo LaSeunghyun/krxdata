@@ -8,12 +8,15 @@
  *         node push-candidates.mjs --max N (스캔 판단수 상한, 기본 12 = 일 크레딧 통제)
  *   env: TELEGRAM_BOT_TOKEN/CHAT_ID, SUPABASE_PROJECT_REF/MANAGEMENT_KEY, (스캔=claude CLI).
  */
-import { spawnSync } from 'child_process';
+import { spawnSync, execFile } from 'child_process';
+import { promisify } from 'util';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import dotenv from 'dotenv';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: join(__dirname, '.env') });
+const { isTradingDayKST } = await import('./market-day.mjs'); // dotenv 이후 로드 (toss-api가 env를 읽는다)
+const execFileP = promisify(execFile);
 
 const DRY = process.argv.includes('--dry');
 const MAX = (() => { const i = process.argv.indexOf('--max'); return i >= 0 ? process.argv[i + 1] : '12'; })();
@@ -27,15 +30,22 @@ const q = async (sql) => {
     { method: 'POST', headers: { Authorization: `Bearer ${process.env.SUPABASE_MANAGEMENT_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ query: sql }) });
   const j = await r.json(); return Array.isArray(j) ? j : [];
 };
+// ★ 2026-08-16: fetch → curl 전환. 이 VM에서 Node fetch 는 api.telegram.org 에 도달하지 못한다
+//   (ETIMEDOUT — stock-live·watchdog·forecast-run 이 이미 같은 이유로 curl 로 옮겼는데 이 파일만
+//   남아서 아침 후보 푸시가 통째로 유실되고 있었다. push-candidates.log 'fetch failed' 연속 실측).
 const tgSend = async (text) => {
   const T = process.env.TELEGRAM_BOT_TOKEN, C = process.env.TELEGRAM_CHAT_ID;
   if (!T || !C) { console.log('[텔레그램 미설정 — 콘솔 출력]\n' + text); return; }
   for (let i = 0; i < text.length; i += 3800) {
     const chunk = text.slice(i, i + 3800);
     try {
-      const r = await fetch(`https://api.telegram.org/bot${T}/sendMessage`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: C, text: chunk }) });
-      const j = await r.json().catch(() => null);
-      if (!r.ok || !j?.ok) console.error(`[텔레그램 전송 실패] status=${r.status} ${JSON.stringify(j)?.slice(0, 200)}`); // 2026-07-24: 응답 미확인이 원인이던 무음 실패 방지
+      const { stdout } = await execFileP('curl', [
+        '-4', '-s', '-m', '20', '-X', 'POST', '-H', 'Content-Type: application/json',
+        '-d', JSON.stringify({ chat_id: C, text: chunk }),
+        `https://api.telegram.org/bot${T}/sendMessage`,
+      ], { timeout: 25_000 });
+      const j = JSON.parse(stdout);
+      if (!j.ok) console.error(`[텔레그램 전송 실패] ${String(stdout).slice(0, 200)}`);
     } catch (e) { console.error(`[텔레그램 전송 예외] ${e.message}`); }
   }
 };
@@ -43,6 +53,8 @@ const arr = (x) => Array.isArray(x) ? x : (typeof x === 'string' ? (() => { try 
 const man = (n) => (n / 10000).toFixed(0);
 
 async function main() {
+  // 휴장일(주말·공휴일)은 스캔·발송 모두 안 함 (2026-08-16 사용자 요청 — claude 크레딧도 아낀다)
+  if (!(await isTradingDayKST())) { console.log('휴장일 — 종료'); return; }
   if (!DRY) {
     const r = spawnSync('node', [join(__dirname, 'ai-shadow.mjs'), '--days', '2', '--max', String(MAX)], { cwd: __dirname, encoding: 'utf8', timeout: 30 * 60 * 1000 });
     if (r.status !== 0) console.error('스캔 경고:', (r.stderr || '').slice(0, 200));
@@ -54,20 +66,19 @@ async function main() {
     if (DRY) console.log(m); else await tgSend(m);
     return;
   }
-  let msg = `📈 오늘(${kstDate()}) 촉매 매수 후보 ${buys.length}개\n(AI shadow · 미검증 · 최종 판단은 본인)\n`;
-  for (const b of buys) {
+  // ★ 2026-08-16 (사용자 "간추려 달라"): 상위 5개만, 종목당 3줄(촉매·추천·명령).
+  //   근거·리스크 전문은 ai_shadow_decisions 원장에 있다 — 텔레그램 봇에 종목명으로 물으면 읽어준다.
+  const top = buys.slice(0, 5);
+  let msg = `📈 오늘 촉매 후보 ${buys.length}개${buys.length > top.length ? ` 중 상위 ${top.length}` : ''} (AI · 미검증 · 판단은 본인)\n`;
+  for (const b of top) {
     const px = Number(b.price) || 0;
     const rec = recFor(b.conviction);
     const shares = px > 0 ? Math.floor(rec / px) : 0;
     const s = typeof b.strategy === 'string' ? (() => { try { return JSON.parse(b.strategy); } catch { return null; } })() : b.strategy;
-    msg += `\n📌 ${b.name} (확신 ${b.conviction})\n`;
-    msg += `  촉매: ${String(b.catalyst || '').slice(0, 90)}\n`;
-    msg += `  근거: ${(arr(b.thesis)[0] || '').slice(0, 90)}\n`;
-    msg += `  리스크: ${(arr(b.opposing)[0] || '').slice(0, 90)}\n`;
-    if (s) msg += `  추천: ${man(rec)}만원(≈${shares}주) · 목표+${s.target_pct}%/손절-${s.stop_pct}%\n`;
-    msg += `  → 매수 ${b.name} ${man(rec)}만원\n`;
+    msg += `\n📌 ${b.name} (확신 ${b.conviction}${s ? ` · 목표+${s.target_pct}/손절-${s.stop_pct}` : ''})\n`;
+    msg += `  ${String(b.catalyst || arr(b.thesis)[0] || '').slice(0, 70)}\n`;
+    msg += `  → 매수 ${b.name} ${man(rec)}만원${shares ? ` (≈${shares}주)` : ''}\n`;
   }
-  msg += `\n※ 현금 확인 후 2~3개 선택. DRY로 먼저 확인 → 주문ON → 실매수.`;
   if (DRY) console.log(msg); else await tgSend(msg);
 }
 main().catch(e => { console.error('push 오류:', e.message); process.exit(1); });

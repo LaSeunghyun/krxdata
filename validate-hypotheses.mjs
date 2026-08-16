@@ -35,12 +35,22 @@ const dbQuery = async (sql) => {
   if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 120)}`);
   return r.json();
 };
+// ★ 2026-08-16: fetch → curl 전환. 이 VM에서 Node fetch 는 api.telegram.org 에 도달하지 못한다
+//   (ETIMEDOUT — stock-live·watchdog·forecast-run 과 동일 실측). 이 파일은 fetch 인 채로 남아서
+//   상시검증 요약이 그동안 조용히 유실되고 있었다.
 async function tgNotify(text) {
   const T = process.env.TELEGRAM_BOT_TOKEN, C = process.env.TELEGRAM_CHAT_ID;
   if (!T || !C || NO_TG) return;
   try {
-    await fetch(`https://api.telegram.org/bot${T}/sendMessage`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: C, text }) });
-  } catch { /* best-effort */ }
+    const { execFile } = await import('child_process');
+    const { promisify } = await import('util');
+    const { stdout } = await promisify(execFile)('curl', [
+      '-4', '-s', '-m', '20', '-X', 'POST', '-H', 'Content-Type: application/json',
+      '-d', JSON.stringify({ chat_id: C, text }),
+      `https://api.telegram.org/bot${T}/sendMessage`,
+    ], { timeout: 25_000 });
+    if (!/"ok":true/.test(stdout)) log(`텔레그램 전송 실패: ${String(stdout).slice(0, 120)}`);
+  } catch (e) { log(`텔레그램 전송 오류: ${String(e.message).slice(0, 80)}`); }
 }
 const median = (a) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
 
@@ -155,6 +165,9 @@ async function evalFlow() {
 }
 
 (async () => {
+  // 휴장일(주말·공휴일)은 실행 안 함 (2026-08-16 사용자 요청) — 새 데이터가 없어 ledger 중복 적재만 된다
+  const { isTradingDayKST } = await import('./market-day.mjs');
+  if (!(await isTradingDayKST())) { log('휴장일 — 종료'); process.exit(0); }
   log(`=== 상시 가설 검증 시작 (seeds=${SEEDS}${ONLY ? `, only=${ONLY}` : ''}${DATA_ONLY ? ', DATA-ONLY(백테스트 스킵)' : ''}) ===`);
   if (!NO_LEDGER) {
     try {
@@ -196,11 +209,15 @@ async function evalFlow() {
   }
   // 로컬 스냅샷
   try { writeFileSync(join(__dirname, 'validation-latest.json'), JSON.stringify({ ts: now(), seeds: SEEDS, rows }, null, 1)); } catch { /* */ }
-  // 텔레그램 요약
-  const summary = `🧪 상시검증 ${now().slice(5, 16)}\n` +
-    rows.filter(r => r.status !== 'INFO').map(r => `${r.status === 'FLIP' ? '⚠️' : '✅'} ${r.hyp_id}: ${r.winner}`).join('\n') +
-    (flips.length ? `\n\n🚨 판정 뒤집힘:\n${flips.join('\n')}\n→ 사람 확인 필요(자동변경 안 함)` : '\n\n판정 전부 유지(FLIP 없음)');
-  await tgNotify(summary);
+  // 텔레그램은 FLIP(판정 뒤집힘)이 있을 때만 — "전부 유지" 일일 요약은 로그로 충분 (2026-08-16 사용자 "간추려 달라")
+  if (flips.length) {
+    const summary = `🧪 상시검증 ${now().slice(5, 16)}\n` +
+      rows.filter(r => r.status !== 'INFO').map(r => `${r.status === 'FLIP' ? '⚠️' : '✅'} ${r.hyp_id}: ${r.winner}`).join('\n') +
+      `\n\n🚨 판정 뒤집힘:\n${flips.join('\n')}\n→ 사람 확인 필요(자동변경 안 함)`;
+    await tgNotify(summary);
+  } else {
+    log('FLIP 없음 — 텔레그램 생략');
+  }
   log(`=== 완료: ${rows.length}가설, FLIP ${flips.length}건 ===`);
   process.exit(0);
 })();
