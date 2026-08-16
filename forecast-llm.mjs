@@ -10,6 +10,13 @@
  * 실행: 로컬 claude CLI 헤드리스(`claude -p`). 비활성화: FORECAST_LLM=0
  */
 import { spawnSync } from 'child_process';
+// 아래 flock 처리에 필요. ★ 이 세 개를 빠뜨리면 `join(__dirname,…)` 이 모듈 최상위라
+//   import 시점 ReferenceError 로 forecast-run 전체가 죽는다(node --check 로는 안 잡힌다).
+import { existsSync } from 'fs';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export const ERROR_CATEGORIES = [
   '데이터 지연 또는 누락', '예상하지 못한 공시·뉴스', '해외시장 또는 환율 급반전',
@@ -304,6 +311,82 @@ export function validateReport(text, payload = null) {
   return engine.length ? `엔진 값 불일치 — ${engine.join(' / ')}` : null;
 }
 
+/**
+ * ★ 2026-08-16 아침 브리핑 모드 — 예측 엔진 폐기 결정에 따른 대체 보고.
+ *
+ * 근거(원장 704건 감사): 점추정 MAE가 무정보 기준선(0% 예상)과 동일(4.118 vs 4.122),
+ * 기준모형 3종 동시 우위 3.5~9.3%, down 예측의 55%가 실제 상승, 확신 콜 10/31,
+ * 일간 구간적중 44%(폭 상한 풀사용) vs 목표 80%. "변동성 과소평가" 확인 140건이
+ * 쌓이는 동안 엔진 재조정 0회 = 루프가 닫힌 적 없음. → 예측·채점은 중단하고,
+ * 실소비자(ai-trader morning_brief + 사용자 아침 1건)가 있는 컨텍스트 브리핑만 남긴다.
+ * 브리핑은 관측된 사실 요약이지 예측이 아니다 — 방향·수익률 전망 문구를 금지한다.
+ */
+function buildBriefPrompt(payload) {
+  return `너는 한국 주식시장 아침 브리핑 작성자다. 아래 데이터와 웹검색으로 브리핑을 작성한다.
+
+규칙:
+1. 이것은 예측이 아니다 — 방향 전망("오를 것", "하락 우세"), 예상 수익률, 확률 표현 금지.
+   관측된 사실과 오늘 예정된 일정만 쓴다.
+2. 데이터에 없는 숫자 창작 금지. 뉴스·수급은 출처와 시각(KST)을 붙인다. 없으면 "미제공" 명시.
+3. 수급 표기: 전일 확정 수급을 당일 수급처럼 쓰지 않는다. 바스켓 수급은
+   "제한된 대형주 바스켓 참고지표(N종목, 전일 확정)"로 표기.
+4. 매수·매도·종목 추천 금지. 공시는 지수 영향 가능한 것만 [사실→의미] 형식으로.
+5. 가독성: 섹션 사이 빈 줄 1개, 한 줄 45자 이내, 불릿("- ") 사용. 수치는 소수 2자리.
+6. 아래 템플릿 섹션 헤더를 그대로 사용한다. 다른 섹션 추가 금지.
+
+템플릿:
+📰 아침 브리핑 · {날짜} (KST)
+
+【어제 시장】
+- 코스피/코스닥 등락과 장중 특징 (데이터 기준)
+- NXT 프리마켓 관측 있으면 한 줄
+
+【밤사이 해외】
+- 미국장 마감·주요 이슈 2~4개 (웹검색, 출처·시각 필수)
+
+【환율·수급】
+- 달러 환율 기조 / 전일 확정 수급 (라벨 규칙 준수)
+
+【공시】
+- 지수 영향 가능한 것만. 없으면 "특이 공시 없음"
+
+【오늘 유의점】
+- 관찰 가능한 일정·사건 2~3개 (실적 발표·지표 발표·만기 등)
+
+【직전 채점】
+{verification 데이터 있으면 그대로 요약, 없으면 "채점 대상 없음"}
+
+데이터:
+${JSON.stringify(payload, null, 1)}`;
+}
+
+export function validateBrief(text) {
+  if (!text || text.length < 200) return '너무 짧음';
+  for (const b of BANNED_PHRASES) if (text.includes(b)) return `금지 문구: ${b}`;
+  for (const h of ['【어제 시장】', '【밤사이 해외】']) {
+    if (!text.includes(h)) return `섹션 누락: ${h}`;
+  }
+  const over = text.match(/[+-]?\d+\.\d{3,}\s*%/);
+  if (over) return `소수 2자리 초과: ${over[0]}`;
+  return null;
+}
+
+export function composeBrief(payload, { invoke, retries = 1 } = {}) {
+  const call = invoke ?? ((p) => callClaude(p, { extraArgs: ['--allowedTools', 'WebSearch'], timeoutMs: 300_000 }));
+  const base = buildBriefPrompt(payload);
+  let lastErr = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const prompt = attempt === 0
+      ? base
+      : `${base}\n\n---\n직전 시도가 아래 기계 검증에 걸렸다. 해당 부분만 고쳐 전체를 다시 출력하라:\n${lastErr}`;
+    const out = (call(prompt) ?? '').trim();
+    const err = validateBrief(out);
+    if (!err) return { text: out, error: null, attempts: attempt + 1 };
+    lastErr = err;
+  }
+  return { text: null, error: lastErr, attempts: retries + 1 };
+}
+
 export function composeReport(payload, { invoke, retries = 1 } = {}) {
   const call = invoke ?? ((p) => callClaude(p, {
     extraArgs: payload.allow_websearch ? ['--allowedTools', 'WebSearch'] : [],
@@ -326,10 +409,37 @@ export function composeReport(payload, { invoke, retries = 1 } = {}) {
   return { text: null, error: lastErr, attempts: retries + 1 };
 }
 
+/**
+ * ★ 2026-08-04: 공용 flock 추가. **이 파일만 락 밖에 있었다.**
+ *
+ * ai-trader · telegram-agent · watchdog 은 `.claude-spawn.lock` 을 flock 해서 claude 동시실행을
+ * 막는데 예측 런의 LLM 호출만 빠져 있었다. 결과(08-03 실측):
+ *   16:10 close 런 시작 → claude 스폰(웹검색 포함이라 오래 돈다)
+ *   16:19 가용 185MB → ai-trader 메모리 게이트(250MB) 차단
+ *   16:19:49 close 보고서 기록(= claude 종료 시각과 일치)
+ *   16:34 15분 경과 → 폴백 경보 발송
+ *   16:36 AI 판단 재개(77s)
+ * 즉 메모리 부족의 원인은 예측 런 **본체**(계측 피크 88MB)가 아니라 그것이 띄운 **claude** 였다.
+ * 락을 공유하면 claude 가 항상 1개만 떠서 이 충돌이 구조적으로 사라진다.
+ *
+ * 락 대기는 넉넉히 준다(기본 300초). 예측은 배치라 몇 분 기다려도 되지만, 라이브 매매 판단은
+ * 기다릴 수 없다 — 우선순위가 반대로 뒤집히지 않게 예측 쪽이 양보하는 구조가 맞다.
+ * flock 이 없는 환경(Windows 로컬)에서는 그대로 직접 실행한다.
+ */
+const CLAUDE_LOCK = join(__dirname, '.claude-spawn.lock');
+const LOCK_WAIT_SEC = Number(process.env.FORECAST_LLM_LOCK_WAIT ?? 300);
+
 export function callClaude(prompt, { timeoutMs = 180_000, extraArgs = [] } = {}) {
+  const cArgs = ['-p', '--output-format', 'text', ...extraArgs];
+  const useLock = existsSync('/usr/bin/flock') || existsSync('/bin/flock');
+  const [bin, args] = useLock
+    ? ['flock', ['-w', String(LOCK_WAIT_SEC), CLAUDE_LOCK, 'claude', ...cArgs]]
+    : ['claude', cArgs];
   // 프롬프트는 stdin으로 전달 — Windows shell 인자 한계(8191자)·따옴표 깨짐 회피
-  const res = spawnSync('claude', ['-p', '--output-format', 'text', ...extraArgs], {
-    shell: true, encoding: 'utf8', timeout: timeoutMs,
+  const res = spawnSync(bin, args, {
+    shell: true, encoding: 'utf8',
+    // 락 대기가 timeout 을 먹지 않게 대기시간을 더한다. 안 더하면 대기 중에 죽어 LLM 이 항상 실패한다.
+    timeout: timeoutMs + (useLock ? LOCK_WAIT_SEC * 1000 : 0),
     input: prompt,
     maxBuffer: 4 * 1024 * 1024,
     windowsHide: true,

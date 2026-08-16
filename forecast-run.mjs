@@ -3,10 +3,16 @@
  * forecast-run.mjs — KOSPI·KOSDAQ 단기 확률예측·사후검증 러너 (Phase 1 MVP)
  * 설계: C:\claudeT\docs\superpowers\specs\2026-07-21-krxdata-market-forecast-ledger-design.md
  *
+ * ★ 2026-08-16 예측 엔진 폐기 — 원장 704건 감사 결과 점추정이 무정보 기준선과 동률(MAE 4.118
+ *   vs 4.122)이고 방향·콜·구간 전부 목표 미달, 재조정 루프는 한 번도 닫힌 적 없음(상세 근거는
+ *   forecast-llm.mjs composeBrief 주석). 크론은 pre 1개만 남고 pre 는 "아침 브리핑 모드"가 기본:
+ *   검증 캐치업(잔여 소화) + 컨텍스트 브리핑(예측 없음) + paper_state 저장(ai-trader 소비).
+ *   통계 예측은 --forecast 명시 시에만(수동 실험). intraday/close/daily 코드는 보존(크론 제거됨).
+ *
  * 페이즈 (KST 자동 감지, 수동 override: node forecast-run.mjs [pre|close|daily] [--dry] [--force]):
- *   pre   (<09:00)      : 검증 캐치업 + 오늘 구간(전일종가→오늘종가) 예측
- *   close (15:40~19:29) : 만기 예측 검증 + 익일 구간(오늘종가→익일종가) 예측
- *   daily (19:30~)      : 신규 예측 없음 — 일일 결산 + 최근 20거래일 롤링 지표
+ *   pre   (<09:00)      : 검증 캐치업 + 아침 브리핑 (--forecast 시 레거시 예측 생성)
+ *   close (15:40~19:29) : 만기 예측 검증 + 익일 구간(오늘종가→익일종가) 예측 [크론 제거됨]
+ *   daily (19:30~)      : 신규 예측 없음 — 일일 결산 + 최근 20거래일 롤링 지표 [크론 제거됨]
  *
  * 원칙:
  *  - forecast_ledger는 INSERT 전용(불변). 검증은 forecast_verification 별도 테이블.
@@ -33,7 +39,7 @@ import {
   ENGINE_VERSION, buildForecast, scoreVerification, summarizeVerifications, sampleStats,
   summarizeStructuralMisses,
 } from './forecast-core.mjs';
-import { llmEnabled, analyzeVerifications, analyzeDaily, composeReport } from './forecast-llm.mjs';
+import { llmEnabled, analyzeVerifications, analyzeDaily, composeReport, composeBrief } from './forecast-llm.mjs';
 import { buildImprovementLoop, formatImprovementLoopReport } from './forecast-improvement-loop.mjs';
 import {
   NXT_AFTER, fetch1mByDate, fetchBasket1m, historyIntervalReturns,
@@ -949,15 +955,20 @@ function fmtRunReport({ made, verified, rolling, quality, dry, fx = null, disc =
       ? `오늘 ${fmtHm(startHm)} → ${fmtHm(endHm)}`
       : `내일(${dateLabel(endDate)}) 하루`;
     L.push(`📊 시장 전망 · ${span}${dry ? ' [테스트]' : ''}`);
-    if (quality.grade !== 'A') L.push(`(참고: 일부 데이터가 늦게 도착해 신뢰도가 평소보다 낮습니다)`);
-    if (now.length) {
-      L.push('');
-      L.push('【지금 시장】');
-      for (const n of now) {
-        const t = n.today == null ? null : `${n.todayDone ? '오늘' : '오늘 지금까지'} ${sgn(n.today)}%`;
-        L.push(`${shortName(n.key)}: ${t ? `${t}, ` : ''}${n.todayDone ? '전날' : '어제'} ${sgn(n.prev)}%`);
-      }
+  } else {
+    // 브리핑 모드(예측 없음)의 기계 폴백 — 헤더·어제 시장은 예측이 없어도 나가야 한다 (2026-08-16)
+    L.push(`📰 시장 브리핑 · ${dateLabel(kstDate())}${dry ? ' [테스트]' : ''}`);
+  }
+  if (quality.grade !== 'A') L.push(`(참고: 일부 데이터가 늦게 도착해 신뢰도가 평소보다 낮습니다)`);
+  if (now.length) {
+    L.push('');
+    L.push('【지금 시장】');
+    for (const n of now) {
+      const t = n.today == null ? null : `${n.todayDone ? '오늘' : '오늘 지금까지'} ${sgn(n.today)}%`;
+      L.push(`${shortName(n.key)}: ${t ? `${t}, ` : ''}${n.todayDone ? '전날' : '어제'} ${sgn(n.prev)}%`);
     }
+  }
+  if (made.length) {
     for (const r of markets) {
       const f = r.f;
       L.push('');
@@ -1156,6 +1167,10 @@ async function main() {
   const dry = args.includes('--dry');
   const force = args.includes('--force');
   const phaseArg = args.find(a => ['pre', 'close', 'daily'].includes(a));
+  // ★ 2026-08-16 예측 엔진 폐기 (원장 704건 감사 — 근거는 forecast-llm.mjs composeBrief 주석):
+  //   pre 는 기본이 "아침 브리핑 모드"(예측 생성 없음, 검증 캐치업·브리핑·원장 보고 저장만).
+  //   통계 예측을 다시 돌리려면 --forecast 를 명시한다(수동 실험 전용, 크론은 pre 1개만 남음).
+  const legacyForecast = args.includes('--forecast');
 
   for (const k of ['SUPABASE_MANAGEMENT_KEY', 'SUPABASE_PROJECT_REF']) {
     if (!process.env[k]) { console.error(`환경변수 미설정: ${k}`); process.exit(1); }
@@ -1203,7 +1218,8 @@ async function main() {
 
   // 수집 — 당일 일봉은 장 마감 후에만 신뢰 (미완성 캔들 제거). 장중 예측은 1분봉 사용.
   const includeToday = hm >= '15:40';
-  const dailyForecastPhase = phase === 'pre' || phase === 'close';
+  const briefOnly = phase === 'pre' && !legacyForecast; // 예측 없음 — 섹터 시계열도 불필요
+  const dailyForecastPhase = (phase === 'pre' || phase === 'close') && !briefOnly;
   const etfSeries = await fetchEtfSeries(includeToday);
   const tradingDates = (etfSeries.KOSPI_PROXY ?? []).map(x => x.date);
   const topSectors = dailyForecastPhase ? await fetchTopSectors() : [];
@@ -1257,7 +1273,8 @@ async function main() {
     if (phase === 'intraday') {
       made = await makeIntradayForecasts({ etf1m, etfSeries, endHm: intraEndHm, quality, versions, snapshotId, dry });
     } else {
-      made = await makeForecasts({ phase, cal, etfSeries, sectorSeries, topSectors, quality, versions, snapshotId, dry });
+      // 브리핑 모드: 예측 생성 안 함 (made=[] 이면 아래 보고·저장 경로가 컨텍스트만 담는다)
+      made = briefOnly ? [] : await makeForecasts({ phase, cal, etfSeries, sectorSeries, topSectors, quality, versions, snapshotId, dry });
       if (phase === 'close') {
         nxtInfo = await makeNxtAfterForecast({ quality, versions, snapshotId, dry });
       } else {
@@ -1337,7 +1354,7 @@ async function main() {
           })),
           rolling_buckets: rollingBuckets,
         };
-        const composed = composeReport(payload);
+        const composed = briefOnly ? composeBrief(payload) : composeReport(payload);
         if (composed.text) report = composed.text + (dry ? '\n\n[테스트 실행 — 원장 미기록]' : '');
         else log(`보고서 합성 실패(${composed.error}) — 기계 형식 폴백`);
       } catch (e) { log(`보고서 합성 오류(비치명): ${e.message}`); }
@@ -1366,6 +1383,8 @@ async function main() {
       // 장중 요약은 직전 발송과 결론(시장별 방향)이 같으면 생략 — 체결·경보는 별도 채널이라 영향 없음
       if (phase === 'intraday' && sameConclusionAsLastTg(made)) {
         log('장중 결론 동일(직전 발송과 같음) — 텔레그램 생략 (전문은 원장·콘솔)');
+      } else if (briefOnly) {
+        await notifyTelegram(tgHead(report, 900)); // 브리핑은 앞부분 그대로 — 예측 요약 형식 없음
       } else {
         await notifyTelegram(fmtTgDigest({ made, rolling, quality, dry, now, phase }) ?? tgHead(report));
         markTgSent(made);
