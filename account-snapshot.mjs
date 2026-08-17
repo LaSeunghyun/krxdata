@@ -83,5 +83,28 @@ async function main() {
   // 보존 기간 90일 — 자산곡선엔 충분, 무한 성장 방지
   await q(`DELETE FROM account_snapshots WHERE ts < now() - interval '90 days'`);
   log(`적재: 평가 ${equity.toLocaleString()}원 (현금 ${cash.toLocaleString()}) · 보유 ${positions.length}종목`);
+
+  // ── 저널 → live_trades 동기화 (대시보드 매매 피드용, 2026-08-17) ──────────
+  // 저널은 VM 로컬 파일이라 UI(아티팩트)가 못 읽는다. 멱등 upsert 로 DB 에 미러링.
+  // PK (ts, code, side) — 같은 초에 같은 종목 같은 방향 재체결은 저널 구조상 없다.
+  try {
+    const jrPath = join(__dirname, 'stock-live-journal.json');
+    const trades = existsSync(jrPath) ? (JSON.parse(readFileSync(jrPath, 'utf8')).trades ?? []) : [];
+    if (trades.length) {
+      await q(`CREATE TABLE IF NOT EXISTS live_trades (
+        ts timestamptz, code text, name text, side text, px numeric, qty int,
+        ret numeric, reason text, sub text, PRIMARY KEY (ts, code, side))`);
+      const esc = (s) => (s == null ? 'NULL' : `'${String(s).replace(/'/g, "''")}'`);
+      const num = (v) => (v == null || Number.isNaN(Number(v)) ? 'NULL' : Number(v));
+      const vals = trades
+        .filter(t => t.ts && t.code && t.side)
+        .map(t => `('${String(t.ts).replace(' ', 'T')}+09:00', ${esc(t.code)}, ${esc(t.name)}, ${esc(t.side)}, ${num(t.px)}, ${num(t.qty)}, ${num(t.ret)}, ${esc(t.reason)}, ${esc(t.sub)})`);
+      for (let i = 0; i < vals.length; i += 200) {
+        await q(`INSERT INTO live_trades (ts, code, name, side, px, qty, ret, reason, sub)
+          VALUES ${vals.slice(i, i + 200).join(',')} ON CONFLICT (ts, code, side) DO NOTHING`);
+      }
+      log(`live_trades 동기화 ${vals.length}건 (멱등)`);
+    }
+  } catch (e) { log(`live_trades 동기화 실패(비치명): ${e.message}`); }
 }
 main().catch((e) => { log(`오류: ${e.message}`); process.exit(1); });
