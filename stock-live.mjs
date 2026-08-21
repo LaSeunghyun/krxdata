@@ -22,8 +22,8 @@ import { promisify } from 'util';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { getAccounts, getHoldings, getBuyingPower, getPricesMap, getDailyCandles, createOrder, getOrder, cancelOrder } from './toss-api.js';
-import { LIVE_SLOTS, LIVE_UNIVERSE_LIMIT, CONVICTION_SIZING, FORECAST_GUARD, PARTIAL_TP, CA_GUARD, LIVE_EXCLUDE, CAPITAL_DEPLOY, SECTOR_CAP, SECTOR_OVERRIDE, applySectorOverride, RSI_ENTRY_FILTER, FLOW_EXIT, AI_TRADER } from './strategy-contract.mjs';
-import { buildLiveCandidates } from './live-parity.mjs';
+import { LIVE_SLOTS, LIVE_UNIVERSE_LIMIT, LIVE_COMBO_CAPS, CONVICTION_SIZING, FORECAST_GUARD, PARTIAL_TP, CA_GUARD, LIVE_EXCLUDE, CAPITAL_DEPLOY, SECTOR_CAP, SECTOR_OVERRIDE, applySectorOverride, RSI_ENTRY_FILTER, FLOW_EXIT, AI_TRADER } from './strategy-contract.mjs';
+import { buildLiveCandidates, applyComboCaps } from './live-parity.mjs';
 import { readBotExclude } from './bot-exclude.mjs';
 // ★ 2026-08-01: resolveStock 이 import 목록에 없어 667행 CA서킷 해제 호출이 ReferenceError 였다
 //   (try/catch 안이라 프로세스는 안 죽지만 텔레그램 "CA서킷 해제" 명령이 **한 번도 동작할 수 없었다**).
@@ -75,6 +75,29 @@ const LOG = join(__dirname, 'stock-live-log.txt');
 const kst = () => new Date(Date.now() + 9 * 3_600_000);
 const now = () => kst().toISOString().replace('T', ' ').slice(0, 19);
 const log = (m) => { const l = `[${now()}] ${m}`; console.log(l); appendFileSync(LOG, l + '\n'); };
+/**
+ * ★ 신규진입 차단 스위치 `.no-buy` (2026-08-07 사용자 요청 "오늘 자동거래 막아줘").
+ *   파일에 KST 날짜(`YYYY-MM-DD`)를 줄단위로 적으면 그 날에는 진입 블록 전체를 스킵한다.
+ *   `ALL` 한 줄이면 파일을 지울 때까지 무기한. `#` 로 시작하는 줄은 주석.
+ *
+ *   ★ 왜 매수 루프가 아니라 진입 블록 통째인가: 즉시교체(rotate)는 "매도 → 같은 사이클 매수"
+ *     한 쌍이다. 매수만 막으면 **팔고 안 사는** 반쪽 상태가 되고 rotPendingBuy 가 종일 현금을
+ *     유휴로 잡는다. 그래서 bearBlock 과 정확히 같은 지점·같은 의미로 건다.
+ *   ★ 청산은 안 막는다 — 하드손절·트레일·부분익절·수급청산·CA서킷·종가판정은 전부 이 블록
+ *     **밖**이라 그대로 동작한다. 즉 보유 포지션의 위험관리는 살아 있다.
+ *   ★ fail-open: 파일이 없거나 못 읽으면 차단하지 않는다. 스위치 고장이 매매 정지로 번지면 안 된다.
+ *   ★ 매 사이클 읽는다 — 재시작 없이 켜고 끌 수 있어야 장중에 쓸 수 있다.
+ */
+const NO_BUY_FILE = join(__dirname, '.no-buy');
+function noBuyMark(today) {
+  try {
+    if (!existsSync(NO_BUY_FILE)) return null;
+    const lines = readFileSync(NO_BUY_FILE, 'utf8').split(/\r?\n/)
+      .map(s => s.trim()).filter(s => s && !s.startsWith('#'));
+    if (lines.some(l => l.toUpperCase() === 'ALL')) return 'ALL';
+    return lines.includes(today) ? today : null;
+  } catch { return null; }
+}
 // 08:00~20:00 KST (NXT 프리·애프터 포함) · 평일만.
 // ★ 2026-08-01 요일 가드 추가: 기존엔 시각만 봐서 **주말에도 메인루프·신호스캔이 12시간 돌았다.**
 //   금요일 일봉으로 만든 rsi2 신호가 주말 내내 동일하게 살아 있어 매수 시도 → 토스 4xx 거부가 반복되고
@@ -305,6 +328,10 @@ if (argv.includes('--plan')) {
   const { regime, cands, rsiCount, hiCount } = await pickCandidate(cash);
   console.log(`\n=== 주식 실계좌 매수 플랜 (미리보기) ===`);
   console.log(`현금 ${cash.toLocaleString()}원 | 레짐 ${regime} | rsi2후보 ${rsiCount} / hi120후보 ${hiCount} | 슬롯 ${LIVE_SLOTS} | 몰빵임계 ${CONVICTION_SIZING.strongThreshold}(현금×${CONVICTION_SIZING.strongFraction})`);
+  // ★ 2026-08-04: 레짐캡 표시. --plan 은 상태파일 로드 전이라 **보유 sub 카운트를 모른다** →
+  //   상한만 알린다(실제 차단은 라이브 루프에서 보유 기준으로 집행). 캡을 아예 안 보여주면
+  //   "왜 후보가 있는데 안 사지"를 미리보기로 진단할 수 없다.
+  console.log(`레짐캡(${regime}): rsi2 ≤${LIVE_COMBO_CAPS[regime]?.rsi2 ?? '-'} · hi120 ≤${LIVE_COMBO_CAPS[regime]?.hi120 ?? '-'} — 보유 중 같은 sub 개수가 이 값이면 신규 진입 차단(미리보기엔 보유 미반영)`);
   const diversified = Math.floor(cash / LIVE_SLOTS);
   // 확신도순으로 훑어 예산에 맞는(살 수 있는) 후보만 최대 슬롯수만큼 표시 = 라이브 진입순서
   let shownN = 0; const secSeen = {};
@@ -1333,14 +1360,75 @@ while (true) {
   //   (휩소 손절분은 깊은 과매도라 conviction 최상위로 재등장 — 07-28~29 두산퓨얼셀 4회 전례)
   //   9위 이하가 승인목록에 없어서 종일 매수 0이 된다. 판단 대상 = 실제로 살 수 있는 상위 N.
   const soldT0 = state.soldToday ?? {}, errT0 = state.orderErr ?? {};
-  const eligible = (cands ?? []).filter(p =>
+  let eligible = (cands ?? []).filter(p =>
     !heldSet.has(p.code) && soldT0[p.code] !== today && (errT0[p.code]?.n ?? 0) < ORDER_ERR_MAX);
+  /**
+   * ★ 2026-08-04: 레짐별 sub 캡(LIVE_COMBO_CAPS) 집행. **라이브에 없던 규칙을 새로 넣는다.**
+   *   이건 튜닝이 아니라 **집행 충실도 복구**다 — 검증본(백테 combo-v2)이 이미 하고 있는 것을
+   *   라이브가 안 하고 있었다. `LIVE_COMBO_CAPS` 참조가 이 파일에 0건이었고 진입 게이트는
+   *   `bigCount < LIVE_SLOTS` 하나뿐이었다. 산식·근거는 live-parity.mjs applyComboCaps 헤더.
+   *
+   *   실측 위반(2026-08-03 09:05~09:14, 레짐 DOWN): rsi2 3건 연속 매수로 `분산 1/3 → 1/2 → 1/1`,
+   *   슬롯 5/5 만석. DOWN 캡은 rsi2 4 이므로 검증본이라면 1슬롯이 현금으로 남았어야 한다.
+   *
+   *   ★ 적용 지점이 eligible 인 이유: 백테의 캡 검사(backtest-swing.mjs:1463)는 rotate 분기보다
+   *     **앞**에 있다 = 캡에 걸린 후보는 로테이션을 유발하지 않는다. eligible 을 깎으면 AI 도
+   *     캡 초과 후보를 아예 못 본다("기계 로직이 다 거른 뒤 넘긴다"는 AI_TRADER 설계와도 일치).
+   *   ★ 교체 매수측(rotBuyFirst)은 여기서 걸릴 수 없다 — AI 는 캡 통과 eligible 만 보고 짝을 짓고,
+   *     매도가 선행되므로 카운트는 줄어드는 방향이다. 만에 하나 어긋나도 매수 루프는 rotPick 을
+   *     막지 않는다(막으면 "팔고 안 사기"가 되고, 그게 캡 초과보다 나쁘다).
+   *
+   *   sub 미상(수동·레거시·lateFill) 보유는 어느 캡에도 넣지 않는다. 백테엔 그런 포지션이 없고,
+   *   그 물량은 LIVE_SLOTS 게이트가 이미 제한한다.
+   */
+  {
+    const heldSubs = [...heldSet].map(c => state.meta[c]?.sub).filter(Boolean);
+    const { kept, blocked } = applyComboCaps(eligible, { regime, heldSubs, caps: LIVE_COMBO_CAPS });
+    if (blocked.length) {
+      const bySub = {};
+      for (const b of blocked) (bySub[b.sub] ??= []).push(b.code);
+      const held = {};
+      for (const s of heldSubs) held[s] = (held[s] ?? 0) + 1;
+      logGate(`레짐캡 차단 ${blocked.length}건 (레짐 ${regime}): ` + Object.entries(bySub)
+        .map(([s, cs]) => `${s} 보유 ${held[s] ?? 0}/${LIVE_COMBO_CAPS[regime]?.[s]} → ${cs.slice(0, 4).join(',')}${cs.length > 4 ? `…+${cs.length - 4}` : ''}`).join(' · '),
+        `cap|${regime}|${Object.keys(bySub).sort().join(',')}`);
+    }
+    eligible = kept;
+  }
   // 종가판정이 이미 끝난 종목은 오늘 유예가 무효다(판정 뒤에 심으면 영구 미소비 플래그가 된다).
-  const aiHoldings = items.map(i => {
+  /**
+   * ★ 2026-08-03 수정: hold_days 를 **달력일 → 거래일**로 바꾼다.
+   *
+   * 기존은 `(today - boughtAt)/86400000` 달력일이었고 주석에도 "근사"라고 적혀 있었다. 그런데 AI 가
+   * 이 숫자로 **만기까지 남은 일수를 직접 계산**한다. 실측(08-03, KT 07-31 매수):
+   *   달력일 3 → AI 가 "만기 2일 남아"라고 판단. 실제 거래일수는 1이라 남은 만기는 4다.
+   * 금요일 매수분은 월요일에 항상 3으로 부풀고, 연휴가 끼면 더 벌어진다. 만기 임박은 로테이션·홀드
+   * 판단을 직접 바꾸는 입력이라 이 오차는 그대로 의사결정 오류가 된다.
+   *
+   * 그래서 종가판정(judgeExitsAtClose)이 쓰는 것과 **글자 그대로 같은 식**을 쓴다:
+   *   `cd.filter(b => barDay(b.timestamp) > bDay).length`
+   * 두 경로가 다른 식을 쓰면 언제든 다시 벌어진다 — 일치가 목적이다.
+   *
+   * 조회 실패 시 hold_days = null 로 둔다. 달력일로 폴백하면 버그가 조용히 되살아난다.
+   * null 이면 ai-trader 의 rotate 게이트가 `typeof !== 'number'` 로 거부 = 안전한 방향(교체 안 함).
+   *
+   * 비용: 보유 종목(최대 5)만 70봉 조회. pickCandidate 가 420종목×122봉을 도는 것에 비하면 무시할 수준.
+   * 70봉이면 rsi2 만기 5, hi120 만기 60 둘 다 덮는다.
+   */
+  const aiHoldings = await Promise.all(items.map(async (i) => {
     const mm = state.meta[i.symbol];
     const e = Number(i.averagePurchasePrice) || 0, p = Number(i.lastPrice) || 0;
     const r = e > 0 && p > 0 ? (p / e - 1) * 100 : null;
-    const bd = String(mm?.boughtAt ?? '').slice(0, 10);
+    const bDay = String(mm?.boughtAt ?? '').slice(0, 10).replace(/-/g, '');
+    let holdDays = null;
+    if (bDay) {
+      try {
+        const cd = await getDailyCandles(i.symbol, 70);
+        if (Array.isArray(cd) && cd.length) holdDays = cd.filter(b => barDay(b.timestamp) > bDay).length;
+      } catch { /* null 유지 — 폴백하지 않는다 */ }
+      if (holdDays == null) logGate(`보유일수 계산 실패 ${i.name}(${i.symbol}) — hold_days null 로 넘김(교체 보류)`, `ai|holddays|${i.symbol}`);
+    }
+    const maxHold = mm?.sub === 'hi120' ? MAX_HOLD_H : MAX_HOLD_R;
     return { code: i.symbol, name: i.name, sub: mm?.sub ?? null, sector: SECTOR[i.symbol] ?? null,
              ret_pct: r == null ? null : Number(r.toFixed(1)),
              // 손절선 임박 = 손절유예 판단 대상. hi120 은 하드손절이 없으므로 대상 아님(ai-trader 가 거른다).
@@ -1348,9 +1436,10 @@ while (true) {
              exit_reserved: mm?.exitAt ?? null, stop_deferred: mm?.stopDeferDay ?? null,
              defer_used: Number(mm?.deferCount ?? 0), judged_today: mm?.judgedDay === today,
              ca_hold: !!mm?.caHold,
-             // 즉시교체 최소보유일 판정용(달력일 근사 — 정확한 거래일수는 종가판정이 계산한다)
-             hold_days: bd ? Math.max(0, Math.round((new Date(today) - new Date(bd)) / 86_400_000)) : null };
-  });
+             hold_days: holdDays,                                    // 거래일수 (진입일=0)
+             // AI 가 만기 산수를 직접 하지 않게 남은 거래일을 명시로 준다 (위 실패 사례의 직접 원인 제거)
+             maturity_left: holdDays == null ? null : Math.max(0, maxHold - holdDays) };
+  }));
   let ai = { mode: 'off' };
   if (eligible.length > 0 || items.length > 0) {
     ai = consultTrader({
@@ -1409,15 +1498,29 @@ while (true) {
   }
 
   // ② 진입 — 자본기반 게이트. 매수·즉시교체만 이 블록 안에서 한다.
+  // ★ `.no-buy` 스위치(파일 상단 noBuyMark 주석 참조)는 bearBlock 과 같은 지점에서 이 블록을 통째로 막는다.
+  //   단 **이미 교체 매도가 나간 뒤**(rotPendingBuy)면 그 짝의 매수는 통과시킨다 — 스위치를 켠 순간
+  //   반쪽만 끝난 교체가 걸려 있으면 팔고 안 사는 상태로 굳어 현금이 종일 유휴가 된다.
+  const noBuy = noBuyMark(today);
+  const noBuyBlock = !!noBuy && state.rotPendingBuy?.day !== today;
+  if (noBuyBlock) logGate(`🛑 신규진입 차단(.no-buy: ${noBuy}) — 매수·즉시교체 스킵. 청산(하드손절·트레일·부분익절·수급청산·CA서킷)은 정상 동작`, `nobuy|${noBuy}`);
+  // ★ scanCash: 만석이라 현금이 없어도 **교체 여지가 있으면 슬롯예산 기준으로 스캔**한다.
+  //   pickCandidate 가 `current_price < cashCeil` 로 유니버스를 자르므로, 현금 0 을 넘기면
+  //   후보가 0건이 되고 즉시교체가 자기 존재 이유인 상황에서 발동조차 못 한다(리뷰 확정 critical).
+  // ★ 2026-08-07: 이 갱신을 진입 블록 **밖**으로 뺐다. 안에 두면 `.no-buy` 로 블록이 막힌 날
+  //   신호 스캔이 통째로 멈춰 signalCache 가 stale → AI 가 기계 폴백으로 떨어지고
+  //   **AI 청산권고·손절유예까지 같이 죽는다.** 매수를 막는 것과 청산 판단을 죽이는 것은 다른 일이다
+  //   (AI 블록을 진입 블록 밖으로 뺀 2026-08-01 수정과 같은 유형의 결함).
+  //   noBuyBlock 일 때 현금이 아니라 슬롯예산을 쓰는 이유: 차단 중에도 AI 가 평소와 같은 후보 시야로
+  //   보유분을 판단해야 한다. 현금 상한을 그대로 넘기면 저가 종목만 남아 판단 입력이 왜곡된다.
   if ((canDeployRaw || rotLeft > 0) && !bearBlock) {
+    scanCash = (rotLeft > 0 || noBuyBlock) ? Math.max(cash, perSlot) : cash;
+    scanHeld = heldSet;
+  }
+  if ((canDeployRaw || rotLeft > 0) && !bearBlock && !noBuyBlock) {
     let canDeploy = canDeployRaw;
     let remainingSlots = Math.max(1, LIVE_SLOTS - bigCount);
     let diversified = Math.min(cash, perSlot);   // 한 슬롯 예산(초과 현금은 다음 폴에서 추가 편입)
-    // ★ scanCash: 만석이라 현금이 없어도 **교체 여지가 있으면 슬롯예산 기준으로 스캔**한다.
-    //   pickCandidate 가 `current_price < cashCeil` 로 유니버스를 자르므로, 현금 0 을 넘기면
-    //   후보가 0건이 되고 즉시교체가 자기 존재 이유인 상황에서 발동조차 못 한다(리뷰 확정 critical).
-    scanCash = rotLeft > 0 ? Math.max(cash, perSlot) : cash;
-    scanHeld = heldSet;
     // 진입대기 가시성(2026-07-27): 후보 0건이면 아무 로그도 안 남아 "왜 안 사는지"를 매번 수동확인해야 했음.
     const blockedToday = Object.values(state.soldToday ?? {}).filter(d => d === today).length;
     logGate(`${canDeploy ? '진입대기' : '교체검토(만석)'}: 레짐 ${regime ?? '스캔중'} · 후보 ${cands?.length ?? 0}건 · 현금 ${Math.round(cash / 10000).toLocaleString()}만 · 슬롯 ${bigCount}/${LIVE_SLOTS} · 슬롯예산 ${Math.round(perSlot / 10000).toLocaleString()}만${rotLeft ? ` · 교체가능 ${rotLeft}회` : ''}${blockedToday ? ` · 당일재진입금지 ${blockedToday}종목` : ''}`,

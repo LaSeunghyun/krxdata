@@ -12,6 +12,50 @@
  */
 import { getBuyingPower, getHoldings, getPricesMap, createOrder } from './toss-api.js';
 import { addBotExclude, removeBotExclude } from './bot-exclude.mjs';
+import { appendFileSync } from 'fs';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * 수동 주문 기록 (★ 2026-08-04 신설).
+ *
+ * ═══ 왜 필요했나 ═══
+ * 이 파일이 `recordTrade` 를 전혀 호출하지 않아 **텔레그램 수동 매매가 성과 측정에서 사라졌다.**
+ * 08-04 실측: stock-live-journal.json 에 매수 33건 / 매도 24건인데, 매수만 있고 매도 기록이 없는
+ * 종목이 8개였다(한미반도체·LG에너지솔루션·미래에셋증권·BNK금융지주·카카오·한국항공우주·
+ * 한국타이어·삼성전기). 그래서 라이브 승률 33% 는 **봇 자동매도 경로만의 값**이고 편향돼 있다.
+ * 측정이 안 되면 어떤 전략 개선도 라이브에서 효과를 확인할 수 없다.
+ *
+ * ═══ 왜 별 파일(append-only JSONL)인가 ═══
+ * stock-live.mjs 의 recordTrade 는 저널 **전체를 읽어 배열에 push 하고 다시 쓴다**(read-modify-write).
+ * 그 프로세스는 상시 가동이고 이 파일은 telegram-agent 프로세스에서 돈다 → 같은 JSON 을 양쪽에서
+ * 쓰면 갱신 유실이 난다(tmp→rename 은 쓰기만 원자적이고 read-modify-write 구간은 보호하지 못한다).
+ * 한 줄 append 는 그 구간이 없어 경합이 원리상 생기지 않는다.
+ *
+ * ═══ 체결가를 적지 않는 이유 ═══
+ * executeBuy/executeSell 은 지정가 주문만 넣고 **체결을 기다리지 않는다**(settleOrder 폴링 없음).
+ * 그래서 이 시점에 체결가를 모른다. 지정가를 체결가로 적으면 08-03 에 고친 결함
+ * (매도 21건이 전부 지정가로 기록돼 수익률이 과소)을 새로 만드는 것이다.
+ * → `kind:'order'` 로 명시하고 `orderId` 를 남겨 사후 대조가 가능하게만 한다.
+ *
+ * 기록 실패가 주문을 막으면 안 된다 — 전부 삼키고 주문 결과는 그대로 반환한다.
+ */
+export const MANUAL_LOG = join(__dirname, 'manual-trades.jsonl');
+/**
+ * export 인 이유: 실주문 없이는 이 경로가 돌지 않아 **검증할 방법이 없다.**
+ * 08-04 에 forecast-llm 에서 `node --check` 통과 + 런타임 ReferenceError 를 겪었으므로
+ * "구문 OK"를 동작 확인으로 쓰지 않는다. 단위 테스트로 실제 파일 쓰기를 확인한다
+ * (tests/tg-order-record.test.mjs). 경로 인자는 테스트 격리용이며 운영 호출은 기본값을 쓴다.
+ */
+export function recordManual(rec, file = MANUAL_LOG) {
+  try {
+    appendFileSync(file, JSON.stringify({ ...rec, src: 'telegram', kind: 'order' }) + '\n');
+    return true;
+  } catch { return false; /* 기록 실패가 매매를 막으면 안 된다 */ }
+}
+const kstNow = () => new Date(Date.now() + 9 * 3_600_000).toISOString().replace('T', ' ').slice(0, 19);
 
 // KR 틱/지정가 — stock-live.mjs와 동일 구현(검증본 일치)
 function tick(p) { if (p < 2000) return 1; if (p < 5000) return 5; if (p < 20000) return 10; if (p < 50000) return 50; if (p < 200000) return 100; if (p < 500000) return 500; return 1000; }
@@ -81,6 +125,7 @@ export async function executeBuy({ name, amountKrw }, { dbQuery, seq, dryRun = t
   const cash = Number(bp?.cashBuyingPower ?? 0);
   if (cost > cash) return { ok: false, msg: `매수가능현금 부족 (필요 ${cost.toLocaleString()} > 보유 ${cash.toLocaleString()})` };
   const o = await createOrder(seq, { symbol: r.code, side: 'BUY', orderType: 'LIMIT', price: String(lpx), quantity: String(qty) });
+  recordManual({ ts: kstNow(), code: r.code, name: r.name, side: 'BUY', limitPx: lpx, qty, cost, orderId: o?.orderId ?? o?.id ?? null });
   addBotExclude(r.code); // 수동 매수 → 자동봇이 안 건드리게 제외 등록(내가 관리)
   return { ok: true, plan, orderId: o?.orderId ?? o?.id, msg: `✅ 매수주문 ${r.name}(${r.code}) 지정가 ${lpx.toLocaleString()} × ${qty}주 (${cost.toLocaleString()}원)\n(자동봇 제외 등록 — 내가 관리)` };
 }
@@ -103,6 +148,15 @@ export async function executeSell({ name, qty, targetPrice }, { dbQuery, seq, dr
   if (targetPrice) lpx = roundTick(targetPrice);
   else { const live = await livePrice(r.code, quote); const px = live || Number(pos.lastPrice) || 0; if (!px) return { ok: false, msg: `${r.name} 현재가 조회 실패` }; lpx = limitSellPx(px); }
   const o = await createOrder(seq, { symbol: r.code, side: 'SELL', orderType: 'LIMIT', price: String(lpx), quantity: String(sellQty) });
+  // 평단은 브로커 값을 쓴다(봇 meta 가 아니라 사실). 이게 있어야 사후에 실현손익을 계산할 수 있다.
+  const entry = Number(pos.averagePurchasePrice) || null;
+  recordManual({
+    ts: kstNow(), code: r.code, name: r.name, side: 'SELL', limitPx: lpx, qty: sellQty,
+    entry, holdQty, full: sellQty >= holdQty,
+    // 지정가 기준 예상 수익률 — **체결 기준이 아니다.** 사후 대조 전까지는 근사로만 쓴다.
+    retAtLimit: entry ? Number(((lpx / entry - 1) * 100).toFixed(1)) : null,
+    targetOrder: !!targetPrice, orderId: o?.orderId ?? o?.id ?? null,
+  });
   // 격리해제는 자동으로 안 함 — 미체결 지정가 상태서 해제하면 자동봇이 재매수 위험(M1). 체결 확인 후 '격리해제 종목명'으로 수동.
   return { ok: true, orderId: o?.orderId ?? o?.id, msg: `✅ 매도주문 ${r.name}(${r.code}) 지정가 ${lpx.toLocaleString()} × ${sellQty}주${targetPrice ? '(목표가)' : ''}${sellQty >= holdQty ? `\n(전량 체결 후: 격리해제 ${r.name})` : ''}` };
 }
