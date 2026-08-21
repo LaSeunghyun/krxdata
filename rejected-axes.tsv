@@ -1,0 +1,24 @@
+# autoresearch 기각축 대조 테이블. 출처: project_krxdata_validation_method.md §5·§10 + 2026-08-04 측정.
+# keywords 는 | 구분이고 AND 조건이다. 제안 설명에 키워드가 전부 들어가면 재제안으로 판정한다.
+# 새 기각이 확정되면 사람이 여기 추가한다. not-wired 는 절대 추가하지 않는다.
+axis_id	keywords	note
+rotation	로테이션	Calmar 1.73→0.37 · 시드 0승 30패
+sectorcap	섹터캡	cap2 Δ-0.01(효과0) · cap1 Δ-0.51(악화)
+down_rsi_block	down|rsi2|차단	Δ-0.35 악화. 1승9패는 노이즈였다
+maexitmin	ma익절|최소수익	maexitmin 1 Δ-0.54 악화
+roe_pbr_residual	roe|pbr|잔차	십분위 스프레드 -0.121% < 귀무바닥 0.402%
+cashflow_factors	현금흐름	cfy·fcfy·cfconv·accrual 연도부호 불일치
+ma_distance_rank	ma거리|정렬	asc Δ-0.75(2승58패) · desc Δ-1.35
+atr_exclude	atr|배제	p50 -0.06 / p90 -0.25 / p95 -0.39 꼬리악화
+lowvol	저변동성	프리미엄이 전부 숏 쪽. 롱온리로 수확 불가
+hi120_regime	hi120|레짐	IS/OOS 로 기각. 횡보장 MDD 2.05배
+rsi_tp	rsi2|익절목표	승률·손익비 동반 악화. 중간(MA3)이 봉우리
+pit_reweight	pit|재가중	value IC 0.049 = 세 겹 아티팩트
+intraday_flow	장중|수급	하루 5회 고정 스냅샷. 선행 예측력 +0.033
+halfyear_screen	반기|스크린	PM 단독보다 나빠진다. 2026-08-14 기각
+sector_value	싼섹터|우량	무작위보다 나쁨. 방향 역전
+volsize	변동성|사이징	승자 Calmar 1.80→1.13
+relstop	상대손절	MC서 CAGR↓·MDD↑. mean-reversion 과 충돌
+regimeexp	레짐|스로틀	풀투자>스로틀. 레짐 감지 지연
+scalp_selftime	자기시계열|스캘핑	5분 엣지 +0.0014%p = 비용의 1/294
+residmax	잔차|상한	단조 악화. 극단 잔차 92건이 평균적으로 이익
