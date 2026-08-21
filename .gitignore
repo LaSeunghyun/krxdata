@@ -8,6 +8,8 @@ dart-data.db-shm
 dart-data.db-wal
 scored-*.json
 profitable-stocks.json
+screen-halfyear.json
+.halfyear-watch-done-*
 *.log
 .DS_Store
 .vscode/
@@ -96,3 +98,20 @@ verify-*.jsonl
 .stock-live.pid
 stock-live-state.json.*
 stock-live-journal.json.*
+
+# 2026-08-07: dbQuery 디스크 캐시(MC 스로틀 회피) · 랭크 계측 덤프
+.dbcache/
+dump-rank-*.json
+
+# 2026-08-08: 캔들 사본 211MB — candles-daily.jsonl 만 무시돼 있어 사본이 새어나간다.
+#   kistail = 20260727~0807 을 KIS 로 덧댄 혼합본(감사 전용, 소스 병기 필수)
+#   *.bak-audit = 오염 복원용 원본 백업
+candles-daily-kistail.jsonl
+*.bak-audit
+
+# 2026-08-21 autoresearch 실행 산출물 — 브랜치·세션마다 달라 추적하지 않는다.
+#   base.json/probe.json 은 실험 브랜치 국지 상태, log.tsv 는 세션 기록(원본 program.md 도 미추적)
+autoresearch-base.json
+autoresearch-probe.json
+autoresearch-log.tsv
+._ar_gate_*.json

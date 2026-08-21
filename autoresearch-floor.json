@@ -1,0 +1,7 @@
+{
+  "_note": "노이즈 바닥. 키는 <from>_<to>. calmar30 = 30시드 ΔCalmar 판정 하한. null = 미측정.",
+  "_how": "perturb-candles.mjs 로 교란본을 만들고 mc-*.mjs 의 grp:'noise' 대조군으로 잰다. 방법론 §1 참조.",
+  "_warning": "구간·시드수마다 값이 다르다. 다른 구간의 값을 재사용하면 안 된다.",
+  "_effect": "null 인 동안 --verify 는 어떤 keep 도 통과시키지 않는다(floor-unpinned-but-keep-exists).",
+  "20230102_20260724": { "calmar30": null }
+}
