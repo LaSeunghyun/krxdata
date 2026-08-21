@@ -3,5 +3,29 @@
   "_how": "perturb-candles.mjs 로 교란본을 만들고 mc-*.mjs 의 grp:'noise' 대조군으로 잰다. 방법론 §1 참조.",
   "_warning": "구간·시드수마다 값이 다르다. 다른 구간의 값을 재사용하면 안 된다.",
   "_effect": "null 인 동안 --verify 는 어떤 keep 도 통과시키지 않는다(floor-unpinned-but-keep-exists).",
-  "20230102_20260724": { "calmar30": null }
+  "20230102_20260724": {
+    "calmar30": 0.502,
+    "measuredAt": "2026-08-21",
+    "seeds": 30,
+    "perts": 9,
+    "origCalmar": 1.931,
+    "armCalmars": {
+      "orig": 1.931,
+      "pert1": 1.911,
+      "pert2": 1.773,
+      "pert3": 1.851,
+      "pert4": 2.029,
+      "pert5": 2.106,
+      "pert6": 2.124,
+      "pert7": 2.275,
+      "pert8": 1.906,
+      "pert9": 1.947
+    },
+    "config": "--strategies combo-v2 --live-parity --skipneutralrsi --slots 5 --trail 6 --tp1r 1 --tp2r 2 --liveuni 420 --rsivol 0 --gapaxis --scenpolicy gap-pol.json",
+    "candles": "candles-daily-toss-clean.jsonl",
+    "_protocol": "10 arm(원본+교란9) Calmar 의 max-min. 재현: node mc-noise-floor.mjs --seeds 30 --perts 9 --conc 2",
+    "_whyPooled": "교란 3벌 프로토콜(과거 방식)은 추정량이 불안정하다 — 독립 복제 3회가 0.158(교란1-3) / 0.193(4-6) / 0.369(7-9) 로 2.3배 갈렸다. max-min 은 표본수에 따라 커지는 통계량이라 arm 을 늘린 쪽이 실제 범위에 가깝고, 문턱이 낮으면 노이즈를 신호로 채택하는 비싼 오류가 나므로(3승 46패 영역) 보수적으로 풀링값을 쓴다. SD 는 0.149 로 range 는 약 3.4σ.",
+    "_corroboration": "방법론 §1-B 가 같은 구간(~20260724)에 기록한 0.486 과 근접 — 설정이 다른데도(당시 Calmar 1.02 vs 현재 1.931) 비슷한 값이 나왔다.",
+    "_configNote": "설정은 라이브 계약(strategy-contract.mjs slots5/uni420/trail6/stop15) + 갭정책. validation-registry.mjs 의 LIVE_PARITY_BASE(slots3/rsiuni40/to 20260611)는 2026-07-22 기준으로 낡아 이 바닥과 짝이 아니다."
+  }
 }
