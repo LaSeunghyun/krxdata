@@ -15,6 +15,8 @@ import { dirname, join } from 'path';
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
 import { LIVE_PARITY_BASE, HYPOTHESES, DATA_HYPOTHESES, BARBELL } from './validation-registry.mjs';
 import { LIVE_EXCLUDE } from './strategy-contract.mjs'; // 봇 미보유(이관/수동)종목 — live_track 승률서 제외(예: 한화솔루션 009830)
+// 판정 유틸은 2026-08-21 validation-lib.mjs 로 추출 — autoresearch 러너와 공유한다(이 파일은 IIFE 라 import 불가였다)
+import { median, parseComboRow, mcMedian } from './validation-lib.mjs';
 // summarizeCurve 는 바벨(full 모드)에서만 필요 → 동적 import (data-only VM 크론은 백테스트 deps 불필요)
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -52,40 +54,16 @@ async function tgNotify(text) {
     if (!/"ok":true/.test(stdout)) log(`텔레그램 전송 실패: ${String(stdout).slice(0, 120)}`);
   } catch (e) { log(`텔레그램 전송 오류: ${String(e.message).slice(0, 80)}`); }
 }
-const median = (a) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
-
-// override(변형) prepend → argOf(첫값 우선) 규칙상 override가 base를 이긴다. __DROP_LIVE_PARITY__ 는 --live-parity 제거(이상화).
-function mergeArgs(override) {
-  if (override.includes('__DROP_LIVE_PARITY__')) return LIVE_PARITY_BASE.filter(a => a !== '--live-parity');
-  return [...override, ...LIVE_PARITY_BASE];
-}
-function parseComboRow(out) {
-  const line = out.split('\n').find(l => /^combo-v2\s/.test(l));
-  if (!line) return null;
-  const pcts = [...line.matchAll(/([0-9.]+)%/g)].map(m => Number(m[1]));  // [win, cagr, mdd, month]
-  const fin = [...line.matchAll(/([0-9,]+)원/g)].map(m => Number(m[1].replace(/,/g, '')));
-  return { cagr: pcts[1] ?? null, mdd: pcts[2] ?? null, final: fin[fin.length - 1] ?? null };
-}
 function runBacktest(args) {
   const r = spawnSync('node', ['backtest-swing.mjs', ...args], { cwd: __dirname, encoding: 'utf8', timeout: 120000, maxBuffer: 64 * 1024 * 1024 });
   if (r.status !== 0 && !r.stdout) return null;
   return parseComboRow((r.stdout || '') + (r.stderr || ''));
 }
-// 한 변형의 MC 중앙 최종자본
-function mcMedianFinal(overrideArgs) {
-  const base = mergeArgs(overrideArgs);
-  const finals = [], cagrs = [], mdds = [];
-  for (let s = 1; s <= SEEDS; s++) {
-    const row = runBacktest([...base, '--seed', String(s), '--subsample', '0.8']);
-    if (row?.final != null) { finals.push(row.final); cagrs.push(row.cagr); mdds.push(row.mdd); }
-  }
-  return { medianFinal: median(finals), medianCagr: median(cagrs), medianMdd: median(mdds), n: finals.length };
-}
 
 async function evalBacktestHyp(h) {
   const results = {};
   for (const [vName, vArgs] of Object.entries(h.variants)) {
-    results[vName] = mcMedianFinal(vArgs);
+    results[vName] = mcMedian(vArgs, { base: LIVE_PARITY_BASE, seeds: SEEDS, runBacktest });
     log(`  ${h.id}/${vName}: 중앙최종 ${results[vName].medianFinal?.toLocaleString() ?? 'n/a'} (CAGR ${results[vName].medianCagr?.toFixed(1)}%, n=${results[vName].n})`);
   }
   // 모니터 가설(liveparity_gap): 승자 안 뽑고 이상화/live-parity 갭 비율만 INFO 기록(생존편향 크기 추적)

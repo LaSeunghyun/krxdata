@@ -260,7 +260,9 @@ cp validation-latest.json validation-latest.json.bak
 node validate-hypotheses.mjs --hyp slots --seeds 1 --no-ledger --no-telegram
 mv validation-latest.json.bak validation-latest.json
 ```
-Expected: `slots/s2`·`s3`·`s5` 각각의 중앙최종 로그가 나오고 `[HOLD] slots: 현재승자=s3` 로 끝난다(약 30초). **`ReferenceError` 가 나오면 안 된다.**
+Expected: `slots/s2`·`s3`·`s5` 각각의 중앙최종 로그 3줄이 나오고 `[HOLD]` 또는 `[FLIP]` 으로 끝난다(약 15초). **`ReferenceError` 가 나오면 안 된다** — 이것이 이 단계에서 보려는 유일한 것이다.
+
+> HOLD/FLIP 어느 쪽이 나와도 회귀가 아니다. `--seeds 1` 은 노이즈 그 자체이고 승자는 시드마다 바뀐다(2026-08-21 실측: s2 가 이겨 FLIP). 운영 크론은 기본 6시드다. 이 단계는 **추출된 경로가 터지지 않는지만** 본다 — 판정값을 읽는 단계가 아니다.
 
 > `--no-ledger` 는 `validation_ledger` INSERT 와 CREATE TABLE 을 건너뛴다(203행 가드). 스냅샷 `validation-latest.json` 은 가드가 없어 덮어써지므로 위처럼 백업·복원한다. `--hyp slots` 를 주면 barbell(188행 `ONLY === 'barbell'` 불일치)과 데이터가설(197행 `!ONLY`)이 전부 건너뛰어진다.
 
