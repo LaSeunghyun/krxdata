@@ -1210,7 +1210,7 @@ Expected: 두 번째 `git status` 가 **무출력**(clean). 브랜치 `autoresea
 Run: `node autoresearch-run.mjs --init`
 Expected: 5개 전략(`combo-v2`·`combo`·`rsi2`·`hi120`·`gapfollow`)의 `trades/final/maxDD` 가 출력되고 `autoresearch-base.json` 생성.
 
-소요시간은 **수십 초~수 분**이다(`--to 20260724` 로 구간이 늘고 5전략을 동시에 돌린다). `--gate` 의 timeout 300초 안에 들어온다.
+소요시간은 **약 6초**다(2026-08-21 실측 5.6초 — `.dbcache` 워밍된 상태, 5전략 동시). `--gate` 의 timeout 300초에 여유가 크다. 캐시가 비어 있으면 Supabase 쿼리 3개 때문에 더 걸린다.
 
 > 실패하면 `.dbcache` 가 비어 Supabase 쿼리 3개가 막힌 것일 수 있다. 방법론 §9 참조.
 > `main 에서 --init 하지 않는다` 가 나오면 Step 1 의 브랜치 생성이 안 된 것이다.
@@ -1266,6 +1266,20 @@ git checkout -- backtest-swing.mjs
 node autoresearch-run.mjs --verify
 ```
 Expected: `rounds=0 keeps=0 floorPinned=false` + `PASS — 4개 기준 전부 통과. 발견 0건이어도 정상이다.`
+
+- [ ] **Step 8-B: 검증기가 실제로 FAIL 을 낼 수 있는지 확인한다**
+
+프로브와 같은 논리다 — **한 번도 실패하지 않는 검증기는 죽은 검증기와 구분할 수 없다.** 로그에 위반 행을 넣어 발화를 확인하고 되돌린다.
+
+```bash
+printf 'aaa1111\tnew-axis\t0.62\t22000000\ttrue\ttrue\t30\tkeep\t손절 폭을 넓힌다\n' >> autoresearch-log.tsv
+node autoresearch-run.mjs --verify   # 기대: FAIL floor-unpinned-but-keep-exists
+printf 'bbb2222\trotation\t0.9\t23000000\ttrue\ttrue\t30\tdiscard\t로테이션 다시 시도\n' >> autoresearch-log.tsv
+node autoresearch-run.mjs --verify   # 기대: FAIL + rejected-axis-reproposed: bbb2222 → rotation
+printf 'commit\taxis_id\tdelta_calmar\tmedian_final\tnoise_floor_pass\tis_oos_agree\tseeds_n\tstatus\tdescription\n' > autoresearch-log.tsv
+node autoresearch-run.mjs --verify   # 기대: 다시 PASS
+```
+Expected: 위 순서대로 FAIL → FAIL(2건) → PASS. 마지막이 PASS 가 아니면 로그 헤더 복원이 안 된 것이다.
 
 - [ ] **Step 9: 스모크 브랜치를 정리하고 stash 를 복원한다**
 
