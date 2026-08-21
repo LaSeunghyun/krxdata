@@ -34,6 +34,12 @@ const argv = process.argv.slice(2);
 const argOf = (f, d) => { const i = argv.indexOf(f); return i >= 0 ? argv[i + 1] : d; };
 const NSEED = Number(argOf('--seeds', 60));
 const CONC = Number(argOf('--conc', 1));
+// ★ 2026-08-03: 부모 프로세스가 누적 ~300 자녀 spawn 이후 자원 고갈로 전 시드 실패하는 현상이 있다
+//   (명령 단독 실행은 exit 0 · 디스크 194GB 여유 · 파일 무결 확인). arm 을 나눠 돌리기 위한 옵션.
+//   --floor N : 노이즈 바닥을 직전 동일구성 측정본에서 가져온다(바닥 arm 스킵).
+//     정당성 — 이 하네스와 mc-stoptiming 의 base·n1·n2·n3 는 LIVE·FLOW·COMMON·SEEDS·교란파일이
+//     전부 동일하고 base Calmar 도 양쪽 1.95 로 일치한다. 즉 같은 측정을 두 번 할 이유가 없다.
+const FLOOR_ARG = argOf('--floor', null);
 const ALL_SEEDS = Array.from({ length: 90 }, (_, i) => 101 + i * 37);
 const SEEDS = ALL_SEEDS.slice(0, NSEED);
 
@@ -45,7 +51,7 @@ const FLOW = '--flowexit 0 --flowexitdays 10';
 // UP,NEUTRAL,DOWN 투자비율. 현행은 전부 1.0(풀투자).
 // DOWN 을 조이는 강도를 3단으로 본다 — 사용자 질문의 취지가 "급락장에 노출을 줄이자"이므로
 // UP 은 1.0 으로 고정하고 DOWN·NEUTRAL 만 낮춘다(UP 을 조이면 상승장 수익을 버린다).
-const CONFIGS = [
+const CONFIGS_ALL = [
   { key: 'base', name: '현행 (풀투자 1.0/1.0/1.0)', file: T, extra: FLOW, grp: 'rule' },
   { key: 'd07', name: 'DOWN 0.7 (1.0/1.0/0.7)', file: T, extra: `${FLOW} --regimeexp 1.0,1.0,0.7`, grp: 'rule' },
   { key: 'd05', name: 'DOWN 0.5 (1.0/1.0/0.5)', file: T, extra: `${FLOW} --regimeexp 1.0,1.0,0.5`, grp: 'rule' },
@@ -55,16 +61,40 @@ const CONFIGS = [
   { key: 'n3', name: '[바닥] 현행 · 교란 #3', file: 'candles-pert-3.jsonl', extra: FLOW, grp: 'noise' },
 ];
 
+const CONFIGS = FLOOR_ARG ? CONFIGS_ALL.filter(c => c.grp === 'rule') : CONFIGS_ALL;
+
 const RE = /combo-v2\s+(\d+)\s+(\d+)%\s+([\d.]+)\s+([\d.-]+)%\s+([\d.]+)%/;
 
-async function runOne(cfg, seed) {
-  const cmd = `node --max-old-space-size=6144 backtest-swing.mjs ${LIVE} --candles ${cfg.file} ${cfg.extra} ${COMMON} --subsample 0.8 --seed ${seed}`;
+/**
+ * ★ 2026-08-03: **일시 실패는 재시도한다.** 08-02~03 에 시드 탈락이 세 번 났고(conc 3·2·1),
+ *   conc 1 에서도 났으므로 동시성 문제가 아니다. 상승 실패한 명령을 그대로 재현하면
+ *   exit 0 으로 정상 종료한다 = 결정적 오류가 아니라 환경성 일시 실패다(모리 스파이크 추정).
+ *   시드 하나가 빠지면 가드가 판정을 거부하고 전재(300런, 20분+)를 다시 돌려야 했다 —
+ *   재시도 1회가 그 버용을 없얰준다. 실패 사유는 자를지지 않게 200자까지 남긴다.
+ */
+/** exec 실패의 **실제 사유**만 뽑는다. e.message 는 "Command failed: <명령 250자>" 로 시작해
+ *  앞부분을 자르면 명령어만 보이고 오류가 안 보인다(08-03 진단이 그래서 막혔다). */
+const errBrief = (e) => {
+  const se = String(e?.stderr ?? '').trim();
+  if (se) return se.slice(0, 200);
+  const m = String(e?.message ?? '').split(String.fromCharCode(10)).slice(1).join(' ').trim();
+  if (m) return m.slice(0, 200);
+  return `code=${e?.code ?? '?'} signal=${e?.signal ?? '?'}`;
+};
+async function runOne(cfg, seed, attempt = 0) {
+  const cmd = `node --max-old-space-size=2048 backtest-swing.mjs ${LIVE} --candles ${cfg.file} ${cfg.extra} ${COMMON} --subsample 0.8 --seed ${seed}`;
   try {
-    const { stdout } = await pexec(cmd, { cwd: 'C:\\claudeT\\files', encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    const { stdout } = await pexec(cmd, { cwd: 'C:\\claudeT\\files', encoding: 'utf8', maxBuffer: 128 * 1024 * 1024 });
     const m = stdout.match(RE);
-    if (!m) return null;
+    if (!m) {
+      if (attempt < 1) { console.error(`  ~ ${cfg.key} seed${seed}: 파싱 실패 → 재시도`); return runOne(cfg, seed, attempt + 1); }
+      console.error(`  ! ${cfg.key} seed${seed}: 파싱 실패(재시도 후)`); return null;
+    }
     return { n: +m[1], win: +m[2], pf: +m[3], cagr: +m[4], mdd: +m[5] };
-  } catch (e) { console.error(`  ! ${cfg.key} seed${seed}: ${String(e.message).slice(0, 60)}`); return null; }
+  } catch (e) {
+    if (attempt < 1) { console.error(`  ~ ${cfg.key} seed${seed} 재시도: ${errBrief(e)}`); return runOne(cfg, seed, attempt + 1); }
+    console.error(`  ! ${cfg.key} seed${seed} 실패(재시도 후): ${errBrief(e)}`); return null;
+  }
 }
 async function pool(tasks, n) {
   const out = new Array(tasks.length); let i = 0;
@@ -96,8 +126,9 @@ if (short.length) {
 }
 
 const base = R.find(r => r.key === 'base');
-const floorSet = [base.calmar, ...R.filter(r => r.grp === 'noise').map(r => r.calmar)];
-const NOISE = Math.max(...floorSet) - Math.min(...floorSet);
+const noiseArms = R.filter(r => r.grp === 'noise');
+const floorSet = FLOOR_ARG ? null : [base.calmar, ...noiseArms.map(r => r.calmar)];
+const NOISE = FLOOR_ARG ? Number(FLOOR_ARG) : (Math.max(...floorSet) - Math.min(...floorSet));
 
 console.log('\n=== 결과 ===');
 console.log('구성                              체결   CAGR(평균/중앙)   MDD     Calmar   Δ vs 현행');
@@ -117,7 +148,11 @@ for (const r of R) {
 }
 
 console.log(`\n=== 노이즈 바닥 ===`);
-console.log(`현행 + 교란 3벌 Calmar: ${floorSet.map(v => v.toFixed(2)).join(' / ')}`);
+// ★ --floor 로 바닥값을 주입하면 floorSet 은 null 이다(130행). 여기서 무조건 .map 하면
+//   **모든 arm 결과를 다 찍은 뒤 판정 직전에** TypeError 로 죽어 정작 판정을 잃는다(2026-08-03 실측).
+console.log(floorSet
+  ? `현행 + 교란 3벌 Calmar: ${floorSet.map(v => v.toFixed(2)).join(' / ')}`
+  : `바닥 주입값 사용(--floor) — 이 실행에서 교란 arm 은 돌리지 않았다`);
 console.log(`NOISE = ${NOISE.toFixed(3)}`);
 
 console.log(`\n=== 판정 ===`);

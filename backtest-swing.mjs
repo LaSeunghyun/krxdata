@@ -16,7 +16,8 @@
  *   node backtest-swing.mjs --strategies rsi2,hi120 --from 20240102 --to 20241230
  */
 import dotenv from 'dotenv';
-import { createReadStream, existsSync, appendFileSync, readFileSync } from 'fs';
+import { createReadStream, existsSync, appendFileSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { createHash } from 'crypto';
 import { createInterface } from 'readline';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -40,16 +41,28 @@ const TO = argOf('--to', '20260611');
 const CAPITAL = Number(argOf('--capital', '10000000'));
 const BARS_DEPTH = Number(argOf('--bars', '1150')); // 2022-01~ (FROM 이전 룩백 130일 포함)
 const ONLY = argOf('--strategies', '').split(',').filter(Boolean);
-// ★ 2026-07-30: 종가 소스 교체 실험용. 기본은 Toss(candles-daily.jsonl = KRX정규장+NXT 통합),
-//   `--candles candles-daily-krx.jsonl` 을 주면 KRX 정규장 전용 일봉으로 같은 백테를 돌린다.
+// ★ 2026-07-30: 종가 소스 교체 실험용. `--candles candles-daily-krx.jsonl` 을 주면 KRX 정규장 전용 일봉으로 같은 백테를 돌린다.
 //   근거: 상위집합 제약(Toss고가>=KIS고가 AND Toss저가<=KIS저가) 390/390 = 100% → Toss는 NXT 포함 확정.
 //   라이브 15:35 판정은 사실상 KRX 종가를 읽어 MA3 조건 판정이 5.1% 뒤집힌다(10:10 대칭 = 노이즈).
-const CACHE_FILE = join(__dirname, argOf('--candles', 'candles-daily.jsonl'));
-const CANDLES_ALT = CACHE_FILE !== join(__dirname, 'candles-daily.jsonl');
+// ★ 2026-08-08: 기본값을 원본 `candles-daily.jsonl` → **정제본** `candles-daily-toss-clean.jsonl` 로 변경.
+//   왜: MC 하네스 46개 중 19개(41%)가 `--candles` 를 안 적어 원본으로 돌았고, 원본에는 가짜 가격점프
+//   20종목(diag-adj-structure 재판정: STEPPED 18 + CONST_F 2)이 남아 있어 판정이 조용히 오염됐다.
+//   인자를 안 주는 쪽이 안전본이어야 "안 적으면 오염"이 **구조적으로** 불가능해진다.
+//   ※ 정제본 유니버스 = krx-universe-union(1,125) − 오염 20 = 1,105종목. 원본 2,605 대비 1,500 적다.
+//     시총상위 유니버스(--liveuni/--rsiuni)는 전부 포함되나, momUniverse(전 종목 60일모멘텀 top30)를
+//     쓰는 **이상화 경로는 모집단이 바뀐다** — 그 경로를 재는 실행은 원본을 명시할 것.
+const CACHE_FILE = join(__dirname, argOf('--candles', 'candles-daily-toss-clean.jsonl'));
+// ⚠️ 이 플래그는 "기본값이 아닌가"가 아니라 **"ensureCandlesFresh/Toss 자동보충이 관리하는 원본이 아닌가"** 다.
+//   비교 대상을 `candles-daily.jsonl` 로 고정해 둔 것이 **의도**이며, 기본값을 따라가게 바꾸면 안 된다.
+//   기본값 변경(2026-08-08)으로 기본 경로가 이제 true 가 되고, 두 보호가 **동시에** 켜진다:
+//     ① 신선도 자동갱신 스킵(아래) — 갱신 대상이 원본이라 정제본엔 무의미하고, Toss 호출이 라이브봇 세션을 깬다
+//     ② Toss 자동보충·append 스킵(loadPool) — 정제본에 원본 종목이 역류하면 정제 자체가 무효가 된다
+//   `--candles candles-daily.jsonl` 을 명시하면 false 가 되어 기존 동작(자동갱신+자동보충)이 그대로 살아난다.
+const CANDLES_UNMANAGED = CACHE_FILE !== join(__dirname, 'candles-daily.jsonl');
 // 2026-07-24: 6주 stale 캐시로 리서치가 조용히 좁은 표본 도는 사고 재발 방지 — 실행 전 자동 신선도 체크(+장중이면 스킵).
-// ★ 2026-07-30: --candles로 대체 소스를 쓸 때는 건너뛴다. 이 체크는 candles-daily.jsonl(Toss)을
+// ★ 2026-07-30: 원본이 아닌 소스를 쓸 때는 건너뛴다. 이 체크는 candles-daily.jsonl(Toss)을
 //   대상으로 하고 갱신 시 **Toss를 호출**하는데, 토스 토큰은 단일 인스턴스라 라이브봇 세션을 깬다.
-if (!argv.includes('--no-freshness-check') && !CANDLES_ALT) await ensureCandlesFresh();
+if (!argv.includes('--no-freshness-check') && !CANDLES_UNMANAGED) await ensureCandlesFresh();
 
 // C31 (--stress 1): 슬리피지 ±2틱 + 수수료 2배 비관 시나리오
 const STRESS = Number(argOf('--stress', 0));
@@ -220,6 +233,17 @@ const RSI_FLOW_DAYS = Number(argOf('--rsiflowdays', 5));
 //   근거: rsi2/stop_loss 54건 평균 -28만(전체 패배평균 -14만의 2배), 최악거래 4건 전부 UP·RSI0·stop_loss
 //   = conviction(10-RSI)×1.0=10 ≥ threshold7 → 50% 몰빵 대상. rsi2 단독 CAGR -3.5%인데 몰빵 허용 구조.
 const NO_CONC_RSI2 = argv.includes('--noconc-rsi2');
+/**
+ * ★ 2026-08-07 신설 (--strongfrac F): 확신도 집중매수 시 투입할 현금 비율.
+ *
+ * 왜 필요했나 — **`--slots 1`(몰빵) 단독으로는 몰빵이 되지 않는다.** liveCandidateBudget 은
+ *   `conviction >= 7 ? floor(cash * strongFraction) : min(cash, perSlot)` 인데
+ *   slots=1 이면 perSlot = effEq 라 **약한 후보는 전액(cash), 강한 후보는 50%** 를 산다.
+ *   즉 확신이 높을수록 작게 사는 역전이 생기고, 그 arm 은 "몰빵"도 "현행"도 아닌 혼합물을 잰다.
+ *   (§3 "값이 완전히 동일 = 배선 미적용"의 사촌 — 여기선 값이 다르게 나오지만 다른 것을 잰다.)
+ * 기본값은 계약값(0.5)이라 미지정 시 동작 완전 동일 = 항등 대조군.
+ */
+const STRONG_FRAC = Number(argOf('--strongfrac', CONVICTION_SIZING.strongFraction));
 // 2026-07-25 판별자 가설C: 애널리스트 컨센서스 목표가 대비 여력 필터 (analyst-hist.json 필요).
 //   근거(in-sample 버킷): hi120 진입가>컨센서스 n=153 거래당 -4만 / 여력0~20% n=233 -2만
 //                        / 여력20~50% n=31 **+7만**(승률74%) / 여력50%+ n=23 **+10만**(승률70%) / 미커버 n=214 **+6만**(승률67%)
@@ -363,16 +387,46 @@ function netPnl(entry, exit, qty) {
   return calcRoundTripPnl({ entry, exit, qty, feeBps: FEE_BPS, taxBps: getSellTaxBps('KOSPI') });
 }
 
+/**
+ * ★ 2026-08-07 신설 — dbQuery 디스크 캐시 + 스로틀 재시도.
+ *
+ * 왜: MC 하네스는 런당 3개 쿼리를 던진다. 240런(8arm×30시드)이면 720콜이라
+ *   Supabase Management API 가 `ThrottlerException: Too Many Requests` 로 끊는다
+ *   (실측: 2번째 arm 에서 30시드 중 22개 사망 → 0시드 가드 발동).
+ * 부수 이득이 더 중요하다 — 이 3개 쿼리는 **현재 스냅샷**(stock_analysis)이라
+ *   MC 도중 갱신되면 arm 마다 다른 유니버스를 보게 된다 = 교란된 비교.
+ *   캐시는 한 MC 안에서 유니버스를 고정한다.
+ * `--dbfresh` 로 강제 재조회. 파손·실패는 반드시 로그로 남긴다(§`catch {}` 금지).
+ */
+const DB_CACHE_DIR = join(dirname(fileURLToPath(import.meta.url)), '.dbcache');
+const DB_FRESH = argv.includes('--dbfresh');
 async function dbQuery(sql) {
-  const res = await fetch(`https://api.supabase.com/v1/projects/${process.env.SUPABASE_PROJECT_REF}/database/query`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${process.env.SUPABASE_MANAGEMENT_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query: sql }),
-    signal: AbortSignal.timeout(120_000),
-  });
-  const data = await res.json();
-  if (!Array.isArray(data)) throw new Error(data?.message ?? 'DB 쿼리 오류');
-  return data;
+  const key = createHash('sha1').update(sql).digest('hex').slice(0, 16);
+  const cachePath = join(DB_CACHE_DIR, `${key}.json`);
+  if (!DB_FRESH && existsSync(cachePath)) {
+    try { return JSON.parse(readFileSync(cachePath, 'utf8')); }
+    catch (e) { console.error(`[dbcache] 캐시 파손 ${key}: ${e.message} → API 재조회`); }
+  }
+  let lastErr = null;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    if (attempt) await new Promise(r => setTimeout(r, 1500 * attempt + Math.floor(Math.random() * 800)));
+    const res = await fetch(`https://api.supabase.com/v1/projects/${process.env.SUPABASE_PROJECT_REF}/database/query`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${process.env.SUPABASE_MANAGEMENT_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: sql }),
+      signal: AbortSignal.timeout(120_000),
+    });
+    const data = await res.json();
+    if (Array.isArray(data)) {
+      try { mkdirSync(DB_CACHE_DIR, { recursive: true }); writeFileSync(cachePath, JSON.stringify(data)); }
+      catch (e) { console.error(`[dbcache] 캐시 기록 실패 ${key}: ${e.message} (진행은 계속)`); }
+      return data;
+    }
+    lastErr = data?.message ?? 'DB 쿼리 오류';
+    if (!/Throttler|Too Many Requests|rate/i.test(String(lastErr))) break;
+    console.error(`[dbcache] 스로틀 재시도 ${attempt + 1}/5: ${lastErr}`);
+  }
+  throw new Error(lastErr ?? 'DB 쿼리 오류');
 }
 
 // ── 일봉 풀: 디스크 캐시 우선, 누락분만 API ───────────────────
@@ -398,11 +452,25 @@ async function loadPool(codes) {
       try { const rec = JSON.parse(line); addToPool(rec.code, rec); } catch {}
     }
     console.log(`캐시 ${candles.size}종목`);
+    // ★ 2026-08-08: 기본값이 정제본이 되면서 기본 경로가 신선도 자동갱신에서 빠졌다(CANDLES_UNMANAGED ① 참조).
+    //   자동갱신은 Toss 경합 때문에 되살리지 않는다 — 대신 **조용히 낡는 것만** 막는다.
+    //   2026-07-24 사고(6주 stale 캐시로 좁은 표본 리서치)와 같은 유형이라 경고는 반드시 있어야 한다.
+    //   출력만 추가한다 — 판정·체결·수익에 영향 없음.
+    if (CANDLES_UNMANAGED) {
+      let maxD = '';
+      for (const rec of candles.values()) { const d = rec.d[rec.d.length - 1]; if (d > maxD) maxD = d; }
+      if (maxD) {
+        const ageDays = Math.floor((Date.now() - Date.parse(`${maxD.slice(0, 4)}-${maxD.slice(4, 6)}-${maxD.slice(6, 8)}T00:00:00+09:00`)) / 86400000);
+        console.log(`캐시 최신 거래일 ${maxD} (${ageDays}일 전) · 이 소스는 자동갱신되지 않는다`);
+        if (ageDays > 10) console.log(`⚠️ 캐시가 ${ageDays}일 낡았다 — 재생성: node refresh-candles-tail.mjs(장마감 후) → node build-clean-candles.mjs`);
+        if (TO > maxD) console.log(`⚠️ --to ${TO} 가 캐시 최신일 ${maxD} 를 넘는다 — 초과 구간은 데이터가 없어 체결이 0건으로 나온다(전략 실패 아님)`);
+      }
+    }
   }
   const missing = codes.filter(c => !candles.has(c));
   // ★ 대체 종가 소스(--candles)를 쓸 때는 Toss 자동 보충을 금지한다. 보충하면 한 백테 안에
   //   KRX 전용 봉과 NXT 통합 봉이 섞여 비교의 의미가 사라진다(조용한 오염). 누락은 드러내야 한다.
-  if (missing.length && CANDLES_ALT) {
+  if (missing.length && CANDLES_UNMANAGED) {
     console.log(`⚠️ 대체 캔들소스(${CACHE_FILE}) 사용 중 — 누락 ${missing.length}종목을 Toss로 보충하지 않는다.`);
     console.log(`   누락분은 유니버스에서 자연히 빠진다. 앞 10개: ${missing.slice(0, 10).join(' ')}`);
   } else if (missing.length) {
@@ -688,8 +756,60 @@ const CAPS_PRESETS = {
   E: { UP: { hi120: 8, rsi2: 2 }, NEUTRAL: { hi120: 2, rsi2: 6 }, DOWN: { hi120: 0, rsi2: 4 } },
   // MC3 I9 (30k 전용): D + UP rsi2 차단 — 소액 계좌에서 UP rsi2가 순손실(-374k/120런)이며 hi120 슬롯 잠식
   F: { UP: { hi120: 6, rsi2: 0 }, NEUTRAL: { hi120: 0, rsi2: 8 }, DOWN: { hi120: 0, rsi2: 4 } },
+
+  /**
+   * ★ 2026-08-04 신설 (G·H·I): **DOWN·NEUTRAL 에서 hi120(돌파) 허용.**
+   *
+   * 왜: 08-04 아침 바이오 섹터가 일제히 급등했는데(알지노믹스 +25% · 오름테라퓨틱 +17% ·
+   * 지투지바이오 +16% · 디앤디파마텍 +16% · 엘앤씨바이오 +14% · 올릭스 +13% · 펩트론 +11%)
+   * 봇이 한 종목도 못 잡았다. 실측 원인 분해:
+   *   - 유니버스 문제 아님 — 급등 상위 25 중 **8종목이 유니버스 안**에 있었다.
+   *   - rsi2 로는 구조적으로 못 잡는다 — +25% 급등은 2일 RSI 과매도가 아니다.
+   *   - 돌파를 잡는 건 hi120 뿐인데 **A~F 전 구성이 DOWN·(대부분)NEUTRAL 에서 hi120=0** 이다.
+   *     08-04 레짐이 DOWN 이라 돌파 전략이 애초에 돌지 않았다.
+   *
+   * 결정적으로 이 차단은 **측정된 적이 없다.** A~F 여섯 구성 전부 DOWN hi120=0 이라
+   * 스윕으로 표현할 방법조차 없었다(플래그도 없다). 즉 검증 결과가 아니라 가정이다.
+   * 반대로 주석 C20 은 "UP hi120이 전기간 최대 수익원 +26.3M" 이라고 기록한다 —
+   * 최대 수익원이 레짐 두 개에서 미검증 상태로 꺼져 있는 셈이다.
+   *
+   * 사전 예상(반증 대상): 하락장 돌파 매수는 휩소가 사는 자리라 기각될 가능성이 높다.
+   * 통과 3건이 전부 "거래를 줄이는" 방향이었던 전적과도 반대다. 그래도 미검증은 미검증이다.
+   */
+  G: { UP: { hi120: 6, rsi2: 4 }, NEUTRAL: { hi120: 0, rsi2: 8 }, DOWN: { hi120: 2, rsi2: 4 } },
+  H: { UP: { hi120: 6, rsi2: 4 }, NEUTRAL: { hi120: 0, rsi2: 8 }, DOWN: { hi120: 4, rsi2: 4 } },
+  I: { UP: { hi120: 6, rsi2: 4 }, NEUTRAL: { hi120: 2, rsi2: 8 }, DOWN: { hi120: 2, rsi2: 4 } },
+
+  /**
+   * ★ 2026-08-04 (J·K): **NEUTRAL 만** hi120 허용. DOWN 은 현행대로 차단.
+   *
+   * 60시드 MC 결과가 I 를 쪼개라고 말한다:
+   *   G (DOWN 2)        ΔCalmar -0.64 · 최악시드 23.9%→9.1%   → DOWN 돌파는 확실히 해롭다
+   *   H (DOWN 4)        ΔCalmar -0.61 · 최악시드 23.9%→6.2%
+   *   I (NEUTRAL+DOWN)  ΔCalmar +0.18 · **시드 55승 5패** · CAGR 45.6→65.0% · 최악시드 23.9→30.7%
+   * I 는 해로운 DOWN 을 **포함한 채로도** 시드 92% 승리다 → 이득의 원천은 NEUTRAL 쪽이다.
+   * 나쁜 쪽을 빼면 더 나아야 한다는 게 J·K 의 가설이다.
+   *
+   * 기제: 현행에서 **NEUTRAL 은 죽은 구간이다.** --skipneutralrsi 로 rsi2 를 스킵하고 캡이
+   * hi120 0 이라 NEUTRAL 에는 진입이 아예 없다. J 는 유휴 자본을 그 구간에 쓴다 —
+   * 기존 성과를 잠식하지 않으므로 최악시드가 오히려 개선된 것이 설명된다(I 실측 23.9→30.7%).
+   * 흔한 파라미터 미세조정과 성격이 다르다: 비어 있던 국면을 채우는 것이다.
+   *
+   * 주의: I 는 최대 MDD 32.8→42.7%, MDD>40% 시드 0/60→5/60 이었다. J 에서 그 꼬리가
+   * 얼마나 회수되는지가 채택 여부를 가른다. 회수되지 않으면 이것도 "수익·위험 동반 확대"이고
+   * 채택은 측정이 아니라 **MDD 감수 범위에 대한 사용자 결정**이 된다.
+   */
+  J: { UP: { hi120: 6, rsi2: 4 }, NEUTRAL: { hi120: 2, rsi2: 8 }, DOWN: { hi120: 0, rsi2: 4 } },
+  K: { UP: { hi120: 6, rsi2: 4 }, NEUTRAL: { hi120: 4, rsi2: 8 }, DOWN: { hi120: 0, rsi2: 4 } },
 };
 const CAPS_SEL = argOf('--caps', 'A');
+/**
+ * --brkreg "UP,DOWN" : hi120(돌파) 진입을 허용할 레짐. 미지정=UP 전용(현행 라이브와 동일).
+ * ★ 2026-08-04. 캡 테이블만으로는 DOWN hi120 을 켤 수 없다 — live-parity.mjs 가 `reg === 'UP'` 로
+ *   후보를 **생성 자체를 막기** 때문이다. 실측: `--caps A` 와 `--caps G` 결과가 완전히 동일했다.
+ *   따라서 이 축을 시험하려면 **--caps 와 --brkreg 를 함께** 넘겨야 한다(차단이 두 겹).
+ */
+const BRK_REGIMES = String(argOf('--brkreg', 'UP')).split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
 // 레짐 MA 페어 (--regimema "20,60"): 빠른 스위치 vs 느린 스위치
 const REGIME_MAS = argOf('--regimema', '20,60').split(',').map(Number);
 const MCAP_TOP = Number(argOf('--rsiuni', '30'));
@@ -1301,6 +1421,7 @@ for (let di = 0; di < tradingDays.length; di++) {
           closeLocMin: cfg.closeLoc > 0 ? cfg.closeLoc : 0, // --closeloc N: rsi2 매수 시 종가위치 ≥ N 요구(강한 마감)
           volSurge: VOLSURGE,                               // --volsurge "volMin,dayRetMin,closeLocMin,cap": 거래량급증 진입 sub(검증용)
           regimeOf: SELF_REGIME ? (row) => row.selfRegime : null,  // --selfregime: 종목별 레짐
+          breakRegimes: BRK_REGIMES,                        // --brkreg "UP,DOWN": hi120 허용 레짐(기본 UP 전용)
         });
         // ★ --rsiatrrank: 확신도 동률 내 ATR 오름차순 재정렬 (풀을 깎지 않고 순서만 바꾼다)
         if (RSI_ATR_RANK) {
@@ -1352,7 +1473,13 @@ for (let di = 0; di < tradingDays.length; di++) {
           });
         }
         let newToday = 0;   // --maxnew: 당일 신규진입 카운터
+        // ★ 2026-08-07 계측(비점수·동작 무영향): 랭킹 위치를 거래에 기록한다.
+        //   목적 = "몰빵(1등만 산다)이 성립하려면 1등 픽의 거래당 기대값이 2·3등보다 높아야 한다"를 직접 재기.
+        //   rank = 정렬된 후보 배열에서의 위치(필터로 건너뛴 후보 포함) · pick = 그날 실제 매수 순번(1등픽·2등픽…).
+        //   ctx 에만 얹으므로 진입·청산 판단에는 전혀 쓰이지 않는다.
+        let rankIdx = 0, pickNo = 0;
         for (const candidate of candidates) {
+          rankIdx++;
           if (MAX_NEW > 0 && newToday >= MAX_NEW) break;   // 당일 신규진입 상한 도달
           if (book.positions[candidate.code]) continue;
           const cReg = SELF_REGIME ? (candidate.selfRegime ?? regime) : regime; // 스킵 필터도 같은 기준으로
@@ -1452,7 +1579,7 @@ for (let di = 0; di < tradingDays.length; di++) {
             // 가설A(--noconc-rsi2): rsi2는 확신도를 임계값 미달로 강제 → 집중(몰빵) 대신 균등분산
             conviction: (NO_CONC_RSI2 && candidate.sub === 'rsi2') ? 0 : candidate.conviction,
             strongThreshold: CONVICTION_SIZING.strongThreshold,
-            strongFraction: CONVICTION_SIZING.strongFraction,
+            strongFraction: STRONG_FRAC,
             exposureMultiplier: volMult * atrM,
           });
           if (candidate.price >= bgt) continue;
@@ -1464,6 +1591,10 @@ for (let di = 0; di < tradingDays.length; di++) {
             //   "이 값이 결과를 예측하는가"(= 랭킹 신호로 쓸 수 있는가)를 본다. 필터 통과 여부와 별개 질문.
             : { sub: 'rsi2', regime, rsi: candidate.rsi.toFixed(0), conviction: candidate.conviction.toFixed(1),
               maDist: (vci != null && vci >= (cfg.rsiMa || 5)) ? ((maAt(vcd.c, vci, cfg.rsiMa || 5) / vcd.c[vci] - 1) * 100).toFixed(1) : null };
+          pickNo++;
+          ctx.rank = rankIdx;   // 후보 배열 위치 (계측 전용)
+          ctx.pick = pickNo;    // 그날 매수 순번 (계측 전용)
+          ctx.cands = candidates.length;
           buy(book, day, candidate.code, candidate.price, bgt, { sub: candidate.sub, ctx, breakLv: candidate.breakLv, ...(scenPol?.trailPct > 0 ? { scenTrail: scenPol.trailPct } : {}), ...(scenPol?.stopPct > 0 ? { scenStop: scenPol.stopPct } : {}), ...(scenPol?.maxHoldR > 0 ? { scenMaxHold: scenPol.maxHoldR } : {}) });
           newToday++;
         }

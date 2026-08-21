@@ -67,14 +67,27 @@ const CONFIGS = [
 
 const RE = /combo-v2\s+(\d+)\s+(\d+)%\s+([\d.]+)\s+([\d.-]+)%\s+([\d.]+)%/;
 
-async function runOne(cfg, seed) {
-  const cmd = `node --max-old-space-size=6144 backtest-swing.mjs ${LIVE} --candles ${cfg.file} ${cfg.extra} ${COMMON} --subsample 0.8 --seed ${seed}`;
+/**
+ * ★ 2026-08-03: **일시 실패는 재시도한다.** 08-02~03 에 시드 탈락이 세 번 났고(conc 3·2·1),
+ *   conc 1 에서도 났으므로 동시성 문제가 아니다. 상승 실패한 명령을 그대로 재현하면
+ *   exit 0 으로 정상 종료한다 = 결정적 오류가 아니라 환경성 일시 실패다(모리 스파이크 추정).
+ *   시드 하나가 빠지면 가드가 판정을 거부하고 전재(300런, 20분+)를 다시 돌려야 했다 —
+ *   재시도 1회가 그 버용을 없얰준다. 실패 사유는 자를지지 않게 200자까지 남긴다.
+ */
+async function runOne(cfg, seed, attempt = 0) {
+  const cmd = `node --max-old-space-size=2048 backtest-swing.mjs ${LIVE} --candles ${cfg.file} ${cfg.extra} ${COMMON} --subsample 0.8 --seed ${seed}`;
   try {
-    const { stdout } = await pexec(cmd, { cwd: 'C:\\claudeT\\files', encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    const { stdout } = await pexec(cmd, { cwd: 'C:\\claudeT\\files', encoding: 'utf8', maxBuffer: 128 * 1024 * 1024 });
     const m = stdout.match(RE);
-    if (!m) return null;
+    if (!m) {
+      if (attempt < 1) { console.error(`  ~ ${cfg.key} seed${seed}: 파싱 실패 → 재시도`); return runOne(cfg, seed, attempt + 1); }
+      console.error(`  ! ${cfg.key} seed${seed}: 파싱 실패(재시도 후)`); return null;
+    }
     return { n: +m[1], win: +m[2], pf: +m[3], cagr: +m[4], mdd: +m[5] };
-  } catch (e) { console.error(`  ! ${cfg.key} seed${seed}: ${String(e.message).slice(0, 60)}`); return null; }
+  } catch (e) {
+    if (attempt < 1) { console.error(`  ~ ${cfg.key} seed${seed} 재시도: ${String(e.message).slice(0, 200)}`); return runOne(cfg, seed, attempt + 1); }
+    console.error(`  ! ${cfg.key} seed${seed} 실패(재시도 후): ${String(e.message).slice(0, 200)}`); return null;
+  }
 }
 async function pool(tasks, n) {
   const out = new Array(tasks.length); let i = 0;

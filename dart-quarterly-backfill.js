@@ -17,10 +17,38 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, ".env") });
 
 const QUARTER_OF = { "11013": 1, "11012": 2, "11014": 3 };
+
+// 연내 정기보고서 순서와 법정 제출기한(MMDD).
+// 사업보고서(11011)는 dart-financials-backfill.js 담당이라 여기서 제외.
+const SEQ = ["11013", "11012", "11014"];
+const DEADLINE_MMDD = { "11013": 515, "11012": 814, "11014": 1114 };
+
+/**
+ * 실행일 기준 "제출기한이 지난" 최근 기간부터 역순으로 count개를 만든다.
+ * 기존에는 기본값이 하드코딩돼 분기마다 손으로 고쳐야 했고, 실제로
+ * 2026 반기(11012)가 누락된 채 방치됐다. 날짜에서 유도해 재발을 막는다.
+ */
+export function recentPeriods(count = 6, now = new Date()) {
+  let year = now.getFullYear();
+  const mmdd = (now.getMonth() + 1) * 100 + now.getDate();
+  let idx = -1;
+  for (let i = SEQ.length - 1; i >= 0; i--) {
+    if (mmdd >= DEADLINE_MMDD[SEQ[i]]) { idx = i; break; }
+  }
+  if (idx === -1) { year -= 1; idx = SEQ.length - 1; } // 5/15 이전 → 전년 3분기부터
+  const out = [];
+  while (out.length < count) {
+    out.push({ year: String(year), reprtCode: SEQ[idx] });
+    if (--idx < 0) { idx = SEQ.length - 1; year -= 1; }
+  }
+  return out;
+}
+
 const args = process.argv.slice(2);
 const periodsArg = args.find(a => a.startsWith("--periods"))?.split("=")[1] ?? args[args.indexOf("--periods") + 1];
-const PERIODS = (periodsArg ?? "2025:11013,2025:11012,2025:11014,2026:11013")
-  .split(",").map(p => { const [y, rc] = p.trim().split(":"); return { year: y, reprtCode: rc }; });
+const PERIODS = periodsArg
+  ? periodsArg.split(",").map(p => { const [y, rc] = p.trim().split(":"); return { year: y, reprtCode: rc }; })
+  : recentPeriods();
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const numAmt = v => { const n = Number(String(v ?? "").replace(/,/g, "")); return Number.isFinite(n) && n !== 0 ? n : null; };
 const esc = v => v == null ? "NULL" : typeof v === "number" ? (Number.isFinite(v) ? String(v) : "NULL") : `'${String(v).replace(/'/g, "''")}'`;
@@ -43,6 +71,7 @@ function pickAccount(rows, names) {
 async function main() {
   const companies = await loadCompanies();
   const byCorp = new Map(companies.map(c => [c.corp_code, c]));
+  const lowCoverage = [];
   console.log(`대상 ${companies.length}개 기업 / 기간 ${PERIODS.map(p => `${p.year}:${p.reprtCode}`).join(",")}`);
 
   for (const { year, reprtCode } of PERIODS) {
@@ -96,7 +125,20 @@ async function main() {
           updated_at = NOW()
       `);
     }
-    console.log(`  ✅ ${records.length}건 upsert`);
+    // 커버리지 경고 — DART 재무 API는 제출 마감 직후 며칠간 색인이 덜 돼
+    // 조용히 일부만 적재된다. 무음 실패로 넘어가지 않도록 비율을 명시한다.
+    const coverage = companies.length ? records.length / companies.length : 0;
+    const pct = (coverage * 100).toFixed(1);
+    if (coverage < 0.8) {
+      console.warn(`  ⚠️ ${records.length}건 upsert (커버리지 ${pct}% — 80% 미만)`);
+      console.warn(`     DART 색인 지연 가능. 며칠 뒤 동일 명령 재실행 필요 (upsert라 재실행 안전)`);
+      lowCoverage.push(`${year}:${reprtCode}(${pct}%)`);
+    } else {
+      console.log(`  ✅ ${records.length}건 upsert (커버리지 ${pct}%)`);
+    }
+  }
+  if (lowCoverage.length) {
+    console.warn(`\n⚠️ 재실행 필요 기간: ${lowCoverage.join(", ")}`);
   }
   const stat = await dbQuery(
     `SELECT analysis_year, report_code, COUNT(*) cnt, COUNT(op_income_yoy) yoy_cnt
@@ -104,4 +146,9 @@ async function main() {
   );
   console.log("\n분기 행 현황:", JSON.stringify(stat));
 }
-main().catch(e => { console.error(e); process.exit(1); });
+// 진입점 가드 — recentPeriods를 import하는 것만으로 백필이 통째로 돌던 문제 방지.
+const isEntrypoint = process.argv[1] &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isEntrypoint) {
+  main().catch(e => { console.error(e); process.exit(1); });
+}
