@@ -109,6 +109,17 @@ dump-rank-*.json
 candles-daily-kistail.jsonl
 *.bak-audit
 
+# 2026-08-22: 연구 산출물·상태파일. 스크립트는 추적하되 그 출력물은 추적하지 않는다.
+#   pert-c*.jsonl 은 개당 47MB × 15 = 705MB — candles-pert-* 와 같은 교란본 계열이다.
+pert-c*.jsonl
+live-scalp-ledger.jsonl
+bt-universe-codes.txt
+eq-*.json
+etf-daily-*.json
+flow-intraday/
+.entry-monitor-state.json
+.fc-tg-state.json
+
 # 2026-08-21 autoresearch 실행 산출물 — 브랜치·세션마다 달라 추적하지 않는다.
 #   base.json/probe.json 은 실험 브랜치 국지 상태, log.tsv 는 세션 기록(원본 program.md 도 미추적)
 autoresearch-base.json
