@@ -1,0 +1,44 @@
+name: CI
+
+# 시크릿을 쓰지 않는다 — 테스트가 네트워크·DB·API 키에 의존하지 않는 것을 전제로 한다.
+# (2026-08-22 확인: 34개 테스트 파일 전부 순수 모듈 import 만 한다)
+# 배포는 여기서 하지 않는다. 실계좌 VM 의 SSH 키를 러너에 두지 않기 위해서다 → vm-deploy.mjs 참조.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: install
+        run: npm ci
+
+      # 훅·크론 진입점은 문법이 깨져도 조용히 exit 0 이 되는 경로가 있어 별도로 본다.
+      - name: syntax check
+        run: npm run check
+
+      - name: test
+        run: npm test
+
+  # 배포 사고 예방 — 오늘(2026-08-22) validate-hypotheses.mjs 를 validation-lib.mjs 없이
+  # 올렸다면 VM 크론이 import 실패로 죽었다. 그 유형을 PR 단계에서 잡는다.
+  deploy-closure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: VM 배포 대상의 import 폐쇄성 검사
+        run: node vm-deploy.mjs --check-only
