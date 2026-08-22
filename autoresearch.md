@@ -20,6 +20,8 @@
 
 1. `git log --oneline -3` 으로 현재 위치를 확인한다.
 2. `rejected-axes.tsv` 와 `autoresearch-log.tsv` 를 읽고 **아직 시도하지 않은** 변경 하나를 정한다.
+   **기존 `mc-*.mjs` 파일명도 훑는다** — 그 축을 이미 잰 스크립트가 있을 수 있다(2026-08-22 R1 에서
+   `mc-cooldown.mjs` 가 이미 있는 걸 모르고 같은 축을 골랐다). 있으면 그 결과부터 읽는다.
    기각축과 겹치면 다른 것을 고른다. 겹침 판정은 `--verify` 가 나중에 기계로 다시 본다.
 3. `backtest-swing.mjs` 를 수정한다.
    - **공유 분기 규칙**: `k === 'combo' || k === 'combo-v2'` 블록을 고칠 때는 반드시
@@ -47,12 +49,22 @@
    - 6시드로 스크린한다. 개선 방향이 아니면 `discard`.
    - 스크린 통과 시 30시드로 확정한다. `n == 30` 인지 확인한다(죽은 시드가 있으면 판정 불가).
    - IS `20230102~20241231` / OOS `20250102~20260724` 양쪽을 본다. 한쪽만이면 `discard`.
-   - ΔCalmar 가 `autoresearch-floor.json` 의 바닥을 넘는지 본다. 바닥이 `null` 이면
-     **`keep` 을 낼 수 없다.** `discard` 하거나 바닥을 먼저 측정한다.
+   - ΔCalmar 가 `autoresearch-floor.json` 의 바닥을 넘는지 본다(현재 `20230102_20260724` = **0.502**).
+     **|ΔCalmar| < 바닥 이면 `discard` 가 아니라 `inconclusive` 다** — 방법론 §1 "판정 불가.
+     채택도 기각도 하지 않는다". `discard` 로 적으면 바닥에 묻힌 축이 기각축 표에 올라가
+     이후 탐색이 그 축을 영구히 건너뛴다.
+   - 바닥이 `null`(미측정)이면 `keep` 자체가 불가능하다. 먼저 잰다
+     (`node mc-noise-floor.mjs --seeds 30 --perts 9 --conc 2`).
+   - **항등 대조군을 반드시 둔다**(방법론 §2). 새 플래그에 현행값을 주는 arm 이 변경 전 수치를
+     소수점까지 재현해야 한다. 안 맞으면 효과가 아니라 배선 결함이다.
    - MC 실행 중 다른 무거운 작업을 겹치지 않는다(방법론 §1-F).
 8. `autoresearch-log.tsv` 에 한 줄 추가한다. 열은 아래와 같다.
    `commit  axis_id  delta_calmar  median_final  noise_floor_pass  is_oos_agree  seeds_n  status  description`
 9. `keep` 이면 브랜치를 그대로 두고 다음 라운드로. 그 외는 `git reset --hard HEAD~1`.
+   ⚠️ **reset 전에 `git status` 로 미커밋 작업이 없는지 반드시 확인한다.** `--hard` 는 그 라운드의
+   실험 커밋만이 아니라 **워킹트리의 모든 미커밋 변경을 함께 날린다.** 2026-08-22 R1 에서 실제로
+   당했다 — 라운드 도중에 만든 도구·규약 수정이 같이 사라졌다. 라운드 산출물(도구·문서)은
+   되돌릴 실험 커밋과 **분리해서 먼저 커밋**한다.
 
 ## 세션 종료
 
@@ -60,7 +72,8 @@
    `FAIL` 이면 무엇이 깨졌는지 보고한다. **통과하지 못한 세션의 결과는 보고하지 않는다.**
 2. 사람에게 요약을 보고한다. 라운드별 status 와 `keep` 후보를 적는다.
 3. **여기서 멈춘다.** 아래는 전부 사람의 일이다.
-   - `rejected-axes.tsv` 에 새 기각축 추가
+   - `rejected-axes.tsv` 에 새 기각축 추가 — **`discard` 행만 대상이다.**
+     `inconclusive`·`not-wired`·`contaminated`·`crash` 는 절대 병합하지 않는다(기계 목록: `MERGEABLE_TO_REJECTED`)
    - `validation-registry.mjs` 에 `keep` 후보 등록
    - `main` 병합·실계좌 반영
 

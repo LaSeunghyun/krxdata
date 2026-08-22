@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  LOG_COLUMNS, LOG_STATUSES,
+  LOG_COLUMNS, LOG_STATUSES, MERGEABLE_TO_REJECTED,
   formatLogRow, parseLog, parseAxes, matchRejectedAxis, verifySession,
 } from '../autoresearch-log.mjs';
 
@@ -22,7 +22,31 @@ test('log has the columns and statuses the spec defines', () => {
     'commit', 'axis_id', 'delta_calmar', 'median_final',
     'noise_floor_pass', 'is_oos_agree', 'seeds_n', 'status', 'description',
   ]);
-  assert.deepEqual([...LOG_STATUSES], ['keep', 'discard', 'not-wired', 'contaminated', 'crash']);
+  assert.deepEqual([...LOG_STATUSES],
+    ['keep', 'discard', 'inconclusive', 'not-wired', 'contaminated', 'crash']);
+});
+
+/**
+ * ★ 기각축 표를 오염시키지 않는 것이 이 상태값들의 존재 이유다.
+ * 바닥에 묻힌 축(inconclusive)이나 시도조차 못 한 축(not-wired)을 "기각됨"으로 올리면
+ * 이후 탐색이 그 축을 영구히 건너뛴다 — 재봐야 할 것을 다시는 안 보게 된다.
+ */
+test('only a real refutation may be merged into the rejected-axis table', () => {
+  assert.deepEqual([...MERGEABLE_TO_REJECTED], ['discard']);
+  for (const s of ['inconclusive', 'not-wired', 'contaminated', 'crash', 'keep']) {
+    assert.ok(!MERGEABLE_TO_REJECTED.includes(s), `${s} 는 기각축으로 병합하면 안 된다`);
+  }
+});
+
+// 바닥 안이라 판정 불가인 라운드는 keep 이 아니므로 세션 검증을 통과해야 한다(발견 0건은 실패가 아니다).
+test('verifySession passes a session whose rounds were all inconclusive', () => {
+  const rows = [keepRow({ status: 'inconclusive', delta_calmar: '0.079', description: '바닥 내 — 기각 아님' })];
+  const v = verifySession(rows, {
+    axes: AXES, floorPinned: true, floorCalmar: 0.502, probeFired: true,
+    mainCommitBefore: 'a', mainCommitAfter: 'a',
+  });
+  assert.equal(v.pass, true, JSON.stringify(v.failures));
+  assert.equal(v.keeps, 0);
 });
 
 // 설명에 탭이 들어가면 열이 밀린다 — 원본 program.md 도 TSV 를 쓰는 이유가 이것이다.

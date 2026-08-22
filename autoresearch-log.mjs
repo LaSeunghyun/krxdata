@@ -7,8 +7,15 @@ export const LOG_COLUMNS = Object.freeze([
   'noise_floor_pass', 'is_oos_agree', 'seeds_n', 'status', 'description',
 ]);
 
-// not-wired = 배선 미적용(discard 아님. 기각축으로 병합 금지)
-export const LOG_STATUSES = Object.freeze(['keep', 'discard', 'not-wired', 'contaminated', 'crash']);
+// ★ 기각축으로 병합해도 되는 것은 `discard` 뿐이다. 나머지는 "재봐야 하거나 못 잰" 상태다.
+//   not-wired    = 배선 미적용·파라미터 무감도. 시도조차 못 했다.
+//   inconclusive = |ΔCalmar| < 노이즈 바닥. 방법론 §1 "판정 불가 — 채택도 기각도 하지 않는다".
+//                  (2026-08-22 R1 에서 실제로 필요해져 추가. discard 로 적었다면 바닥에 묻힌 축을
+//                   "기각됨"으로 표에 올려 이후 탐색을 영구히 막았을 것이다 — not-wired 와 같은 오염 경로)
+export const LOG_STATUSES = Object.freeze(['keep', 'discard', 'inconclusive', 'not-wired', 'contaminated', 'crash']);
+
+// 기각축 표에 병합해도 되는 status. verifySession 과 사람 절차가 공유한다.
+export const MERGEABLE_TO_REJECTED = Object.freeze(['discard']);
 
 export function formatLogRow(row) {
   return LOG_COLUMNS
