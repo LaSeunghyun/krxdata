@@ -27,7 +27,26 @@ test("project exposes npm scripts for the main workflows", () => {
   assert.equal(pkg.scripts["score:top100"], "node score-top100.js");
   assert.equal(pkg.scripts["db:upsert"], "node db-upsert.js --both");
   assert.equal(pkg.scripts.check, "node scripts/check-syntax.js");
-  assert.equal(pkg.scripts.test, "node --test tests/**/*.test.js");
+  // ★ 2026-08-22: glob 에 .mjs 를 넣었다. 이전 패턴(*.test.js)은 tests/tg-order-record.test.mjs 를
+  //   조용히 건너뛰어 **그 5건이 한 번도 실행되지 않았다.** 확장자 하나로 테스트가 사라지는 건
+  //   실패보다 나쁘다(green 인데 커버가 없다). 아래 테스트가 그 재발을 막는다.
+  assert.equal(pkg.scripts.test, 'node --test "tests/**/*.test.{js,mjs}"');
+});
+
+test("test glob covers every test file on disk", () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf8"));
+  const onDisk = fs.readdirSync(path.join(projectRoot, "tests"))
+    .filter((f) => /\.test\.(js|mjs|cjs)$/.test(f));
+  const covered = onDisk.filter((f) => {
+    const ext = f.split(".").pop();
+    return pkg.scripts.test.includes(`{js,mjs}`) ? ["js", "mjs"].includes(ext) : pkg.scripts.test.includes(ext);
+  });
+  assert.deepEqual(
+    onDisk.filter((f) => !covered.includes(f)),
+    [],
+    "glob 이 놓치는 테스트 파일이 있다 — 확장자를 추가하거나 파일명을 맞춰라",
+  );
+  assert.ok(onDisk.length > 0);
 });
 
 test("runtime config has safe defaults for repeatable local runs", () => {
