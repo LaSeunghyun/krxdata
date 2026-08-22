@@ -28,6 +28,35 @@ test('mergeArgs __DROP_LIVE_PARITY__ strips --live-parity from base', () => {
   assert.deepEqual(merged, ['--slots', '3']);
 });
 
+// base 가 라이브 계약을 담으면 presence 플래그(--skipneutralrsi 등)는 prepend 로 끌 수 없다.
+// 그 플래그를 끈 arm 을 표현하려면 base 에서 빼는 수밖에 없다.
+test('mergeArgs __DROP: removes a boolean flag from base', () => {
+  const merged = mergeArgs(['__DROP:--skipneutralrsi'], ['--live-parity', '--skipneutralrsi', '--slots', '5']);
+  assert.deepEqual(merged, ['--live-parity', '--slots', '5']);
+});
+
+test('mergeArgs __DROP: removes a value flag together with its value', () => {
+  const merged = mergeArgs(['__DROP:--slots'], ['--live-parity', '--slots', '5', '--trail', '6']);
+  assert.deepEqual(merged, ['--live-parity', '--trail', '6']);
+});
+
+test('mergeArgs __DROP: keeps other override args and still prepends them', () => {
+  const merged = mergeArgs(['--atrsize', '3', '__DROP:--skipneutralrsi'],
+    ['--skipneutralrsi', '--slots', '5']);
+  assert.deepEqual(merged, ['--atrsize', '3', '--slots', '5']);
+});
+
+test('mergeArgs __DROP: handles several drops at once', () => {
+  const merged = mergeArgs(['__DROP:--skipneutralrsi', '__DROP:--rsivol'],
+    ['--skipneutralrsi', '--rsivol', '0', '--slots', '5']);
+  assert.deepEqual(merged, ['--slots', '5']);
+});
+
+test('mergeArgs __DROP: is a no-op when the flag is absent from base', () => {
+  const merged = mergeArgs(['__DROP:--nonexistent'], ['--slots', '5']);
+  assert.deepEqual(merged, ['--slots', '5']);
+});
+
 test('median handles even and odd lengths and empty input', () => {
   assert.equal(median([3, 1, 2]), 2);
   assert.equal(median([4, 1, 3, 2]), 2.5);

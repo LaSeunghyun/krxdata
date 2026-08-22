@@ -13,7 +13,7 @@ import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
-import { LIVE_PARITY_BASE, HYPOTHESES, DATA_HYPOTHESES, BARBELL } from './validation-registry.mjs';
+import { LIVE_PARITY_BASE, LIVE_PARITY_VERSION, HYPOTHESES, DATA_HYPOTHESES, BARBELL } from './validation-registry.mjs';
 import { LIVE_EXCLUDE } from './strategy-contract.mjs'; // 봇 미보유(이관/수동)종목 — live_track 승률서 제외(예: 한화솔루션 009830)
 // 판정 유틸은 2026-08-21 validation-lib.mjs 로 추출 — autoresearch 러너와 공유한다(이 파일은 IIFE 라 import 불가였다)
 import { median, parseComboRow, mcMedian } from './validation-lib.mjs';
@@ -147,6 +147,7 @@ async function evalFlow() {
   const { isTradingDayKST } = await import('./market-day.mjs');
   if (!(await isTradingDayKST())) { log('휴장일 — 종료'); process.exit(0); }
   log(`=== 상시 가설 검증 시작 (seeds=${SEEDS}${ONLY ? `, only=${ONLY}` : ''}${DATA_ONLY ? ', DATA-ONLY(백테스트 스킵)' : ''}) ===`);
+  log(`live-parity v${LIVE_PARITY_VERSION}: ${LIVE_PARITY_BASE.join(' ')}`);
   if (!NO_LEDGER) {
     try {
       await dbQuery(`CREATE TABLE IF NOT EXISTS validation_ledger (id bigserial PRIMARY KEY, run_ts timestamptz DEFAULT now(), hyp_id text, winner text, my_verdict text, status text, detail jsonb)`);
@@ -180,7 +181,9 @@ async function evalFlow() {
   // 적재
   if (!NO_LEDGER && rows.length) {
     try {
-      const values = rows.map(r => `('${r.hyp_id}', ${r.winner == null ? 'NULL' : `'${r.winner}'`}, '${r.my_verdict}', '${r.status}', '${JSON.stringify(r.detail).replace(/'/g, "''")}'::jsonb)`).join(',');
+      // ★ 2026-08-22: lp_version 각인. base 가 라이브 계약 동기화로 바뀌어 같은 hyp_id 라도
+      //   이 날짜 전후는 **다른 설정에서 잰 값**이다. 궤적을 읽을 때 이 필드로 갈라야 한다.
+      const values = rows.map(r => `('${r.hyp_id}', ${r.winner == null ? 'NULL' : `'${r.winner}'`}, '${r.my_verdict}', '${r.status}', '${JSON.stringify({ ...r.detail, lp_version: LIVE_PARITY_VERSION }).replace(/'/g, "''")}'::jsonb)`).join(',');
       await dbQuery(`INSERT INTO validation_ledger (hyp_id, winner, my_verdict, status, detail) VALUES ${values}`);
       log(`validation_ledger 적재 ${rows.length}행`);
     } catch (e) { log(`ledger 적재 실패: ${e.message}`); }

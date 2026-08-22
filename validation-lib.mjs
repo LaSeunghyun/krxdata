@@ -12,9 +12,27 @@ export function median(values) {
 
 // ★ override(변형)를 앞에 둔다. backtest-swing.mjs 의 argOf 는 argv.indexOf = 첫 출현만 읽으므로
 //   뒤에 붙이면 base 의 동일 플래그가 이겨 변형이 조용히 무효화된다(방법론 §3).
+//
+// drop 토큰: prepend 로는 base 의 **presence 플래그**(--skipneutralrsi 등)를 끌 수 없다.
+//   base 가 라이브 계약을 담게 되면서(2026-08-22) "그 기능을 끈 arm" 을 표현할 방법이 필요해졌다.
+//   `__DROP:--flag` 로 base 에서 뺀다. 값이 붙는 플래그면 값까지 같이 뺀다.
+//   `__DROP_LIVE_PARITY__` 는 기존 호환용 별칭이다.
 export function mergeArgs(override, base) {
-  if (override.includes('__DROP_LIVE_PARITY__')) return base.filter(a => a !== '--live-parity');
-  return [...override, ...base];
+  const isDrop = (a) => typeof a === 'string' && a.startsWith('__DROP');
+  const drops = override.filter(isDrop);
+  if (!drops.length) return [...override, ...base];
+
+  const flags = new Set(drops.map(d => (d === '__DROP_LIVE_PARITY__' ? '--live-parity' : d.slice('__DROP:'.length))));
+  const kept = [];
+  for (let i = 0; i < base.length; i++) {
+    if (flags.has(base[i])) {
+      // 다음 토큰이 플래그가 아니면 이 플래그의 값이다 — 같이 뺀다(안 빼면 고아 값이 argv 를 밀어낸다).
+      if (i + 1 < base.length && !String(base[i + 1]).startsWith('--')) i++;
+      continue;
+    }
+    kept.push(base[i]);
+  }
+  return [...override.filter(a => !isDrop(a)), ...kept];
 }
 
 export function parseComboRow(out) {
