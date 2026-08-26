@@ -300,9 +300,22 @@ export function parseDecision(text, ctx) {
     //   CA서킷(권리락 의심으로 자동매도 전면보류) 종목에 exitAt 이 심기면 **집행도 판정도 안 된다**:
     //   청산루프는 CA가드에서 continue 하고, 종가판정은 기계예약으로 보고 스킵한다 → 손절 규칙 없는
     //   무기한 보유가 된다. 게다가 유일한 복구 경로(텔레그램 CA해제)도 방금까지 깨져 있었다.
+    /**
+     * ★ 2026-08-26: rotOk 와 대칭으로 맞춘다. 지금까지 sellOk 는 held/exit_reserved/ca_hold
+     *   3개만 봤고, 그래서 **사용자가 토스 앱에서 직접 산 포지션(sub 미상)을 AI 가 팔 수 있었다.**
+     *   295310 이 3회 강제청산됐다(08-19 -13.8%, 08-26 2건). 바로 아래 deferOk 는 이미
+     *   `sub === 'rsi2'` 를 요구하는데 sellOk 만 빠져 있던 비대칭이다.
+     *   보유일수 조건도 같이 맞춘다 — rotOk 의 minHoldDays 는 "진입 당일 교체 금지"(휩소 방어,
+     *   07-28~29 두산퓨얼셀 4회 재진입 전례)인데 sell 에는 그 방어가 없었다.
+     *   ⚠️ `const R = AI_TRADER.rotate` 는 327행이라 여기서 R 을 쓰면 TDZ ReferenceError 다.
+     *     반드시 AI_TRADER.rotate 를 직접 참조한다.
+     */
     const sellOk = (x) => {
       const h = heldMap.get(x.code);
-      return !!h && !h.exit_reserved && !h.ca_hold;
+      if (!h || h.exit_reserved || h.ca_hold) return false;
+      if (h.sub == null) return false;                      // 봇이 산 포지션만 판다
+      if (typeof h.hold_days !== 'number' || h.hold_days < AI_TRADER.rotate.minHoldDays) return false;
+      return true;
     };
     const sellCap = Math.max(0, ctx.sellLeft ?? AI_TRADER.sellMaxPerDay);
     const sellElig = pick(j.sell).filter(sellOk);

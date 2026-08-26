@@ -63,6 +63,32 @@ console.log('\n[sell] 보유분만 · 기존예약 제외 · 일일상한');
   eq('sellLeft 0 이면 전멸', codes(d.sell), []);
 }
 
+// ── 2026-08-26: sellOk 를 rotOk 와 대칭으로. 수동/전략미상 포지션과 당일 매수분은 AI 가 못 판다.
+{
+  const ctx = ctxOf({
+    holdings: [
+      // 사용자가 토스 앱에서 직접 산 포지션 (sub 미상) — 2026-08-26 사고의 종목 유형
+      { code: 'M1', name: '수동픽', sub: null, ret_pct: -10.4, near_stop: false, exit_reserved: null, defer_used: 0, judged_today: false, ca_hold: false, hold_days: null },
+      // 봇이 오늘 산 포지션 — 진입 당일 청산 금지
+      { code: 'T0', name: '당일매수', sub: 'rsi2', ret_pct: -1, near_stop: false, exit_reserved: null, defer_used: 0, judged_today: false, ca_hold: false, hold_days: 0 },
+      // 보유일수를 알 수 없는 봇 포지션 — 모르면 거부
+      { code: 'TN', name: '보유일미상', sub: 'rsi2', ret_pct: -1, near_stop: false, exit_reserved: null, defer_used: 0, judged_today: false, ca_hold: false, hold_days: null },
+      // 정상 — 통과해야 한다(검출력 유지)
+      { code: 'OK', name: '정상보유', sub: 'rsi2', ret_pct: -2, near_stop: false, exit_reserved: null, defer_used: 0, judged_today: false, ca_hold: false, hold_days: 4 },
+    ],
+  });
+  const j = JSON.stringify({
+    skipAll: false, buy: [], rotate: [], defer_stop: [],
+    sell: [{ code: 'M1', reason: 'x' }, { code: 'T0', reason: 'x' }, { code: 'TN', reason: 'x' }, { code: 'OK', reason: 'x' }],
+  });
+  const d = parseDecision(j, ctx);
+  eq('sellOk: sub 미상 포지션은 AI 가 팔 수 없다', d.sell.some(x => x.code === 'M1'), false);
+  eq('sellOk: 진입 당일(hold_days 0) 포지션은 팔 수 없다', d.sell.some(x => x.code === 'T0'), false);
+  eq('sellOk: 보유일수 미상은 거부한다', d.sell.some(x => x.code === 'TN'), false);
+  eq('sellOk: 정상 보유는 여전히 통과한다(검출력 유지)', d.sell.some(x => x.code === 'OK'), true);
+  eq('sellOk: 거부분은 dropped.sell 에 남는다', d.dropped.sell.includes('M1'), true);
+}
+
 console.log('\n[defer] rsi2 · 손절임박 · 미예약 · 포지션상한 · 판정전 · 절대하한');
 {
   const d = parseDecision(J({ skipAll: false, defer_stop: [{ code: 'H1' }] }), ctxOf());
