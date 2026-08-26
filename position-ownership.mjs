@@ -50,8 +50,13 @@ export function classifyPosition({ code, brokerQty, currentPx, meta, trades }) {
   if (bq > 0 && Number.isFinite(bk) && bq >= bk) {
     const lb = lastBuy(trades, code);
     if (lb?.sub) {
-      const px = Number(currentPx) > 0 ? Number(currentPx) : 0;
-      const entry = Number(lb.px) > 0 ? Number(lb.px) : px;
+      // ★ Number(v) > 0 는 Infinity 를 통과시킨다. hi=Infinity 면 트레일 판정
+      //   `close <= hi * (1 - trailPct/100)` 이 **항상 참**이 되어 포지션이 즉시 강제청산된다
+      //   (entry=Infinity 면 하드손절도 마찬가지). 숫자상 hi>=entry 는 지켜지지만 안전 방향이
+      //   정반대로 뒤집히므로 유한값만 받는다.
+      const finite = (v) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : 0; };
+      const px = finite(currentPx);
+      const entry = finite(lb.px) || px;
       return {
         kind: 'bot',
         why: `저널 봇잔량 ${bq} >= 보유 ${bk} — meta 복원`,

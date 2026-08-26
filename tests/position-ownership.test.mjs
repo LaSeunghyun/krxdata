@@ -72,3 +72,23 @@ test('저널 BUY 에 sub 가 없으면 복원 불가라 user 로 떨어진다', 
   const noSub = [{ code: 'Y', side: 'BUY', qty: 10, px: 1000, ts: 't' }];
   assert.equal(classifyPosition({ code: 'Y', brokerQty: 10, currentPx: 1100, meta: {}, trades: noSub }).kind, 'user');
 });
+
+test('비유한 가격(Infinity·NaN)은 0 으로 떨어뜨린다 — hi=Infinity 는 트레일을 항상 발동시킨다', () => {
+  const B = (px) => [{ ts: 't', code: 'A', side: 'BUY', qty: 10, px, sub: 'rsi2' }];
+  for (const cpx of [Infinity, -Infinity, NaN, 'abc', null, undefined]) {
+    for (const bpx of [91100, 0, NaN, Infinity, undefined]) {
+      const r = classifyPosition({ code: 'A', brokerQty: 10, currentPx: cpx, meta: {}, trades: B(bpx) });
+      assert.equal(r.kind, 'bot');
+      assert.ok(Number.isFinite(r.restoreMeta.hi), `hi 가 비유한: cpx=${String(cpx)} bpx=${String(bpx)}`);
+      assert.ok(Number.isFinite(r.restoreMeta.entry), `entry 가 비유한: cpx=${String(cpx)} bpx=${String(bpx)}`);
+      assert.ok(r.restoreMeta.hi >= r.restoreMeta.entry);
+    }
+  }
+});
+
+test('정상 유한값은 그대로 통과한다 (검출력 유지)', () => {
+  const B = [{ ts: 't', code: 'A', side: 'BUY', qty: 10, px: 91100, sub: 'rsi2' }];
+  const r = classifyPosition({ code: 'A', brokerQty: 10, currentPx: 95000, meta: {}, trades: B });
+  assert.equal(r.restoreMeta.entry, 91100);
+  assert.equal(r.restoreMeta.hi, 95000);
+});
