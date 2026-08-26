@@ -16,7 +16,7 @@
  *         node stock-live.mjs --go     (집행+연속감시, 백그라운드)
  */
 import dotenv from 'dotenv';
-import { existsSync, readFileSync, writeFileSync, appendFileSync, renameSync, unlinkSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, appendFileSync, renameSync, unlinkSync, statSync } from 'fs';
 import { execFile, execFileSync } from 'child_process';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
@@ -24,7 +24,8 @@ import { dirname, join } from 'path';
 import { getAccounts, getHoldings, getBuyingPower, getPricesMap, getDailyCandles, createOrder, getOrder, cancelOrder } from './toss-api.js';
 import { LIVE_SLOTS, LIVE_UNIVERSE_LIMIT, LIVE_COMBO_CAPS, CONVICTION_SIZING, FORECAST_GUARD, PARTIAL_TP, CA_GUARD, LIVE_EXCLUDE, CAPITAL_DEPLOY, SECTOR_CAP, SECTOR_OVERRIDE, applySectorOverride, RSI_ENTRY_FILTER, FLOW_EXIT, AI_TRADER } from './strategy-contract.mjs';
 import { buildLiveCandidates, applyComboCaps } from './live-parity.mjs';
-import { readBotExclude } from './bot-exclude.mjs';
+import { readBotExclude, addBotExcludeAuto, removeBotExcludeAuto } from './bot-exclude.mjs';
+import { classifyPosition } from './position-ownership.mjs';
 // ★ 2026-08-01: resolveStock 이 import 목록에 없어 667행 CA서킷 해제 호출이 ReferenceError 였다
 //   (try/catch 안이라 프로세스는 안 죽지만 텔레그램 "CA서킷 해제" 명령이 **한 번도 동작할 수 없었다**).
 import { executeBuy, executeSell, resolveStock } from './tg-order.mjs';
@@ -395,6 +396,28 @@ function saveState() {
     try { writeFileSync(STATE, JSON.stringify(state, null, 1)); } catch {}
     console.error(`[state] 원자쓰기 실패(직접쓰기 폴백): ${String(e.message).slice(0, 120)}`);
   }
+}
+/**
+ * 판정 전용 저널 리더 — **읽기만 한다**(손상 시 rename·경보·리셋 없음).
+ *
+ * ★ loadJournal() 을 소유 판정에 쓰면 안 되는 이유: 그 함수는 저널이 손상되면 `.corrupt` 로
+ *   rename 하고 `{trades: []}` 를 돌려준다. 판정 입장에서 그 값은 "봇 매수기록 0건" 과 구분되지
+ *   않아 **봇 포지션이 전량 자동격리**되고 검증된 -15% 손절이 조용히 사라진다.
+ *   그래서 판정용은 실패를 null 로 구분해 '판정 보류'(classifyPosition → unknown)로 떨어뜨린다.
+ *   30초 루프이므로 mtime 캐시를 둔다.
+ */
+let ownJournalCache = { mtime: -1, trades: null };
+function readJournalTradesSafe() {
+  for (const p of [JOURNAL, JOURNAL + '.bak']) {
+    if (!existsSync(p)) continue;
+    try {
+      const mt = statSync(p).mtimeMs;
+      if (ownJournalCache.trades && ownJournalCache.mtime === mt) return ownJournalCache.trades;
+      const j = JSON.parse(readFileSync(p, 'utf8'));
+      if (j && Array.isArray(j.trades)) { ownJournalCache = { mtime: mt, trades: j.trades }; return j.trades; }
+    } catch { /* 다음 후보로 */ }
+  }
+  return null;   // 판정 보류
 }
 /**
  * ★ 2026-08-01: 저널도 원자쓰기로 바꿨다.
@@ -948,8 +971,43 @@ while (true) {
     else if (!String(e.message).includes('no_authorization_ip')) log(`조회 실패(재시도): ${e.message.slice(0, 60)}`);
     await new Promise(r => setTimeout(r, POLL_MS)); continue;
   }
-  // LIVE_EXCLUDE(정적) + 동적 봇제외(텔레그램 수동매수, .bot-exclude.json)는 봇이 전혀 안 건드림 — items에서 제외(청산·슬롯계산 모두 스킵)
-  const EXCLUDED = new Set([...LIVE_EXCLUDE, ...readBotExclude()]);
+  // LIVE_EXCLUDE(정적) + 격리 목록(수동 .bot-exclude.json ∪ 자동 .bot-exclude-auto.json)은
+  //   봇이 전혀 안 건드림 — items 에서 제외(청산·슬롯계산 모두 스킵)
+  const EXCLUDED_BEFORE = new Set([...LIVE_EXCLUDE, ...readBotExclude()]);
+  /**
+   * ★ 2026-08-26 신설: 소유권 판정.
+   *   봇이 산 적 없는 포지션을 봇이 자동으로 파는 것을 원천 차단한다.
+   *   `sub 미상` 은 ① 사용자가 산 것 ② 봇이 샀는데 meta 를 잃은 것 둘 다를 뜻하므로 저널로 가른다.
+   *   ②를 격리하면 검증된 손절이 사라지므로 반드시 구분해야 한다.
+   *   설계: docs/superpowers/specs/2026-08-26-reserved-exit-ownership-guards-design.md
+   */
+  const ownTrades = readJournalTradesSafe();
+  for (const i of (holdings?.items ?? [])) {
+    if (i.marketCountry !== 'KR' || !(Number(i.quantity) > 0)) continue;
+    const code = i.symbol;
+    if (EXCLUDED_BEFORE.has(code)) continue;                       // 이미 격리됨
+    const cls = classifyPosition({
+      code, brokerQty: Number(i.quantity), currentPx: Number(i.lastPrice),
+      meta: state.meta[code], trades: ownTrades,
+    });
+    if (cls.kind === 'bot' && cls.restoreMeta) {
+      state.meta[code] = { ...cls.restoreMeta };
+      saveState();
+      log(`🔧 meta 복원 ${i.name}(${code}) — ${cls.why} → sub=${cls.restoreMeta.sub}, 진입 ${cls.restoreMeta.entry.toLocaleString()}`);
+      tgNotify(`🔧 ${i.name}(${code}) 의 meta 를 저널에서 복원했습니다 (${cls.restoreMeta.sub}).\n봇의 검증된 청산 규칙이 다시 적용됩니다.`);
+    } else if (cls.kind === 'user') {
+      try {
+        addBotExcludeAuto(code);
+        log(`🔒 자동 격리 ${i.name}(${code}) — ${cls.why}`);
+        tgNotify(`⚠️ ${i.name}(${code}) 을 자동 격리했습니다.\n봇이 산 것이 아니라 건들지 않습니다.\n목표·손절 도달 시 알림만 보냅니다.\n봇에게 돌려주려면: 격리해제 ${i.name}`);
+      } catch (e) {
+        log(`🚨 자동 격리 실패 ${code}: ${String(e.message).slice(0, 100)} — 다음 사이클 재시도`);
+      }
+    } else if (cls.kind === 'unknown') {
+      logGate(`소유 판정 보류 ${i.name}(${code}) — ${cls.why}`, `own|${code}`);
+    }
+  }
+  const EXCLUDED = new Set([...LIVE_EXCLUDE, ...readBotExclude()]);   // 방금 격리한 것 반영
   const items = (holdings?.items ?? []).filter(i => i.marketCountry === 'KR' && Number(i.quantity) > 0 && !EXCLUDED.has(i.symbol));
   const today = now().slice(0, 10);
   // ★ 2026-08-01: 봇이 보유 중인 종목을 사용자가 텔레그램으로 수동 매수하면 tg-order 가 그 종목을
