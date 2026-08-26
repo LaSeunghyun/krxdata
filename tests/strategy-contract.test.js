@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { BACKTEST_COMBO_CAPS, LIVE_COMBO_CAPS, LIVE_MAX_ORDER_VALUE, LIVE_MAX_ORDERS_PER_DAY, LIVE_SLOTS, LIVE_RSI2_UNIVERSE_LIMIT, HARD_STOP_PCT, TRAIL_PCT } from '../strategy-contract.mjs';
+import { BACKTEST_COMBO_CAPS, LIVE_COMBO_CAPS, LIVE_MAX_ORDER_VALUE, LIVE_MAX_ORDERS_PER_DAY, LIVE_SLOTS, LIVE_RSI2_UNIVERSE_LIMIT, HARD_STOP_PCT, TRAIL_PCT, AI_TRADER } from '../strategy-contract.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -47,4 +47,12 @@ test('live execution constants stay small-account safe', () => {
   assert.equal(LIVE_MAX_ORDERS_PER_DAY, 3);
   assert.equal(LIVE_SLOTS, 5);
   assert.equal(LIVE_RSI2_UNIVERSE_LIMIT, 420);
+});
+
+// 2026-08-26: AI 청산권고는 사람 승인을 거친다. 실적 3건·평균 -4.93%·승 0/3 이고,
+//   그 3건은 전부 사용자가 직접 산 포지션이라 소유권 가드 적용 후 유효 표본은 0건이 된다.
+//   매수는 이미 텔레그램 승인인데 매도만 자동집행이던 비대칭을 없앤다.
+test('AI 청산은 기본값이 사람 승인이다', () => {
+  assert.equal(AI_TRADER.sellRequiresApproval, true,
+    'false 로 두면 미검증 기능이 실계좌에 자동집행된다 — 되돌릴 때만 명시적으로 바꾼다');
 });
