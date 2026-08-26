@@ -27,6 +27,7 @@ import { buildLiveCandidates, applyComboCaps } from './live-parity.mjs';
 import { readBotExclude, addBotExcludeAuto, removeBotExcludeAuto } from './bot-exclude.mjs';
 import { classifyPosition } from './position-ownership.mjs';
 import { plannedSellQty } from './exit-qty.mjs';
+import { readRequestsAfter } from './tg-requests.mjs';
 // ★ 2026-08-01: resolveStock 이 import 목록에 없어 667행 CA서킷 해제 호출이 ReferenceError 였다
 //   (try/catch 안이라 프로세스는 안 죽지만 텔레그램 "CA서킷 해제" 명령이 **한 번도 동작할 수 없었다**).
 import { executeBuy, executeSell, resolveStock } from './tg-order.mjs';
@@ -625,6 +626,64 @@ async function morningBrief(today) {
   } catch (e) { log(`아침 브리핑 조회 실패(10분 후 재조회): ${String(e.message).slice(0, 60)}`); }
   briefCache = { day: today, text, at: Date.now() };
   return text;
+}
+/**
+ * 이번 사이클 AI 판단이 실제로 읽은 브리핑의 날짜. 청산 권고문에 실어 **사람이 사유의 신선도를
+ *   직접 판단**하게 한다. 08-25 09:33 에 만들어진 사유("간밤 미 반도체 SOXX -4%", 실제로는 08-24
+ *   미국장)가 22.5시간 뒤 08-26 08:00 에 그대로 집행됐고, 그 사이 08-25 미국장은 SOXX +1.56% 로
+ *   반등했다. 사람에게 날짜를 보여주는 것만으로 이 유형이 잡힌다.
+ */
+const briefDayOf = () => (briefCache.text ? briefCache.day : null);
+/**
+ * `청산승인 <종목명>` 처리 — 제안을 실제 예약으로 승격시킨다.
+ *   기존 가드(중복예약·당일판정완료·일일상한)를 전부 그대로 적용한다. 상한 카운터는 **승인 시점**에
+ *   소비한다 — 제안은 무료이고 실제 예약이 생길 때만 비용이 든다.
+ */
+function applyExitApproval(r, today, items) {
+  const code = String(r.code ?? ''), nm = r.name ?? code;
+  const p = state.aiExitPending?.[code];
+  if (!p) { tgNotify(`⚠️ ${nm} 의 청산 제안이 없습니다(만료됐거나 제안된 적이 없습니다).`); return; }
+  const m = state.meta[code];
+  if (!m) { delete state.aiExitPending[code]; saveState(); tgNotify(`⚠️ ${nm} 은 봇 관리 포지션이 아닙니다 — 승인 무효.`); return; }
+  if (m.exitAt) { delete state.aiExitPending[code]; saveState(); tgNotify(`⚠️ ${nm} 은 이미 청산 예약(${m.exitAt})이 있습니다 — 승인 무효.`); return; }
+  if (m.judgedDay === today) { tgNotify(`⚠️ ${nm} 은 오늘 종가판정이 끝났습니다 — 다음 거래일에 재판단합니다.`); return; }
+  if ((state.aiSellCount ?? 0) >= AI_TRADER.sellMaxPerDay) { tgNotify(`⚠️ AI 청산 일일 상한(${AI_TRADER.sellMaxPerDay}건) 도달 — ${nm} 승인을 보류합니다.`); return; }
+  const qty = Number(items.find(i => i.symbol === code)?.quantity ?? 0);
+  if (!(qty > 0)) { tgNotify(`⚠️ ${nm} 보유수량을 확인할 수 없어 승인을 보류합니다.`); return; }
+
+  m.exitAt = `AI판단(${p.why.slice(0, 60)})`; m.exitDay = today; m.exitFrac = 1; m.exitQty = qty; m.aiExit = true;
+  state.aiSellCount = (state.aiSellCount ?? 0) + 1;
+  delete state.aiExitPending[code];
+  saveState();
+  log(`AI청산예약(사용자 승인) ${code}(${nm}) ${qty}주 (${state.aiSellCount}/${AI_TRADER.sellMaxPerDay})`);
+  tgNotify(`✅ 청산 승인: ${nm} ${qty}주 — 익일 개장 집행 예정입니다.`);
+}
+/**
+ * `격리해제 <종목명>` 처리.
+ *   ★ 봇이 산 적 없는 종목은 **거부한다.** 적용할 검증된 청산 규칙이 없기 때문이다.
+ *     검증된 사다리는 rsi2/hi120 진입 신호에 묶여 있고(judgeExitsAtClose 가 그 둘만 판정한다),
+ *     임의의 sub 를 붙이면 그 포지션은 폐지된 장중 손절·트레일 경로로 떨어진다(청산건당 -0.69%p).
+ *     같은 위험을 이 파일의 "sub 미상 포지션의 자동매도를 제거하고 경보만 남긴다" 주석이 이미 경고한다.
+ */
+function applyUnquarantine(r, trades, holdings) {
+  const code = String(r.code ?? ''), nm = r.name ?? code;
+  const it = (holdings?.items ?? []).find(x => x.symbol === code);
+  if (!it) { tgNotify(`⚠️ ${nm} 은 현재 보유 중이 아닙니다 — 격리해제할 것이 없습니다.`); return; }
+  const cls = classifyPosition({
+    code, brokerQty: Number(it.quantity), currentPx: Number(it.lastPrice),
+    meta: null, trades,                       // meta 를 비워 저널 판정을 강제한다
+  });
+  if (cls.kind === 'unknown') { tgNotify(`⚠️ 지금은 저널을 읽을 수 없어 ${nm} 의 소유를 판정할 수 없습니다. 잠시 후 다시 시도해주세요.`); return; }
+  if (cls.kind === 'bot' && cls.restoreMeta) {
+    try { removeBotExcludeAuto(code); } catch (e) { log(`격리해제 파일 쓰기 실패 ${code}: ${String(e.message).slice(0, 80)}`); tgNotify(`⚠️ ${nm} 격리해제 중 파일 오류 — 다시 시도해주세요.`); return; }
+    state.meta[code] = { ...cls.restoreMeta };
+    saveState();
+    log(`격리해제 ${code}(${nm}) — ${cls.why} → sub=${cls.restoreMeta.sub}`);
+    tgNotify(`✅ 격리해제: ${nm} — 봇 규칙 재적용(${cls.restoreMeta.sub}).`);
+    return;
+  }
+  log(`격리해제 거부 ${code}(${nm}) — ${cls.why}`);
+  tgNotify(`⚠️ ${nm} 은 봇이 산 적이 없어 격리를 해제할 수 없습니다.\n적용할 검증된 청산 규칙이 없습니다(진입 신호를 봇이 만들지 않았습니다).\n이 종목은 매도사인 알림으로 직접 관리하시거나, 매도 후 봇이 스스로 편입하게 두시면 됩니다.`);
 }
 // 하락경보: call_direction=='down' 이거나 (하락확률−상승확률 ≥ probDiff AND confidence ≥ minConf)
 function isBearish(f) {
@@ -1554,23 +1613,71 @@ while (true) {
   //   장중 즉시 매도로 만들지 않는 이유: 분봉 782쌍 실측에서 장중 개입은 트레일·손절 모두 악화였고,
   //   "종가판정 → 익일집행"이 백테와 라이브를 일치시킨 구조다. 이걸 깨면 검증 전체가 무효가 된다.
   //   일일 상한(sellMaxPerDay)이 없으면 한 판단으로 보유 전량 회전이 매일 가능하다 → 카운터로 막는다.
+  // ★ 2026-08-26: AI 청산권고는 **사람 승인**을 거친다(매수와 동일한 A+C 모델).
+  //   기존엔 권고가 곧바로 m.exitAt 이 되어 익일 개장에 자동집행됐고, 실적은 3건 · 평균 -4.93% ·
+  //   승 0/3 이며 그 3건은 전부 사용자가 직접 산 295310 이었다. 소유권 가드 적용 후 이 기능의
+  //   유효 표본은 0건이다. 미검증 기능을 실계좌에 자동집행하지 않는다.
+  //   AI_TRADER.sellRequiresApproval = false 로 두면 종전 자동집행으로 롤백된다.
   if (ai.mode === 'live' && ai.sell?.size) {
-    let n = 0;
+    const pend = (state.aiExitPending ??= {});
     for (const [code, why] of ai.sell) {
-      if ((state.aiSellCount ?? 0) >= AI_TRADER.sellMaxPerDay) { logGate(`AI청산예약 상한 도달(${AI_TRADER.sellMaxPerDay}/일) — ${code} 스킵`, 'aisell|cap'); break; }
       const m = state.meta[code];
       if (!m || m.exitAt) continue;                      // 미보유·기존예약은 스킵
       // ★ 2026-08-01: 오늘 종가판정이 끝난 뒤(15:35~20:00)에 심으면 그 예약은 **익일 개장에 집행돼
       //   다음 판정(15:35)보다 먼저 끝난다** → aiExitPark 대조를 영구히 못 받는다. 즉 "검증된 청산
       //   사다리 우선" 불변식이 이 시간창에서만 통째로 우회된다. defer 경로는 이미 같은 가드가 있는데
       //   sell 만 빠져 있었다. AI 매도는 08:00~15:35 창에서만 등록돼 그날 판정과 반드시 겨루게 한다.
-      if (m.judgedDay === today) { log(`AI청산예약 무효 ${code}: 오늘 종가판정 완료(${m.exitAt ?? '보유 유지'}) — 다음 거래일 판단에서 재검토`); continue; }
-      m.exitAt = `AI판단(${String(why).slice(0, 60)})`; m.exitDay = today; m.exitFrac = 1; m.aiExit = true;
-      state.aiSellCount = (state.aiSellCount ?? 0) + 1; n++;
-      log(`AI청산예약 ${code} (${state.aiSellCount}/${AI_TRADER.sellMaxPerDay}) — ${why}`);
+      //   (2026-08-26: 사람 승인 경로로 바뀐 뒤에도 같은 이유로 제안 자체를 이 창에서만 만든다.)
+      if (m.judgedDay === today) { log(`AI청산 무효 ${code}: 오늘 종가판정 완료(${m.exitAt ?? '보유 유지'}) — 다음 거래일 판단에서 재검토`); continue; }
+
+      if (!AI_TRADER.sellRequiresApproval) {             // 롤백 경로 (종전 동작)
+        if ((state.aiSellCount ?? 0) >= AI_TRADER.sellMaxPerDay) { logGate(`AI청산예약 상한 도달(${AI_TRADER.sellMaxPerDay}/일) — ${code} 스킵`, 'aisell|cap'); break; }
+        m.exitAt = `AI판단(${String(why).slice(0, 60)})`; m.exitDay = today; m.exitFrac = 1;
+        m.exitQty = Number(items.find(i => i.symbol === code)?.quantity ?? 0); m.aiExit = true;
+        state.aiSellCount = (state.aiSellCount ?? 0) + 1;
+        saveState();
+        log(`AI청산예약 ${code} (${state.aiSellCount}/${AI_TRADER.sellMaxPerDay}) — ${why}`);
+        tgNotify(`📌 AI 청산예약 ${code} — 익일 개장 집행 예정`);
+        continue;
+      }
+
+      if (pend[code]?.day === today) continue;           // 같은 날 중복 제안 금지
+      const nm = items.find(i => i.symbol === code)?.name ?? code;
+      const ret = (() => { const it2 = items.find(i => i.symbol === code); const e = Number(it2?.averagePurchasePrice), p2 = Number(it2?.lastPrice); return e > 0 && p2 > 0 ? ((p2 / e - 1) * 100).toFixed(1) : '?'; })();
+      pend[code] = { name: nm, why: String(why).slice(0, 200), briefDay: briefDayOf(), day: today, at: now(), expiresAt: `${today} 20:00 KST` };
+      saveState();
+      log(`AI청산제안 ${code}(${nm}) — 승인 대기. 근거 브리핑 ${pend[code].briefDay ?? '없음'} · ${why}`);
+      tgNotify(`📌 청산 권고: ${nm}(${code}) ${ret}%\n사유: ${String(why).slice(0, 300)}\n근거 브리핑: ${pend[code].briefDay ?? '없음'}\n승인: 청산승인 ${nm}\n(미승인 시 오늘 20:00 만료)`);
     }
-    if (n) { saveState(); tgNotify(`📌 AI 청산예약 ${n}건 — 익일 개장 집행 예정`); }
   }
+  // 만료된 제안 정리 — 승인 없이 날이 바뀌면 폐기한다(다음 판단에서 다시 제안된다).
+  if (state.aiExitPending) {
+    for (const [code, p] of Object.entries(state.aiExitPending)) {
+      if (p?.day === today) continue;
+      delete state.aiExitPending[code];
+      log(`AI청산제안 만료 ${code}(${p?.name ?? ''}) — 미승인`);
+      tgNotify(`⌛ 청산 권고 만료: ${p?.name ?? code} — 승인이 없어 폐기했습니다.`);
+      saveState();
+    }
+  }
+  /**
+   * ★ 텔레그램 요청 소비 (청산승인 · 격리해제).
+   *   writer 는 telegram-agent 단독이고 여기는 읽기 전용 + 커서다(파일당 writer 1개 = 락 불필요).
+   *   판정을 여기서 하는 이유: 승인·격리해제는 봇 상태를 바꾸는 일이라 상태 소유자가 결정해야 한다.
+   */
+  try {
+    const cur = Number(state.tgReqCursor?.lines ?? 0);
+    const { items: reqs, lines, skipped } = readRequestsAfter(cur);
+    if (skipped) log(`⚠️ 텔레그램 요청 ${skipped}줄 파싱 실패 — 해당 줄만 건너뛴다`);
+    for (const r of reqs) {
+      if (r?.type === 'ai_exit_approve') applyExitApproval(r, today, items);
+      // ★ ownTrades 변수를 재사용하지 않고 다시 부른다 — 이 블록과 소유 판정 루프 사이에 수백 줄이
+      //   있어 스코프 의존이 깨지기 쉽고, 깨지면 ReferenceError 가 런타임에만 드러난다.
+      //   readJournalTradesSafe 는 mtime 캐시라 재호출 비용이 사실상 0이다.
+      else if (r?.type === 'unquarantine') applyUnquarantine(r, readJournalTradesSafe(), holdings);
+    }
+    if (lines !== cur) { state.tgReqCursor = { lines }; saveState(); }
+  } catch (e) { log(`텔레그램 요청 소비 오류: ${String(e.message).slice(0, 120)}`); }
   // ★ AI 손절유예 플래그를 포지션에 심는다. 실제 유예는 15:35 종가판정에서 1회만 소비된다.
   //   장중엔 rsi2 청산 판정이 없으므로(장중 무개입) 여기서 심어두면 된다. 단 **오늘 판정이 이미
   //   끝났으면 심지 않는다** — 소비 시점이 지나 영구 미소비 플래그가 되고 "유예했다"는 오보가 된다.
