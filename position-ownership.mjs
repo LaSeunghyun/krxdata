@@ -28,7 +28,15 @@ export function botHeldQty(trades, code) {
   return q;
 }
 
-/** 저널에서 이 종목의 마지막 BUY 레코드 (복원 meta 의 원천). */
+/**
+ * 저널에서 이 종목의 마지막 BUY 레코드 (복원 meta 의 원천).
+ *
+ * ⚠️ 복수 체결을 합산하지 않고 **마지막 한 건**만 본다. 부분체결로 쌓은 포지션이면 entry 가
+ *   마지막 체결가만 반영한다. 그래도 되는 이유: stock-live 가 브로커 평단과 0.5% 이상 벌어지면
+ *   m.entry 를 재동기화하고(`stock-live.mjs:757-761`) m.hi 는 매 사이클 자가치유된다(`:1072`).
+ *   즉 당일 자가정정되는 부정확성이지 상시 오류가 아니다. 정밀한 가중평균이 필요해지면
+ *   그때 바꾸되, 지금은 소비 지점이 브로커 평단을 신뢰하므로 불필요하다.
+ */
 function lastBuy(trades, code) {
   for (let i = trades.length - 1; i >= 0; i--) {
     const t = trades[i];

@@ -46,6 +46,12 @@ test('meta.sub 가 있으면 저널을 보지 않고 bot 으로 통과시킨다'
   const r = classifyPosition({ code: '295310', brokerQty: 326, currentPx: 48300, meta: { sub: 'rsi2' }, trades: TRADES });
   assert.equal(r.kind, 'bot');
   assert.equal(r.restoreMeta, undefined);
+
+  // ★ 이 단언이 핵심이다: 저널을 못 읽어도(trades=null) meta.sub 가 있으면 bot 이어야 한다.
+  //   단락이 Array.isArray(trades) 검사보다 뒤로 밀리면 여기서 'unknown' 이 나오고,
+  //   운영에서는 저널이 깨진 날 봇 포지션 전체가 판정 보류로 떨어져 청산이 멈춘다.
+  assert.equal(classifyPosition({ code: '042660', brokerQty: 34, currentPx: 1, meta: { sub: 'rsi2' }, trades: null }).kind, 'bot');
+  assert.equal(classifyPosition({ code: '042660', brokerQty: 34, currentPx: 1, meta: { sub: 'rsi2' }, trades: undefined }).kind, 'bot');
 });
 
 test('사용자가 봇 보유분에 추가매수하면 user 로 떨어진다', () => {
@@ -91,4 +97,12 @@ test('정상 유한값은 그대로 통과한다 (검출력 유지)', () => {
   const r = classifyPosition({ code: 'A', brokerQty: 10, currentPx: 95000, meta: {}, trades: B });
   assert.equal(r.restoreMeta.entry, 91100);
   assert.equal(r.restoreMeta.hi, 95000);
+});
+
+test('종목코드가 숫자로 들어와도 문자열과 매칭된다', () => {
+  const numCode = [{ ts: 't', code: 42660, side: 'BUY', qty: 34, px: 91100, sub: 'rsi2' }];
+  assert.equal(botHeldQty(numCode, '42660'), 34);
+  assert.equal(botHeldQty(numCode, 42660), 34);
+  const r = classifyPosition({ code: '42660', brokerQty: 34, currentPx: 95000, meta: {}, trades: numCode });
+  assert.equal(r.kind, 'bot');
 });
