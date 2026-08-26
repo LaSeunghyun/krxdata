@@ -59,3 +59,16 @@ test('부분익절 최소 1주는 상한이 남아 있을 때만 보장된다', 
   assert.equal(r.sellQty, 1, 'floor(1*0.5)=0 이지만 상한이 1 남았으므로 1주');
   assert.equal(r.release, false);
 });
+
+test('frac 이 비유한이면 전량(1)로 폴백한다 — NaN 이 주문수량으로 새어나가면 예약이 영구 미집행된다', () => {
+  for (const f of [NaN, Infinity, -Infinity, 'abc']) {
+    const r = plannedSellQty({ brokerQty: 100, exitQty: 100, frac: f });
+    assert.ok(Number.isInteger(r.sellQty), `sellQty 가 정수가 아님(frac=${String(f)}): ${r.sellQty}`);
+    assert.equal(r.sellQty, 100, `frac=${String(f)} 는 전량으로 폴백해야 한다`);
+  }
+});
+
+test('정상 frac 은 그대로 동작한다 (검출력 유지)', () => {
+  assert.equal(plannedSellQty({ brokerQty: 100, exitQty: 100, frac: 1 }).sellQty, 100);
+  assert.equal(plannedSellQty({ brokerQty: 100, exitQty: 100, frac: 0.5 }).sellQty, 50);
+});

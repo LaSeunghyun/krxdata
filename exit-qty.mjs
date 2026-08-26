@@ -19,7 +19,11 @@ export function plannedSellQty({ brokerQty, exitQty, frac }) {
   // ★ base<=0 분기가 없으면 아래 Math.max(1, ...) 가 **1주를 판다.** 예약이 소진됐는데
   //   사용자가 새로 사서 보유가 다시 0보다 커진 경우가 정확히 그렇다(사고의 축소판).
   if (!(base > 0)) return { sellQty: 0, base: 0, release: true };
-  const f = Number(frac ?? 1);
+  // ★ `??` 는 null/undefined 만 잡는다. NaN 이 들어오면 f>=1 이 false 라 부분익절 분기로 가고
+  //   Math.max(1, Math.floor(base * NaN)) = NaN 이 되어 주문 수량이 "NaN" 으로 나간다
+  //   (거래소 422 거부 → 예약이 영구 미집행 → 그 포지션 손절 정지). 유한값만 받는다.
+  const fRaw = Number(frac ?? 1);
+  const f = Number.isFinite(fRaw) ? fRaw : 1;
   const sellQty = f >= 1 ? base : Math.max(1, Math.floor(base * f));
   return { sellQty, base, release: false };
 }
