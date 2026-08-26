@@ -26,6 +26,7 @@ import { LIVE_SLOTS, LIVE_UNIVERSE_LIMIT, LIVE_COMBO_CAPS, CONVICTION_SIZING, FO
 import { buildLiveCandidates, applyComboCaps } from './live-parity.mjs';
 import { readBotExclude, addBotExcludeAuto, removeBotExcludeAuto } from './bot-exclude.mjs';
 import { classifyPosition } from './position-ownership.mjs';
+import { plannedSellQty } from './exit-qty.mjs';
 // ★ 2026-08-01: resolveStock 이 import 목록에 없어 667행 CA서킷 해제 호출이 ReferenceError 였다
 //   (try/catch 안이라 프로세스는 안 죽지만 텔레그램 "CA서킷 해제" 명령이 **한 번도 동작할 수 없었다**).
 import { executeBuy, executeSell, resolveStock } from './tg-order.mjs';
@@ -754,7 +755,7 @@ async function judgeExitsAtClose(items, state, today) {
     //   (판정 자체는 아래 공통 로직을 그대로 타므로, 여기서는 예약을 잠시 걷어낸다.)
     let aiExitPark = null;
     if (m.aiExit && m.exitAt && m.exitDay === today) {
-      aiExitPark = { exitAt: m.exitAt, exitFrac: m.exitFrac };
+      aiExitPark = { exitAt: m.exitAt, exitFrac: m.exitFrac, exitQty: m.exitQty };
       delete m.exitAt; delete m.exitFrac;
     }
     const newest = cd[cd.length - 1];
@@ -765,7 +766,7 @@ async function judgeExitsAtClose(items, state, today) {
     const livePx = Number(it.lastPrice);
     const closeToday = hasToday ? Number(newest.close) : livePx;
     // ★ 파킹 이후의 조기 이탈은 반드시 AI 예약을 되돌려놓는다(안 하면 그 예약이 조용히 사라진다).
-    const unpark = () => { if (aiExitPark) { m.exitAt = aiExitPark.exitAt; m.exitDay = today; m.exitFrac = aiExitPark.exitFrac ?? 1; } };
+    const unpark = () => { if (aiExitPark) { m.exitAt = aiExitPark.exitAt; m.exitDay = today; m.exitFrac = aiExitPark.exitFrac ?? 1; m.exitQty = aiExitPark.exitQty; } };
     if (!(closeToday > 0)) { unpark(); continue; }
     // MA(RSI_MA_N) = 당일 종가 + 직전 (N-1)일 종가. hasToday면 최신봉이 당일이므로 그 앞을 쓴다.
     const prior = (hasToday ? cd.slice(0, -1) : cd).map(b => Number(b.close)).filter(v => v > 0);
@@ -844,9 +845,11 @@ async function judgeExitsAtClose(items, state, today) {
     //   AI 전량청산에 선점되지 않는다.
     if (aiExitPark) {
       if (why) log(`  AI 예약(${aiExitPark.exitAt}) → 기계 판정(${why})이 우선 적용`);
-      else { m.exitAt = aiExitPark.exitAt; m.exitDay = today; m.exitFrac = aiExitPark.exitFrac ?? 1; }
+      else { m.exitAt = aiExitPark.exitAt; m.exitDay = today; m.exitFrac = aiExitPark.exitFrac ?? 1; m.exitQty = aiExitPark.exitQty; }
     }
-    if (why) { m.exitAt = why; m.exitDay = today; m.exitFrac = frac; }
+    // ★ 2026-08-26: 예약에 그 시점 보유수량을 함께 박는다. 예약청산은 브로커 보유수량을 실시간으로
+    //   읽으므로, 상한이 없으면 예약 이후 사용자가 산 물량까지 판다(08-26 재매수 143주 사고).
+    if (why) { m.exitAt = why; m.exitDay = today; m.exitFrac = frac; m.exitQty = Number(it.quantity); }
     log(`종가판정[${m.sub}] ${it.name}(${it.symbol}) 종가 ${closeToday.toLocaleString()}${hasToday ? '(일봉)' : '(현재가대체)'}${extra} / ${ret.toFixed(1)}% / ${holdDays}일차 → ${why ? '★예약 ' + why + (frac < 1 ? ` ${Math.round(frac * 100)}%` : '') : (m.exitAt ? '★AI예약 유지 ' + m.exitAt : '보유 유지')}`);
   }
   saveState();
@@ -1287,9 +1290,18 @@ while (true) {
         const lpx = limitSellPx(spx);
         // ★ 2026-07-29: 예약청산이 부분익절이면 절반만 팔고 포지션을 유지한다(백테 tp_half/tp_quarter 재현).
         //   m.exitFrac: 1=전량 / 0.5=절반. 전량이 아니면 meta를 지우지 않고 tp1/tp2 플래그만 세운다.
+        // ★ 2026-08-26: 여기에 **예약 시점 수량 상한**을 건다. base = min(브로커 보유, 예약 잔량).
+        //   partial 판정도 qty 가 아니라 base 기준이다 — 봇 몫 179주를 전량 청산하는 것을
+        //   "브로커 322주 중 179주"로 보면 부분익절로 오판해 tp 플래그가 서고 meta 가 남는다.
         const frac = Number(m.exitFrac ?? 1);
-        const sellQty = frac >= 1 ? qty : Math.max(1, Math.floor(qty * frac));
-        const partial = sellQty < qty;
+        const { sellQty, base, release } = plannedSellQty({ brokerQty: qty, exitQty: m.exitQty, frac });
+        if (release) {
+          log(`예약청산 해제 ${it.name}(${it.symbol}) — 예약 잔량 소진(exitQty=${m.exitQty ?? '없음'}, 보유 ${qty}). 나머지는 사용자 매수분이다`);
+          delete m.exitAt; delete m.exitDay; delete m.exitFrac; delete m.exitQty; delete m.aiExit;
+          saveState();
+          continue;
+        }
+        const partial = sellQty < base;
         const o = await createOrder(seq, { symbol: it.symbol, side: 'SELL', orderType: 'LIMIT', price: String(lpx), quantity: String(sellQty) });
         const filled = await settleOrder(o?.orderId ?? o?.id, it.symbol, 'SELL', qty, `매도 ${it.symbol}`, entry);
         if (filled.ok) {
@@ -1306,13 +1318,18 @@ while (true) {
           recordTrade({ ts: now(), code: it.symbol, name: it.name, side: 'SELL', px: fpx, limitPx: lpx, fillSrc: filled.fillPx ? 'actual' : 'limit', qty: fq, orderQty: sellQty, partialFill: under || undefined, entry, ret: Number(fret.toFixed(1)), reason, forecast: harvest ? fc : undefined });
           if (under) {
             // 수량 미달 → 상태 전이 없음. 남은 수량은 기존(검증된) 규칙이 다음 판정에서 계속 관리한다.
-            log(`  ⚠️ 체결수량 미달 — meta·예약 유지, 다음 판정에서 재시도`);
-            tgNotify(`⚠️ 청산 수량 미달: ${it.name} ${fq}/${sellQty}주만 체결됐습니다.\n잔량은 기존 청산 규칙이 계속 관리합니다(상태 변경 없음).`);
+            // ★ 2026-08-26: 단 **예약 잔량은 체결분만큼 줄인다.** 이게 없으면 다음 시도가 다시
+            //   전량 상한으로 돌아가 사용자 재매수분을 삼킨다(08-26 08:06 이 정확히 그 경로였다).
+            m.exitQty = Math.max(0, base - fq);
+            log(`  ⚠️ 체결수량 미달 — meta·예약 유지(예약 잔량 ${m.exitQty}주), 다음 판정에서 재시도`);
+            tgNotify(`⚠️ 청산 수량 미달: ${it.name} ${fq}/${sellQty}주만 체결됐습니다.\n잔량 ${m.exitQty}주는 기존 청산 규칙이 계속 관리합니다.`);
           } else if (partial) {
             // 부분익절: 포지션 유지. tp 플래그를 세워 다음 판정에서 같은 단계가 재발동하지 않게 한다.
             if (/tp1/.test(reason)) m.tp1 = true; else if (/tp2/.test(reason)) m.tp2 = true;
-            delete m.exitAt; delete m.exitFrac; delete m.exitDay;
+            delete m.exitAt; delete m.exitFrac; delete m.exitDay; delete m.exitQty;
           } else {
+            // 예약분 전량 청산. 브로커에 남은 수량이 있다면 그건 사용자가 산 물량이고,
+            //   다음 사이클 소유 판정이 sub 미상 → 저널 봇잔량 0 → 자동 격리로 처리한다.
             delete state.meta[it.symbol];
             (state.soldToday ??= {})[it.symbol] = today;   // 당일 재진입 금지(아래 진입 루프에서 스킵)
           }
