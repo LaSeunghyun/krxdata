@@ -991,7 +991,25 @@ while (true) {
       meta: state.meta[code], trades: ownTrades,
     });
     if (cls.kind === 'bot' && cls.restoreMeta) {
-      state.meta[code] = { ...cls.restoreMeta };
+      /**
+       * ★ 통째 덮어쓰기 금지. restoreMeta 는 `sub` 가 없을 때만 오는데, "meta 가 아예 없다" 와
+       *   "sub 만 없고 나머지는 있다" 가 같은 분기로 들어온다. 후자를 덮으면
+       *     · 누적된 hi(트레일 고점)  · tp1/tp2(부분익절 소진 플래그)
+       *     · exitAt/exitDay/exitFrac(대기 중인 예약)  · caHold(권리락 서킷)
+       *   가 전부 소멸한다. 이 파일은 "meta 를 지우면 검증된 청산이 소멸한다"를 반복 경고하고
+       *   실제로 경보까지 보낸다(meta 고아 정리 블록 참조). 그래서 **병합**한다.
+       *   hi 는 올리기만 한다 — 청산 루프의 `m.hi = Math.max(m.hi ?? px, px)` 와 같은 규칙이다.
+       */
+      const prev = state.meta[code] ?? {};
+      if (prev.exitAt) log(`  ↳ 기존 예약 보존: ${code} ${prev.exitAt} (${prev.exitDay ?? '?'})`);
+      state.meta[code] = {
+        ...cls.restoreMeta,
+        ...prev,                                                        // 기존 필드 우선
+        sub: cls.restoreMeta.sub,                                       // sub 만은 복원값 강제(없어서 복원하는 것)
+        boughtAt: prev.boughtAt ?? cls.restoreMeta.boughtAt,
+        entry: Number(prev.entry) > 0 ? Number(prev.entry) : cls.restoreMeta.entry,
+        hi: Math.max(Number(prev.hi) || 0, cls.restoreMeta.hi),
+      };
       saveState();
       log(`🔧 meta 복원 ${i.name}(${code}) — ${cls.why} → sub=${cls.restoreMeta.sub}, 진입 ${cls.restoreMeta.entry.toLocaleString()}`);
       tgNotify(`🔧 ${i.name}(${code}) 의 meta 를 저널에서 복원했습니다 (${cls.restoreMeta.sub}).\n봇의 검증된 청산 규칙이 다시 적용됩니다.`);
