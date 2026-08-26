@@ -15,6 +15,7 @@ import dotenv from 'dotenv';
 import { getAccounts, getHoldings } from './toss-api.js';
 import { parseCommand, executeBuy, executeSell, resolveStock } from './tg-order.mjs';
 import { readBotExclude, removeBotExclude } from './bot-exclude.mjs';
+import { appendRequest } from './tg-requests.mjs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: join(__dirname, '.env') });
 
@@ -184,10 +185,35 @@ while (true) {
       // 실주문 킬스위치
       if (CMD === '주문ON' || CMD === 'ORDERON') { writeFileSync(ORDERS_FLAG, '1'); await send('🟢 실주문 ON — 매수/매도 명령이 실제 체결됩니다. (끄기: 주문OFF)'); continue; }
       if (CMD === '주문OFF' || CMD === 'ORDEROFF') { if (existsSync(ORDERS_FLAG)) unlinkSync(ORDERS_FLAG); await send('🔴 실주문 OFF — 명령은 DRY(모의)로만 표시됩니다.'); continue; }
-      if (text.startsWith('격리해제')) { // 수동픽 전량 매도·체결 확인 후 자동봇 관리대상 복귀
+      if (text.startsWith('격리해제')) {
+        // ★ 2026-08-26: 판정은 stock-live 가 한다. 여기서는 **자기 소유 파일**(.bot-exclude.json)만
+        //   지우고, 자동 격리분(.bot-exclude-auto.json)은 요청 채널로 넘긴다.
+        //   파일마다 writer 를 하나로 유지하기 위한 것이고(락 불필요), 봇이 산 적 없는 종목은
+        //   stock-live 가 저널을 대조해 거부 사유와 함께 답한다.
         const nm = text.replace(/^격리해제\s*/, '').trim();
         if (!nm) { await send('사용법: 격리해제 <종목명>'); continue; }
-        try { const rr = await resolveStock(nm, { dbQuery }); if (rr.status === 'ok') { removeBotExclude(rr.code); await send(`✅ 격리해제: ${rr.name}(${rr.code}) — 자동봇 관리대상 복귀.`); } else await send(`'${nm}' 못 찾음/모호 — 격리해제 실패.`); } catch (e) { await send('격리해제 오류: ' + String(e.message).slice(0, 120)); }
+        try {
+          const rr = await resolveStock(nm, { dbQuery });
+          if (rr.status === 'ok') {
+            removeBotExclude(rr.code);
+            appendRequest({ type: 'unquarantine', code: rr.code, name: rr.name });
+            await send(`📨 격리해제 요청 접수: ${rr.name}(${rr.code}) — 봇이 저널을 확인한 뒤 결과를 알려드립니다.`);
+          } else await send(`'${nm}' 못 찾음/모호 — 격리해제 실패.`);
+        } catch (e) { await send('격리해제 오류: ' + String(e.message).slice(0, 120)); }
+        continue;
+      }
+      if (text.startsWith('청산승인')) {
+        // AI 청산 권고 승인. 실주문에 준하는 행위라 결정론적 파서만 쓴다(LLM 미사용).
+        //   제안 존재 여부·일일상한·중복예약 판정은 전부 stock-live 가 하고 결과를 회신한다.
+        const nm = text.replace(/^청산승인\s*/, '').trim();
+        if (!nm) { await send('사용법: 청산승인 <종목명>'); continue; }
+        try {
+          const rr = await resolveStock(nm, { dbQuery });
+          if (rr.status === 'ok') {
+            appendRequest({ type: 'ai_exit_approve', code: rr.code, name: rr.name });
+            await send(`📨 청산 승인 접수: ${rr.name}(${rr.code}) — 봇이 예약을 등록하면 알려드립니다.`);
+          } else await send(`'${nm}' 못 찾음/모호 — 청산승인 실패.`);
+        } catch (e) { await send('청산승인 오류: ' + String(e.message).slice(0, 120)); }
         continue;
       }
       // 결정론적 주문 인터셉터 (매수/매도 명령은 claude 안 거치고 tg-order로 직접 처리)
