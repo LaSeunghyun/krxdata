@@ -257,7 +257,9 @@ function runClaude(prompt, { timeoutMs, model }) {
     const [bin, args] = useLock
       ? ['flock', ['-w', String(Math.ceil(AI_TRADER.lockWaitSec)), '-E', String(LOCK_BUSY_CODE), CLAUDE_LOCK, CLAUDE_BIN, ...cArgs]]
       : [CLAUDE_BIN, cArgs];
-    const cp = spawn(bin, args, { cwd: __dirname, env: process.env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+    // DISABLE_HARNESS=1: 자동 프롬프트가 하네스 훅(개인·플러그인 인젝터)에 트리거 오탐돼 워크플로 ~14KB가
+    // 주입되고 텔레메트리를 오염시킨다 (2026-09-02 실측: 30일 주입 101건 중 69건). 두 훅 모두 이 변수를 존중한다.
+    const cp = spawn(bin, args, { cwd: __dirname, env: { ...process.env, DISABLE_HARNESS: '1' }, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
     let out = '', err = '', done = false;
     cp.stdout.on('data', d => out += d);
     cp.stderr.on('data', d => err += d);

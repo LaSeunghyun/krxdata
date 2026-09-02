@@ -451,6 +451,8 @@ export function callClaude(prompt, { timeoutMs = 180_000, extraArgs = [] } = {})
     ? ['flock', ['-w', String(LOCK_WAIT_SEC), CLAUDE_LOCK, 'claude', ...cArgs]]
     : ['claude', cArgs];
   // 프롬프트는 stdin으로 전달 — Windows shell 인자 한계(8191자)·따옴표 깨짐 회피
+  // DISABLE_HARNESS=1: 자동 프롬프트가 하네스 훅(개인·플러그인 인젝터)에 트리거 오탐돼 워크플로 ~14KB가
+  // 주입되고 텔레메트리를 오염시킨다 (2026-09-02 실측: 30일 주입 101건 중 69건). 두 훅 모두 이 변수를 존중한다.
   const res = spawnSync(bin, args, {
     shell: true, encoding: 'utf8',
     // 락 대기가 timeout 을 먹지 않게 대기시간을 더한다. 안 더하면 대기 중에 죽어 LLM 이 항상 실패한다.
@@ -458,6 +460,7 @@ export function callClaude(prompt, { timeoutMs = 180_000, extraArgs = [] } = {})
     input: prompt,
     maxBuffer: 4 * 1024 * 1024,
     windowsHide: true,
+    env: { ...process.env, DISABLE_HARNESS: '1' },
   });
   if (res.error) throw res.error;
   if (res.status !== 0) throw new Error(`claude CLI exit ${res.status}: ${(res.stderr || '').slice(0, 300)}`);
