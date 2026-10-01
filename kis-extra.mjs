@@ -42,5 +42,5 @@ export async function kisGetRetry(path, trId, params) {
     try { j = await res.json(); } catch { throw new Error(`KIS ${trId}: 비JSON 응답 HTTP ${res.status}`); }
     if (j.rt_cd !== '0') throw new Error(`KIS ${trId}: ${String(j.msg1 ?? j.message ?? res.status)} [${j.msg_cd ?? ''}]`);
     return j;
-  }, { retries: 4, base: 700 });
+  }, { retries: 2, base: 700 }); // 이 계층이 유일한 KIS 재시도 층: 호출당 최대 3회
 }

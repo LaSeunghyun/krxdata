@@ -93,6 +93,34 @@ test('fetchThenFlush: DB 호출 수가 항목 수가 아니라 chunk 수다 + fl
   assert.match(bad.failed[0].error, /flush/);
 });
 
+test('fetchThenFlush 음성 대조: 0행 응답은 성공으로 세지 않고 empty 로 따로 센다', async () => {
+  const items = ['a', 'b', 'c', 'd'];
+  let flushed = [];
+  const res = await fetchThenFlush(items, {
+    fetchOne: async (it) => (it === 'a' || it === 'b' ? [] : [{ code: it }]),   // a,b 는 빈 응답
+    flushRows: async (rows) => { flushed.push(...rows); }, chunkSize: 20, sleep: noSleep,
+  });
+  assert.equal(res.empty, 2); assert.equal(res.flushed, 2); assert.equal(res.rows, 2);
+  assert.equal(res.rate, 0.5);                 // 빈 응답은 성공률에 포함되지 않는다
+  assert.equal(res.rateIncludingEmpty, 1);     // 참고용 수치만 따로
+  assert.ok(res.rate < 0.95);
+  assert.deepEqual(res.emptyItems, ['a', 'b']);
+  // 전부 빈 응답이면 성공 0 (이전 구현은 100% 로 보고했다)
+  const all = await fetchThenFlush(['x', 'y'], { fetchOne: async () => [], flushRows: async () => {}, sleep: noSleep });
+  assert.equal(all.rate, 0); assert.equal(all.flushed, 0);
+});
+
+test('withBackoff shouldRetry: 내부 재시도 계층의 오류는 바깥에서 다시 재시도하지 않는다(호출 곱셈 방지)', async () => {
+  const outer = (e) => isThrottleError(e) && !/^KIS \w+:/.test(String(e?.message));
+  let n = 0;
+  await assert.rejects(withBackoff(async () => { n++; throw new Error('KIS FHKST01010900: 초당 거래건수를 초과하였습니다.'); }, { retries: 1, sleep: noSleep, shouldRetry: outer }));
+  assert.equal(n, 1);
+  // 네트워크 오류는 바깥에서 1회 재시도
+  let m = 0;
+  await assert.rejects(withBackoff(async () => { m++; throw new TypeError('fetch failed'); }, { retries: 1, sleep: noSleep, shouldRetry: outer }));
+  assert.equal(m, 2);
+});
+
 test('makeDbQuery: Throttler 응답 후 재시도해 성공, 오류 응답은 throw', async () => {
   const resp = [{ message: 'ThrottlerException: Too Many Requests' }, { message: 'ThrottlerException: Too Many Requests' }, [{ x: 1 }]];
   let i = 0;

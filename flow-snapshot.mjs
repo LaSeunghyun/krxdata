@@ -17,7 +17,7 @@ import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { getInvestorDaily, isKisConfigured } from './kis-api.js';
-import { makeDbQuery, withBackoff, fetchThenFlush } from './lib/retry.mjs';
+import { makeDbQuery, withBackoff, fetchThenFlush, isThrottleError } from './lib/retry.mjs';
 import { parseFlowRows, isStockCode } from './lib/parsers.mjs';
 dotenv.config({ path: join(dirname(fileURLToPath(import.meta.url)), '.env') });
 
@@ -55,7 +55,8 @@ const t0 = Date.now();
 const res = await fetchThenFlush(universe, {
   // KIS 레이트리밋은 kis-api.js 내부(4회)에 더해 여기서 한 번 더 백오프. throttle 이 아닌 오류는 즉시 실패.
   fetchOne: async (code) => {
-    const flows = await withBackoff(() => getInvestorDaily(code), { retries: 4, base: 800 });
+    // kis-api.js 가 레이트리밋('KIS <tr>:' 접두)을 이미 4회 재시도한다. 바깥 재시도는 그 외(네트워크) 오류만 1회로 제한해 호출 곱셈을 막는다.
+    const flows = await withBackoff(() => getInvestorDaily(code), { retries: 1, base: 800, shouldRetry: (e) => isThrottleError(e) && !/^KIS \w+:/.test(String(e?.message)) });
     return parseFlowRows(flows).map(f => ({ code, ...f }));
   },
   flushRows: async (rows) => {
@@ -71,7 +72,7 @@ const res = await fetchThenFlush(universe, {
 
 for (const f of res.failed.slice(0, 5)) console.error(`  ${f.item} 실패: ${String(f.error).slice(0, 100)}`);
 const pct = (res.rate * 100).toFixed(1);
-console.log(`스냅샷 완료${DRY ? '(dry-run, DB 미기록)' : ''}: 종목 ${res.flushed}/${res.total} 성공(${res.failed.length} 실패, 성공률 ${pct}%), 이번 upsert ${res.rows}행, ${Math.round((Date.now() - t0) / 1000)}초`);
+console.log(`스냅샷 완료${DRY ? '(dry-run, DB 미기록)' : ''}: 종목 ${res.flushed}/${res.total} 성공(${res.failed.length} 실패, 0행 응답 ${res.empty}, 성공률 ${pct}%, 0행 포함 ${(res.rateIncludingEmpty * 100).toFixed(1)}%), 이번 upsert ${res.rows}행, ${Math.round((Date.now() - t0) / 1000)}초`);
 const total = await dbQuery(`SELECT count(*) n, count(DISTINCT date) d, count(DISTINCT stock_code) c,
   min(date) mn, max(date) mx FROM stock_investor_flows`);
 const latest = await dbQuery(`SELECT max(date) mx, count(DISTINCT stock_code) c FROM stock_investor_flows

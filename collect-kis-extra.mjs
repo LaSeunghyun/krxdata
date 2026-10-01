@@ -116,7 +116,7 @@ for (const [name, t] of Object.entries(TYPES)) {
     chunkSize: 20, pace: PACE, passes: 2, passPauseMs: 20_000, log: (m) => console.log(`[${name}]${m}`),
   });
   for (const f of res.failed.slice(0, 3)) console.error(`  [${name}] ${f.item} 실패: ${String(f.error).slice(0, 120)}`);
-  console.log(`[${name}] 성공 ${res.flushed}/${res.total} (${(res.rate * 100).toFixed(1)}%), ${res.rows}행, ${Math.round((Date.now() - t0) / 1000)}초`);
+  console.log(`[${name}] 성공 ${res.flushed}/${res.total} (${(res.rate * 100).toFixed(1)}%), 0행 응답 ${res.empty} (포함 시 ${(res.rateIncludingEmpty * 100).toFixed(1)}%), ${res.rows}행, ${Math.round((Date.now() - t0) / 1000)}초`);
   worst = Math.min(worst, res.rate);
   if (!DRY) {
     const s = await dbQuery(`SELECT count(*) n, count(DISTINCT stock_code) c, max(date) mx FROM ${t.table}`);
