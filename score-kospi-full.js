@@ -24,6 +24,14 @@ const DART_KEY   = process.env.DART_API_KEY;
 const PUBLIC_KEY = process.env.PUBLIC_DATA_API_KEY;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
+// --dry-run: DB 쓰기 전부 생략(읽기·점수 계산만). --limit N: 앞 N종목만 (스모크 검증용)
+const DRY_RUN = process.argv.includes("--dry-run");
+const _li = process.argv.indexOf("--limit");
+const LIMIT = _li >= 0 ? Number(process.argv[_li + 1]) : 0;
+// --keep-price: stock_analysis upsert 에서 current_price·market_cap_tril 을 빼서 daily-ranking(Toss, NXT 통합)이 넣은 값을 보존한다.
+//   stock-live 후보 필터가 이 두 컬럼을 읽으므로 점수 재생성이 매매 입력을 흔들지 않게 한다.
+const KEEP_PRICE = process.argv.includes("--keep-price");
+const _stripPrice = ({ current_price, market_cap_tril, ...rest }) => rest;
 
 const DART_BASE   = "https://opendart.fss.or.kr/api";
 const PUBLIC_BASE = "https://apis.data.go.kr/1160100/service";
@@ -267,6 +275,8 @@ function scoreShareholders(shareholders) {
 
 // ── DB upsert helpers ────────────────────────────────────
 async function upsertTable(table, rows) {
+  if (DRY_RUN) return;
+  if (KEEP_PRICE && table === "stock_analysis") rows = rows.map(_stripPrice);
   if (!SUPABASE_URL || !SUPABASE_KEY || !rows.length) return;
   try {
     const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
@@ -315,6 +325,7 @@ async function fetchHistoricalFinancials(stockCodes) {
 
 // ── 공시 마스터 + 감성 분리 적재 ─────────────────────────
 async function flushDisclosures(batch) {
+  if (DRY_RUN) return;
   if (!SUPABASE_URL || !SUPABASE_KEY || !batch.length) return;
   // rcept_no null인 것 제외
   const valid = batch.filter(d => d.rcept_no);
@@ -357,6 +368,7 @@ async function flushDisclosures(batch) {
 
 // 이력 테이블은 append-only (merge-duplicates 없음)
 async function appendTable(table, rows) {
+  if (DRY_RUN) return;
   if (!SUPABASE_URL || !SUPABASE_KEY || !rows.length) return;
   try {
     const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
@@ -377,7 +389,8 @@ async function main() {
   const useAll = process.argv.includes("--all");
   const listFile = useAll ? "kospi-all.json" : "kospi-profitable.json";
   const listKey  = useAll ? "all" : "profitable";
-  const companies = JSON.parse(fs.readFileSync(path.join(__dirname, listFile), "utf8"))[listKey];
+  let companies = JSON.parse(fs.readFileSync(path.join(__dirname, listFile), "utf8"))[listKey];
+  if (LIMIT > 0) companies = companies.slice(0, LIMIT);
   const total = companies.length;
   console.log(`\n=== KOSPI ${useAll ? "전체" : "흑자기업"} ${total}개 전체 점수 계산 ===\n`);
 
@@ -585,7 +598,7 @@ async function main() {
       r.recommendation.slice(0,40),
     ].join(" "));
   }
-  console.log(`\n저장: scored-kospi-full.json | DB upsert 완료`);
+  console.log(`\n저장: scored-kospi-full.json | DB upsert 완료 (dry-run 이면 생략됨)`);
   console.log(`수집 실패 — 시세:${failCounts.quote} 공시:${failCounts.disclosure} 주주:${failCounts.shareholder}`);
 }
 

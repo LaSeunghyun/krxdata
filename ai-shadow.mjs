@@ -13,7 +13,7 @@ import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { appendFileSync } from 'fs';
-import { assembleSignals } from './ai-signals.mjs';
+import { assembleSignals, SCORE_STALE_DAYS } from './ai-signals.mjs';
 import { judgeCandidate } from './ai-judge.mjs';
 import { classifyDisclosure } from './ai-events.mjs';
 // ★ 2026-07-29: 진입가를 판단 시점 실제 가격으로 잡기 위해 KIS를 쓴다.
@@ -177,11 +177,12 @@ async function main() {
   log(`촉매 후보 ${total}종목 → 판단대상 ${cands.length}${dropped ? ` (⚠️ ${dropped}종목은 --max 상한으로 이번 미판단)` : ''}`);
 
   // 3) 후보별 신호조립 + AI 판단 + 기록
-  let buys = 0, skips = 0, errs = 0;
+  let buys = 0, skips = 0, errs = 0, staleN = 0;
   for (const cd of cands) {
     try {
       const sig = await assembleSignals(cd.code, { dbQuery: q, days: DAYS + 5 });
       if (!sig || !sig.events.some(e => BUY_TRIGGER.has(e.type))) { log(`  ${cd.name}(${cd.code}) 촉매 재확인 실패 → 건너뜀`); continue; }
+      if (sig.score?.stale) { staleN++; log(`  [신선도 게이트] ${cd.name}(${cd.code}) stock_analysis ${sig.score.ageDays ?? '?'}일 경과 > ${SCORE_STALE_DAYS}일 → reco·목표가 판단 입력에서 제외`); }
       const dec = judgeCandidate(sig);
       if (!dec) { errs++; log(`  ${cd.name}(${cd.code}) 판단 실패(null)`); continue; }
       await q(`INSERT INTO ai_shadow_decisions (decided_date,stock_code,name,sector,price,decision,conviction,catalyst,thesis,strategy,supporting,opposing,news_check,signals,analyst_check,analyst)
@@ -200,6 +201,6 @@ async function main() {
       } else { skips++; log(`  skip ${sig.name}(${cd.code}) 확신${dec.conviction} — ${(dec.opposing[0] || dec.catalyst).slice(0, 60)}`); }
     } catch (e) { errs++; log(`  ${cd.name}(${cd.code}) 오류: ${String(e.message).slice(0, 80)}`); }
   }
-  log(`=== 완료: BUY ${buys} / SKIP ${skips} / 오류 ${errs} | 오픈 ${openCount}/${SLOTS} ===`);
+  log(`=== 완료: BUY ${buys} / SKIP ${skips} / 오류 ${errs} / 게이트제외 ${staleN} | 오픈 ${openCount}/${SLOTS} ===`);
 }
 main().catch(e => { log(`FATAL: ${e.message}`); process.exit(1); });
