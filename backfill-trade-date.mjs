@@ -17,7 +17,7 @@ import readline from "node:readline";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  REF_STOCKS, calendarFromCandles, mapLoadDatesToTradeDates, ohlcvRows, buildOhlcvUpdateSql,
+  REF_STOCKS, calendarFromCandles, buildCalendarUpsertSql, mapLoadDatesToTradeDates, ohlcvRows, buildOhlcvUpdateSql,
   addDays, toIso, toYmd, isKrxSession, kstToday, MAX_LOOKBACK, COPY_THRESHOLD,
 } from "./trade-date.mjs";
 
@@ -43,7 +43,7 @@ async function dbQuery(sql) {
     });
     const data = await res.json();
     if (Array.isArray(data)) return data;
-    if (attempt < 3) { await new Promise(r => setTimeout(r, 2000 * (attempt + 1))); continue; }
+    if (attempt < 8) { await new Promise(r => setTimeout(r, 5000 * (attempt + 1))); continue; }
     throw new Error(data?.message ?? "DB 쿼리 오류");
   }
 }
@@ -137,10 +137,7 @@ async function cmdCalendar() {
 
   if (DRY) { console.log("[calendar] dry-run - DB 미기록"); return; }
   const CH = 500;
-  for (let i = 0; i < rows.length; i += CH) {
-    const vals = rows.slice(i, i + CH).map(r => `('${r.trade_date}',${r.is_open},'${r.source}')`).join(",");
-    await dbQuery(`INSERT INTO trading_calendar (trade_date, is_open, source) VALUES ${vals} ON CONFLICT (trade_date) DO NOTHING`);
-  }
+  for (let i = 0; i < rows.length; i += CH) await dbQuery(buildCalendarUpsertSql(rows.slice(i, i + CH)));
   const [c] = await dbQuery(`SELECT count(*)::int n, min(trade_date) mn, max(trade_date) mx FROM trading_calendar`);
   console.log(`[calendar] trading_calendar ${c.n}행 ${c.mn} ~ ${c.mx}`);
 }

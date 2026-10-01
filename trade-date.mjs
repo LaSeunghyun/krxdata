@@ -65,12 +65,14 @@ export function isKrxSession(now = Date.now()) {
 export function calendarFromCandles(refBarsList, fromYmd, toYmd_) {
   const openSet = new Set();
   let coverFrom = "00000000";
+  let latest = "00000000"; // 일봉이 존재하는 가장 최근 날짜 (이보다 뒤는 "봉이 아직 없는 것"과 "휴장"을 구별할 수 없다)
   for (const bars of refBarsList) {
     if (!bars?.length) continue;
     let mn = "99999999";
     for (const b of bars) {
       const d = toYmd(b.date);
       if (d < mn) mn = d;
+      if (d > latest && Number(b.volume) > 0) latest = d;
       if (Number(b.volume) > 0) openSet.add(d);
     }
     if (mn > coverFrom) coverFrom = mn;
@@ -80,9 +82,40 @@ export function calendarFromCandles(refBarsList, fromYmd, toYmd_) {
     if (isWeekend(d)) out.push({ trade_date: toIso(d), is_open: false, source: "weekend" });
     else if (d < coverFrom) continue;
     else if (openSet.has(d)) out.push({ trade_date: toIso(d), is_open: true, source: "toss_candle" });
-    else out.push({ trade_date: toIso(d), is_open: false, source: "toss_no_candle" });
+    else if (d < latest) out.push({ trade_date: toIso(d), is_open: false, source: "toss_no_candle" }); // 뒤에 봉이 있는데 이 날만 없음 = 휴장
+    // d >= latest 이고 봉 없음: 일시적 누락일 수 있어 판정하지 않는다 (영구 오기록 방지)
   }
   return out;
+}
+
+/**
+ * 토스 일봉에 닿지 못할 때(GitHub Actions 는 403) 쓰는 대체 판정. 캘린더 갱신이 얼어붙지 않게 한다.
+ *  - 주말 = 휴장('weekend')
+ *  - 평일 중 어제(yesterdayYmd): 오늘 적재분이 직전 행의 복사본이면 휴장('sp_copy'), 아니면 개장('sp_fresh')
+ *  - 그 밖의 평일: 개장 가정('weekday_rule')
+ *  sp_*·weekday_rule 근거는 약하므로 이후 토스 일봉 근거(toss_*)가 오면 덮어쓴다 (캘린더 upsert 조건 참고).
+ * @param {number} sameShare 오늘 적재분 vs 직전 행 동일 종가 비율 (NaN 이면 어제 판정 불가 -> weekday_rule)
+ */
+export function fallbackCalendarRows(fromYmd, toYmd_, yesterdayYmd, sameShare) {
+  const out = [];
+  for (let d = toYmd(fromYmd); d <= toYmd(toYmd_); d = addDays(d, 1)) {
+    if (isWeekend(d)) out.push({ trade_date: toIso(d), is_open: false, source: "weekend" });
+    else if (d === toYmd(yesterdayYmd) && Number.isFinite(sameShare)) {
+      const copy = isCopyDay(sameShare);
+      out.push({ trade_date: toIso(d), is_open: !copy, source: copy ? "sp_copy" : "sp_fresh" });
+    } else out.push({ trade_date: toIso(d), is_open: true, source: "weekday_rule" });
+  }
+  return out;
+}
+
+/** trading_calendar upsert SQL: 신규는 삽입, 기존이 약한 근거(sp_ 계열, weekday_rule)거나 토스 근거가 판정을 뒤집을 때만 갱신 */
+export function buildCalendarUpsertSql(rows) {
+  if (!rows.length) return null;
+  const vals = rows.map(r => `('${r.trade_date}',${r.is_open},'${r.source}')`).join(",");
+  return `INSERT INTO trading_calendar (trade_date, is_open, source) VALUES ${vals}
+ON CONFLICT (trade_date) DO UPDATE SET is_open = EXCLUDED.is_open, source = EXCLUDED.source
+WHERE trading_calendar.source IN ('sp_copy','sp_fresh','weekday_rule')
+   OR (EXCLUDED.source LIKE 'toss%' AND trading_calendar.is_open IS DISTINCT FROM EXCLUDED.is_open)`;
 }
 
 /**

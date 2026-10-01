@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   addDays, isWeekend, toIso, kstToday, isKrxSession,
-  calendarFromCandles, prevOpenDay, isCopyDay, decideTradeDate,
+  calendarFromCandles, fallbackCalendarRows, buildCalendarUpsertSql, prevOpenDay, isCopyDay, decideTradeDate,
   mapLoadDatesToTradeDates, ohlcvRows, buildOhlcvUpdateSql,
 } from "../trade-date.mjs";
 
@@ -39,6 +39,38 @@ test("calendarFromCandles: 여러 기준 종목은 합집합 (한 종목 거래�
   const b = [{ date: "20260923", volume: 5 }, { date: "20260924", volume: 5 }, { date: "20260928", volume: 5 }];
   const rows = calendarFromCandles([a, b], "20260923", "20260928");
   assert.equal(rows.find(r => r.trade_date === "2026-09-24").is_open, true);
+});
+
+test("calendarFromCandles: 최신 봉 이후 날짜는 휴장으로 단정하지 않는다 (일시적 누락 영구 오기록 방지, 음성 대조)", () => {
+  // 9/29 까지만 봉이 있음 -> 9/30(봉 없음)은 휴장인지 미집계인지 알 수 없다
+  const rows = calendarFromCandles([[{ date: "20260928", volume: 5 }, { date: "20260929", volume: 5 }]], "20260928", "20260930");
+  assert.equal(rows.some(r => r.trade_date === "2026-09-30"), false);
+  // 반대 대조: 뒤에 봉이 있으면 같은 구조의 빈 날은 휴장
+  const rows2 = calendarFromCandles([[{ date: "20260928", volume: 5 }, { date: "20260930", volume: 5 }]], "20260928", "20260930");
+  assert.equal(rows2.find(r => r.trade_date === "2026-09-29").is_open, false);
+});
+
+test("fallbackCalendarRows: 주말 휴장 / 어제 복사본이면 휴장(sp_copy) / 아니면 개장(sp_fresh) / 그 외 평일 규칙", () => {
+  const copy = fallbackCalendarRows("20260924", "20260928", "20260928", 1.0);
+  const m = new Map(copy.map(r => [r.trade_date, r]));
+  assert.equal(m.get("2026-09-26").source, "weekend");
+  assert.equal(m.get("2026-09-24").source, "weekday_rule");
+  assert.equal(m.get("2026-09-28").is_open, false);
+  assert.equal(m.get("2026-09-28").source, "sp_copy");
+  const fresh = fallbackCalendarRows("20260928", "20260928", "20260928", 0.06);
+  assert.equal(fresh[0].is_open, true);
+  assert.equal(fresh[0].source, "sp_fresh");
+  const unknown = fallbackCalendarRows("20260928", "20260928", "20260928", NaN);
+  assert.equal(unknown[0].source, "weekday_rule"); // 판정 불가는 단정하지 않음
+});
+
+test("buildCalendarUpsertSql: 약한 근거만 덮고 토스 근거 뒤집기만 허용 / 빈 입력 null", () => {
+  const sql = buildCalendarUpsertSql([{ trade_date: "2026-09-30", is_open: true, source: "toss_candle" }]);
+  assert.ok(sql.includes("DO UPDATE"));
+  assert.ok(sql.includes("source IN ('sp_copy','sp_fresh','weekday_rule')"));
+  assert.ok(sql.includes("EXCLUDED.source LIKE 'toss%'"));
+  assert.ok(!/DO NOTHING/.test(sql));
+  assert.equal(buildCalendarUpsertSql([]), null);
 });
 
 test("calendarFromCandles: 일봉 커버 이전 평일은 판정 불가라 행을 만들지 않는다", () => {

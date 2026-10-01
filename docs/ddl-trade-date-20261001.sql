@@ -15,3 +15,7 @@ ALTER TABLE stock_prices
 
 -- trade_date 백필 후 실행
 CREATE INDEX IF NOT EXISTS idx_stock_prices_code_trade_date ON stock_prices (stock_code, trade_date);
+
+-- 컬럼 주석 (OHLCV 출처 명시)
+COMMENT ON COLUMN stock_prices.trade_date IS '실제 종가 거래일. date(적재일)와 별개. 휴장 다음날·정체 복사본 행은 NULL. 2026-06-12 이전 date=거래일, 이후 date=거래일+1(영업일 기준)';
+COMMENT ON COLUMN stock_prices.open IS 'OHLCV 출처 = 토스 일봉(KRX 정규장+NXT 통합, 수정주가). KRX 단독 값과 다를 수 있음. turnover = close x volume 근사';
