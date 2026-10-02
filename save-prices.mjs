@@ -20,7 +20,7 @@
  *
  * 멱등: (stock_code, date) PK라 같은 날 재실행해도 안전.
  * env: SUPABASE_MANAGEMENT_KEY, SUPABASE_PROJECT_REF (+백필 시 TOSS_CLIENT_ID/SECRET)
- * 실행: node save-prices.mjs [--backfill 15] [--dry-run]
+ * 실행: node save-prices.mjs [--backfill 15] [--dry-run] [--recover YYYYMMDD(확정 거래일)]
  */
 import dotenv from "dotenv";
 import path from "node:path";
@@ -43,17 +43,28 @@ const BACKFILL_DAYS = backfillIdx >= 0 ? Number(argv[backfillIdx + 1] ?? 15) : 0
 const DRY = argv.includes("--dry-run"); // 쓰기(INSERT/UPDATE) 쿼리는 실행하지 않고 건수만 출력
 let dryWrites = 0;
 
+// 일시 장애(연결 타임아웃·429·5xx·HTML 게이트웨이 응답)는 지수 백오프로 재시도한다.
+// 이 스크립트의 쓰기 쿼리는 전부 멱등(ON CONFLICT DO NOTHING / NULL 칸만 UPDATE / upsert)이라 재실행해도 안전하다.
+const RETRYABLE = /too many requests|throttl|timeout|timed out|terminated|ECONN|fetch failed|aborted|<!DOCTYPE|Unexpected token/i;
 async function dbQuery(sql) {
   if (DRY && /^\s*(INSERT|UPDATE|WITH u AS)/i.test(sql)) { dryWrites++; return [{ n: 0 }]; }
-  const res = await fetch(`https://api.supabase.com/v1/projects/${PROJECT_REF}/database/query`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${MGMT_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ query: sql }),
-    signal: AbortSignal.timeout(120_000),
-  });
-  const data = await res.json();
-  if (!Array.isArray(data)) throw new Error(data?.message ?? "DB 쿼리 오류");
-  return data;
+  let last;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const res = await fetch(`https://api.supabase.com/v1/projects/${PROJECT_REF}/database/query`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${MGMT_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ query: sql }),
+        signal: AbortSignal.timeout(120_000),
+      });
+      const data = await res.json();
+      if (Array.isArray(data)) return data;
+      last = new Error(data?.message ?? "DB 쿼리 오류");
+    } catch (e) { last = e; }
+    if (!RETRYABLE.test(String(last?.message))) throw last; // 문법·권한 오류 등은 즉시
+    await new Promise(r => setTimeout(r, Math.min(60_000, 3000 * 2 ** attempt) + Math.random() * 500));
+  }
+  throw last;
 }
 
 // (stock_code, date, close[, trade_date]) 묶음 INSERT - 기존 행 보존
@@ -62,16 +73,21 @@ async function insertRows(rows) {
   const CHUNK = 1_000;
   let done = 0;
   for (let i = 0; i < rows.length; i += CHUNK) {
-    const vals = rows.slice(i, i + CHUNK)
-      .filter(r => /^[A-Za-z0-9]{5,6}$/.test(r.code) && /^\d{8}$/.test(r.date) && Number.isFinite(r.close) && r.close > 0)
-      .map(r => HAS_TD
-        ? `('${r.code}','${r.date}',${r.close},${r.trade && /^\d{8}$/.test(r.trade) ? `'${toIso(r.trade)}'` : "NULL"})`
-        : `('${r.code}','${r.date}',${r.close})`).join(",");
-    if (!vals) continue;
-    await dbQuery(HAS_TD
-      ? `INSERT INTO stock_prices (stock_code, date, close, trade_date) VALUES ${vals} ON CONFLICT (stock_code, date) DO NOTHING`
-      : `INSERT INTO stock_prices (stock_code, date, close) VALUES ${vals} ON CONFLICT (stock_code, date) DO NOTHING`);
-    done += Math.min(CHUNK, rows.length - i);
+    const part = rows.slice(i, i + CHUNK)
+      .filter(r => /^[A-Za-z0-9]{5,6}$/.test(r.code) && /^\d{8}$/.test(r.date) && Number.isFinite(r.close) && r.close > 0);
+    if (!part.length) continue;
+    if (!HAS_TD) {
+      const vals = part.map(r => `('${r.code}','${r.date}',${r.close})`).join(",");
+      await dbQuery(`INSERT INTO stock_prices (stock_code, date, close) VALUES ${vals} ON CONFLICT (stock_code, date) DO NOTHING`);
+    } else {
+      // 같은 종목에 그 거래일이 이미 배정된 행이 있으면 trade_date 를 NULL 로 둔다 ((stock_code, trade_date) 중복 방지 - 행 자체는 적재)
+      const vals = part.map(r => `('${r.code}','${r.date}',${r.close},${r.trade && /^\d{8}$/.test(r.trade) ? `'${toIso(r.trade)}'::date` : "NULL::date"})`).join(",");
+      await dbQuery(`INSERT INTO stock_prices (stock_code, date, close, trade_date)
+        SELECT v.c, v.d, v.p, CASE WHEN v.t IS NOT NULL AND NOT EXISTS (SELECT 1 FROM stock_prices x WHERE x.stock_code = v.c AND x.trade_date = v.t) THEN v.t END
+        FROM (VALUES ${vals}) AS v(c,d,p,t)
+        ON CONFLICT (stock_code, date) DO NOTHING`);
+    }
+    done += part.length;
   }
   return done;
 }
@@ -136,13 +152,47 @@ console.log(`[save-prices] 날짜 ${DATE} 적재 시작`);
 const all = await dbQuery(`SELECT stock_code, current_price FROM stock_analysis WHERE current_price > 0`);
 console.log(`[save-prices] 종가 보유 ${all.length}종목`);
 
-// 캘린더 갱신 -> 거래일 판정 (실패해도 trade_date 만 NULL 로 두고 date/close 적재는 계속)
-let tradeDate = null;
+// 컬럼 감지 (없으면 구 3컬럼 INSERT 로 폴백)
 try {
   const cols = await dbQuery(`SELECT count(*)::int n FROM information_schema.columns WHERE table_name='stock_prices' AND column_name IN ('trade_date','open','high','low','volume','turnover')`);
   HAS_TD = (cols[0]?.n ?? 0) === 6;
   if (!HAS_TD) console.error("[save-prices] stock_prices 에 trade_date/OHLCV 컬럼 없음 - 구 3컬럼 INSERT 로 폴백");
 } catch { HAS_TD = false; }
+
+// ── 복구 모드: node save-prices.mjs --recover YYYYMMDD ───────────────────
+//   크론이 죽어 특정 거래일 종가의 적재일 행이 비었을 때 쓴다. stock_analysis.current_price(장중값일 수 있음)는 쓰지 않고,
+//   확정된 그 거래일 토스 일봉만으로 (적재일=오늘 KST) 행을 만든다. 일봉이 없는 종목은 건너뛴다.
+//   멱등: (stock_code, date) 충돌은 건너뛰고, 같은 종목의 같은 trade_date 는 중복 배정하지 않는다.
+const recIdx = argv.indexOf("--recover");
+if (recIdx >= 0) {
+  const T = argv[recIdx + 1];
+  if (!/^\d{8}$/.test(T ?? "") || !(T < DATE) || !HAS_TD) { console.error(`[복구] 잘못된 인자(거래일 ${T}, 적재일 ${DATE}) 또는 컬럼 부재 - 중단`); process.exit(1); }
+  const { isTossConfigured, getDailyCandles } = await import("./toss-api.js");
+  if (!isTossConfigured()) { console.error("[복구] 토스 미설정 - 중단"); process.exit(1); }
+  const rows = [], ohlcv = [];
+  let done = 0, missing = 0;
+  for (const s of all) {
+    try {
+      const bars = await getDailyCandles(s.stock_code, 5);
+      const bar = bars.find(b => toYmd(b.timestamp) === T && b.volume >= 0 && b.close > 0);
+      if (bar) { rows.push({ code: s.stock_code, date: DATE, close: bar.close, trade: T }); ohlcv.push(...ohlcvRows(s.stock_code, [bar], DATE)); }
+      else missing++;
+    } catch { missing++; }
+    if (++done % 500 === 0) console.log(`[복구] 일봉 수집 ${done}/${all.length}`);
+  }
+  console.log(`[복구] ${toIso(T)} 일봉 ${rows.length}종목 확보 / 없음·실패 ${missing}`);
+  if (rows.length < all.length * 0.8) { console.error("[복구] 확보율 80% 미만 - 일봉 미확정으로 보고 중단(쓰기 없음)"); process.exit(1); }
+  try { console.log(`[복구] 캘린더 +${await updateCalendar(addDays(DATE, -1), NaN)}행`); } catch (e) { console.error(`[복구] 캘린더 갱신 실패(무시): ${String(e.message).slice(0, 80)}`); }
+  const n = await insertRows(rows);
+  let filled = 0;
+  for (let i = 0; i < ohlcv.length; i += 2000) filled += (await dbQuery(buildOhlcvUpdateSql(ohlcv.slice(i, i + 2000))))[0]?.n ?? 0;
+  console.log(`[복구] 적재일 ${DATE} ${n}행 적재 (trade_date ${toIso(T)}), OHLCV ${filled}행 채움`);
+  if (DRY) console.log(`[save-prices] dry-run - 쓰기 쿼리 ${dryWrites}건 미실행`);
+  process.exit(0);
+}
+
+// 캘린더 갱신 -> 거래일 판정 (실패해도 trade_date 만 NULL 로 두고 date/close 적재는 계속)
+let tradeDate = null;
 if (HAS_TD) try {
   const yesterday = addDays(DATE, -1);
   const prev = await dbQuery(`SELECT stock_code, close FROM stock_prices WHERE date = (SELECT max(date) FROM stock_prices WHERE date < '${DATE}')`);
