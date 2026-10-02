@@ -215,3 +215,26 @@ export function capexCycle(fin) {
   const cycle = capex != null && capex > 0 && capexYoY != null && capexYoY >= 30;
   return { capex: capex ?? null, fcf: fin?.fcf ?? null, capexYoY, capexToOcf, cycle };
 }
+
+
+// ── 점수 스크립트 공용: DB 쓰기 안전장치 (2026-10-01 리뷰 H2·M2) ──────────────
+/** DB 쓰기 실패 횟수. 점수 스크립트가 끝에서 0 이 아니면 exit 1 해서 CI 가 녹색으로 속지 않게 한다. */
+export const writeFailures = { count: 0 };
+export function warnWrite(msg) { writeFailures.count++; console.warn(msg); }
+
+/** 섹터 맵에 없으면 sector 키 자체를 생략한다(null 로 덮어써 기존 섹터를 지우지 않기 위해). */
+export function sectorField(sectorMap, code) {
+  const sec = sectorMap?.[code]?.sector;
+  return sec ? { sector: sec } : {};
+}
+
+/** PostgREST 벌크 upsert 는 키 합집합 기준이라 행마다 키가 다르면 빠진 키가 NULL 로 덮인다 -> 키 집합별로 나눠 보낸다. */
+export function groupByKeySet(rows) {
+  const g = new Map();
+  for (const r of rows) {
+    const k = Object.keys(r).sort().join("|");
+    if (!g.has(k)) g.set(k, []);
+    g.get(k).push(r);
+  }
+  return [...g.values()];
+}

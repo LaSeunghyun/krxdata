@@ -184,6 +184,18 @@ async function upsertRows(rows) {
 const CORP_CODE_CACHE = path.join(__dirname, ".corp_code_cache.json");
 const CORP_CODE_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7일
 
+// 2026-10-01 수정: 기존 정규식은 비상장 항목(<stock_code> </stock_code>)을 건너뛰며 다음 <list> 의 stock_code 와
+// 엉뚱하게 짝지어 매핑 3,933건 중 2,546건이 틀렸다(실측). <list> 블록 단위로 파싱한다.
+export function parseCorpCodeXml(xml) {
+  const map = {};
+  for (const blk of xml.matchAll(/<list>([\s\S]*?)<\/list>/g)) {
+    const corp_code = /<corp_code>\s*(\d+)\s*<\/corp_code>/.exec(blk[1])?.[1];
+    const stock_code = /<stock_code>\s*(\d{6})\s*<\/stock_code>/.exec(blk[1])?.[1];
+    if (corp_code && stock_code) map[stock_code] = corp_code;
+  }
+  return map;
+}
+
 export async function buildCorpCodeMap() {
   // 캐시 유효 시 재사용
   if (fs.existsSync(CORP_CODE_CACHE)) {
@@ -208,14 +220,7 @@ export async function buildCorpCodeMap() {
   if (!xmlEntry) throw new Error("corpCode.zip에 XML 없음");
   const xml = xmlEntry.getData().toString("utf8");
 
-  // XML 파싱: <stock_code>XXXXXX</stock_code> 와 <corp_code>XXXXXXXX</corp_code>
-  const map = {};
-  const re = /<list>[\s\S]*?<corp_code>(\d+)<\/corp_code>[\s\S]*?<stock_code>(\d+)<\/stock_code>[\s\S]*?<\/list>/g;
-  let m;
-  while ((m = re.exec(xml)) !== null) {
-    const [, corp_code, stock_code] = m;
-    if (stock_code && stock_code.trim()) map[stock_code.trim()] = corp_code.trim();
-  }
+  const map = parseCorpCodeXml(xml);
   console.log(`  corpCode 매핑 완료: ${Object.keys(map).length}개`);
   fs.writeFileSync(CORP_CODE_CACHE, JSON.stringify({ ts: Date.now(), map }));
   return map;

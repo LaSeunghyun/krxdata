@@ -1,0 +1,68 @@
+name: KRXDATA Weekly Scoring
+
+# 점수 재생성(score-kospi-full / score-kosdaq: DART + 공공데이터, LLM 없음) + 종목 마스터 + sector_stats.
+# 토스 API 를 쓰지 않는다(GHA IP 는 토스에서 403). 2026-07-13 이후 수동 실행 기록만 있어 정기화(2026-10-01).
+# 토요일 12:00 KST: 장외이고 stock-live 가 매매하지 않는 시간. current_price·market_cap_tril 은 --keep-price 로 보존
+# (stock-live 후보 필터 입력이며 daily-ranking 이 매일 04:00 KST 에 Toss 값으로 갱신한다).
+on:
+  schedule:
+    - cron: '0 3 * * 6'
+  workflow_dispatch:
+
+jobs:
+  scoring:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      # service key 필수. 전용 시크릿 SUPABASE_SERVICE_KEY 를 레포 Settings > Secrets 에 추가해야 한다(없으면 사전 점검에서 실패).
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      PUBLIC_DATA_API_KEY: ${{ secrets.PUBLIC_DATA_API_KEY }}
+      DART_API_KEY: ${{ secrets.DART_API_KEY }}
+      SUPABASE_MANAGEMENT_KEY: ${{ secrets.SUPABASE_MANAGEMENT_KEY }}
+      SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - run: npm install
+
+      - name: Preflight - 실제 쓰기 권한 확인 (실패 시 즉시 중단)
+        id: preflight
+        run: |
+          [ -n "$SUPABASE_SERVICE_KEY" ] || { echo "SUPABASE_SERVICE_KEY 시크릿이 없다 - 레포 시크릿에 추가 필요"; exit 1; }
+          H=(-H "apikey: $SUPABASE_SERVICE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_KEY")
+          # 기존 행 1건을 읽어 같은 값으로 upsert 하고, 돌려받은 행이 정확히 1건인지 확인한다(0행 통과 방지).
+          row=$(curl -sf "${H[@]}" "$SUPABASE_URL/rest/v1/stock_analysis?select=stock_code,corp_name&limit=1")
+          [ "$(echo "$row" | jq 'length')" = "1" ] || { echo "읽기 실패 또는 0행"; exit 1; }
+          resp=$(curl -sf -X POST "${H[@]}" -H "Content-Type: application/json"             -H "Prefer: resolution=merge-duplicates,return=representation"             "$SUPABASE_URL/rest/v1/stock_analysis" -d "$row")
+          n=$(echo "$resp" | jq 'length')
+          echo "사전 점검 upsert 반환 행 수: $n"
+          [ "$n" = "1" ]
+
+      - name: 종목 마스터 + 점수 입력 목록
+        run: |
+          s=$(date +%s); node refresh-master.mjs --stocks; echo "::notice::refresh-master --stocks $(( $(date +%s) - s ))s"
+
+      - name: KOSPI 점수
+        timeout-minutes: 80
+        run: |
+          s=$(date +%s); rc=0; node score-kospi-full.js --all --keep-price || rc=$?; echo "::notice::KOSPI $(( $(date +%s) - s ))s rc=$rc"; exit $rc
+
+      - name: KOSDAQ 점수
+        if: ${{ always() && steps.preflight.outcome == 'success' }}
+        timeout-minutes: 110
+        run: |
+          s=$(date +%s); rc=0; node score-kosdaq.js --all --keep-price || rc=$?; echo "::notice::KOSDAQ $(( $(date +%s) - s ))s rc=$rc"; exit $rc
+
+      - name: sector_stats 재계산
+        if: ${{ always() && steps.preflight.outcome == 'success' }}
+        run: |
+          s=$(date +%s); node refresh-master.mjs --sector-stats; echo "::notice::sector_stats $(( $(date +%s) - s ))s"
+
+      - name: 요약
+        if: always()
+        run: |
+          echo "### 주간 점수 재생성" >> $GITHUB_STEP_SUMMARY
+          echo "- 완료 시각: $(TZ='Asia/Seoul' date '+%Y-%m-%d %H:%M KST')" >> $GITHUB_STEP_SUMMARY
