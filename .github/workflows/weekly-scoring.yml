@@ -15,8 +15,8 @@ jobs:
     timeout-minutes: 240
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      # 점수 스크립트는 PostgREST 쓰기에 service key 가 필요하다. 전용 시크릿이 없으면 SUPABASE_KEY 로 대체한다(권한은 사전 점검 단계가 검증).
-      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY || secrets.SUPABASE_KEY }}
+      # service key 필수. 전용 시크릿 SUPABASE_SERVICE_KEY 를 레포 Settings > Secrets 에 추가해야 한다(없으면 사전 점검에서 실패).
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
       PUBLIC_DATA_API_KEY: ${{ secrets.PUBLIC_DATA_API_KEY }}
       DART_API_KEY: ${{ secrets.DART_API_KEY }}
       SUPABASE_MANAGEMENT_KEY: ${{ secrets.SUPABASE_MANAGEMENT_KEY }}
@@ -28,25 +28,38 @@ jobs:
           node-version: '22'
       - run: npm install
 
-      - name: Preflight - 쓰기 권한 확인 (실패 시 즉시 중단)
+      - name: Preflight - 실제 쓰기 권한 확인 (실패 시 즉시 중단)
+        id: preflight
         run: |
-          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$SUPABASE_URL/rest/v1/stock_analysis" \
-            -H "apikey: $SUPABASE_SERVICE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
-            -H "Content-Type: application/json" -H "Prefer: resolution=merge-duplicates,return=minimal" -d '[]')
-          echo "PostgREST 쓰기 사전 점검 HTTP $code"
-          [ "$code" = "200" ] || [ "$code" = "201" ] || [ "$code" = "204" ]
+          [ -n "$SUPABASE_SERVICE_KEY" ] || { echo "SUPABASE_SERVICE_KEY 시크릿이 없다 - 레포 시크릿에 추가 필요"; exit 1; }
+          H=(-H "apikey: $SUPABASE_SERVICE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_KEY")
+          # 기존 행 1건을 읽어 같은 값으로 upsert 하고, 돌려받은 행이 정확히 1건인지 확인한다(0행 통과 방지).
+          row=$(curl -sf "${H[@]}" "$SUPABASE_URL/rest/v1/stock_analysis?select=stock_code,corp_name&limit=1")
+          [ "$(echo "$row" | jq 'length')" = "1" ] || { echo "읽기 실패 또는 0행"; exit 1; }
+          resp=$(curl -sf -X POST "${H[@]}" -H "Content-Type: application/json"             -H "Prefer: resolution=merge-duplicates,return=representation"             "$SUPABASE_URL/rest/v1/stock_analysis" -d "$row")
+          n=$(echo "$resp" | jq 'length')
+          echo "사전 점검 upsert 반환 행 수: $n"
+          [ "$n" = "1" ]
 
       - name: 종목 마스터 + 점수 입력 목록
-        run: node refresh-master.mjs --stocks
+        run: |
+          s=$(date +%s); node refresh-master.mjs --stocks; echo "::notice::refresh-master --stocks $(( $(date +%s) - s ))s"
 
       - name: KOSPI 점수
-        run: node score-kospi-full.js --all --keep-price
+        timeout-minutes: 80
+        run: |
+          s=$(date +%s); rc=0; node score-kospi-full.js --all --keep-price || rc=$?; echo "::notice::KOSPI $(( $(date +%s) - s ))s rc=$rc"; exit $rc
 
       - name: KOSDAQ 점수
-        run: node score-kosdaq.js --all --keep-price
+        if: ${{ always() && steps.preflight.outcome == 'success' }}
+        timeout-minutes: 110
+        run: |
+          s=$(date +%s); rc=0; node score-kosdaq.js --all --keep-price || rc=$?; echo "::notice::KOSDAQ $(( $(date +%s) - s ))s rc=$rc"; exit $rc
 
       - name: sector_stats 재계산
-        run: node refresh-master.mjs --sector-stats
+        if: ${{ always() && steps.preflight.outcome == 'success' }}
+        run: |
+          s=$(date +%s); node refresh-master.mjs --sector-stats; echo "::notice::sector_stats $(( $(date +%s) - s ))s"
 
       - name: 요약
         if: always()

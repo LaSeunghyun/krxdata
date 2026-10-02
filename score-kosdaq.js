@@ -12,7 +12,7 @@ import fs from "fs";
 import path from "path";
 import { ANALYSIS_YEAR, ANALYSIS_YEAR_FALLBACK, SCORE_BATCH_SIZE, SCORE_DELAY_MS, FETCH_TIMEOUT_MS } from "./config.js";
 import { calcTargetPrice, buildRecommendation, sectorFairPer } from "./stock-utils.js";
-import { parseFinancials, scoreFinancialTrend, disclosureSentiment, estimateBonusCapacity, GOOD_KEYWORDS, BAD_KEYWORDS, fetchCashflowCapex, computeFcf, scoreCashflowQuality, capexCycle } from "./scoring-core.js";
+import { writeFailures, warnWrite, sectorField, groupByKeySet, parseFinancials, scoreFinancialTrend, disclosureSentiment, estimateBonusCapacity, GOOD_KEYWORDS, BAD_KEYWORDS, fetchCashflowCapex, computeFcf, scoreCashflowQuality, capexCycle } from "./scoring-core.js";
 
 const require   = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -31,6 +31,7 @@ const LIMIT = _li >= 0 ? Number(process.argv[_li + 1]) : 0;
 //   stock-live 후보 필터가 이 두 컬럼을 읽으므로 점수 재생성이 매매 입력을 흔들지 않게 한다.
 const KEEP_PRICE = process.argv.includes("--keep-price");
 const _stripPrice = ({ current_price, market_cap_tril, ...rest }) => rest;
+if (!DRY_RUN && (!SUPABASE_URL || !SUPABASE_KEY)) { console.error("SUPABASE_URL/SUPABASE_SERVICE_KEY 미설정 - 쓰기 불가 (--dry-run 아님)"); process.exit(1); }
 const DART_BASE    = "https://opendart.fss.or.kr/api";
 const PUBLIC_BASE  = "https://apis.data.go.kr/1160100/service";
 const YEAR         = ANALYSIS_YEAR;
@@ -317,6 +318,7 @@ async function main() {
     if (DRY_RUN) return;
     if (KEEP_PRICE && table === "stock_analysis") rows = rows.map(_stripPrice);
     if (!SUPABASE_URL || !SUPABASE_KEY || !rows.length) return;
+    for (const part of groupByKeySet(rows)) {
     try {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
         method: "POST",
@@ -325,10 +327,11 @@ async function main() {
           apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`,
           Prefer: "resolution=merge-duplicates,return=minimal",
         },
-        body: JSON.stringify(rows),
+        body: JSON.stringify(part),
       });
-      if (!res.ok) console.warn(`  ${table} upsert 실패: ${res.status}`);
-    } catch (e) { console.warn(`  ${table} upsert 예외: ${e.message}`); }
+      if (!res.ok) warnWrite(`  ${table} upsert 실패: ${res.status}`);
+        } catch (e) { warnWrite(`  ${table} upsert 예외: ${e.message}`); }
+    }
   }
 
   async function appendTable(table, rows) {
@@ -344,8 +347,8 @@ async function main() {
         },
         body: JSON.stringify(rows),
       });
-      if (!res.ok) console.warn(`  ${table} insert 실패: ${res.status}`);
-    } catch (e) { console.warn(`  ${table} insert 예외: ${e.message}`); }
+      if (!res.ok) warnWrite(`  ${table} insert 실패: ${res.status}`);
+    } catch (e) { warnWrite(`  ${table} insert 예외: ${e.message}`); }
   }
 
   async function fetchHistoricalFinancials(stockCodes) {
@@ -393,7 +396,7 @@ async function main() {
       },
       body: JSON.stringify(masterRows),
     });
-    if (!r1.ok) console.warn(`  stock_disclosures insert 실패: ${r1.status}`);
+    if (!r1.ok) warnWrite(`  stock_disclosures insert 실패: ${r1.status}`);
 
     const sentRows = valid.map(d => ({
       rcept_no:          d.rcept_no,
@@ -411,8 +414,8 @@ async function main() {
       },
       body: JSON.stringify(sentRows),
     });
-    if (!r2.ok) console.warn(`  stock_disclosure_sentiments insert 실패: ${r2.status}`);
-    } catch (e) { console.warn(`  공시 적재 예외: ${e.message}`); }
+    if (!r2.ok) warnWrite(`  stock_disclosure_sentiments insert 실패: ${r2.status}`);
+    } catch (e) { warnWrite(`  공시 적재 예외: ${e.message}`); }
   }
 
   for (let i = 0; i < companies.length; i++) {
@@ -500,7 +503,7 @@ async function main() {
       short_target_pct: tp.shortTargetPct, mid_target_pct: tp.midTargetPct,
       recommendation, market_cap_tril: +(marketCap / 1e12).toFixed(2),
       mrkt_ctg: "KOSDAQ",
-      sector: sectorMap[s.stockCode]?.sector ?? null,
+      ...sectorField(sectorMap, s.stockCode),
       total_score: totalScore, short_score: d, long_score: longScore,
       detail, generated_at: genAt, updated_at: genAt,
       analysis_run_id: RUN_ID,
@@ -598,6 +601,7 @@ async function main() {
   }
   console.log("\n저장: scored-kosdaq.json");
   console.log(`수집 실패 — 시세:${failCounts.quote} 공시:${failCounts.disclosure} 주주:${failCounts.shareholder}`);
+  if (writeFailures.count > 0) { console.error(`DB 쓰기 실패 ${writeFailures.count}건 - exit 1`); process.exit(1); }
 }
 
 main().catch(e => { console.error("오류:", e); process.exit(1); });
