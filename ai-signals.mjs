@@ -55,6 +55,18 @@ export function summarizeAnalyst(rows, price) {
 const daysAgo = (n) => { const d = new Date(Date.now() - n * 86400000 + 9 * 3600000); return d.toISOString().slice(0, 10); };
 const esc = (s) => String(s).replace(/'/g, "''");
 
+/** 신선도 게이트 (2026-10-01): stock_analysis.generated_at 이 maxDays 일을 넘으면 추천·목표가를 판단 입력에서 뺀다.
+ *  generated_at 이 없거나 해석 불가여도 보수적으로 stale 로 본다. total/short/long 점수는 남기되 stale 표시를 단다.
+ *  섀도우 전용(실주문 경로 아님). */
+export const SCORE_STALE_DAYS = 14;
+export function gateScore(score, generatedAt, now = Date.now(), maxDays = SCORE_STALE_DAYS) {
+  const t = generatedAt ? Date.parse(generatedAt) : NaN;
+  const ageDays = Number.isFinite(t) ? Math.floor((now - t) / 86400000) : null;
+  const stale = ageDays == null || ageDays > maxDays;
+  if (!stale) return { ...score, stale: false, ageDays };
+  return { ...score, reco: null, shortTargetPct: null, midTargetPct: null, stale: true, ageDays };
+}
+
 /** @returns 신호 스냅샷 | null(미상장) */
 export async function assembleSignals(code, {
   dbQuery,
@@ -66,9 +78,10 @@ export async function assembleSignals(code, {
   newsProvider = searchStockNews,
   withAnalyst = true,
   analystDays = 90,
+  now = Date.now(),
 }) {
   const rows = await dbQuery(`SELECT stock_code,corp_name,sector,current_price,total_score,short_score,long_score,
-    recommendation,short_target_pct,mid_target_pct,high_52w,low_52w,market_cap_tril,avg_turnover_20d,bonus_flag
+    recommendation,short_target_pct,mid_target_pct,high_52w,low_52w,market_cap_tril,avg_turnover_20d,bonus_flag,generated_at
     FROM stock_analysis WHERE stock_code='${esc(code)}'`);
   const a = rows[0];
   if (!a) return null;
@@ -124,7 +137,7 @@ export async function assembleSignals(code, {
 
   return {
     code, name: a.corp_name, sector: a.sector, price: a.current_price,
-    score: { total: a.total_score, short: a.short_score, long: a.long_score, reco: a.recommendation, shortTargetPct: a.short_target_pct, midTargetPct: a.mid_target_pct },
+    score: gateScore({ total: a.total_score, short: a.short_score, long: a.long_score, reco: a.recommendation, shortTargetPct: a.short_target_pct, midTargetPct: a.mid_target_pct }, a.generated_at, now),
     momentum: { ret5, ret20, pos52w, high52w: a.high_52w, low52w: a.low_52w },
     volume: { volRatio },
     liquidity_krw: a.avg_turnover_20d, mcap_tril: a.market_cap_tril, bonus_flag: a.bonus_flag,

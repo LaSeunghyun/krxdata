@@ -19,6 +19,8 @@ const files = [
   "mcp-server.js",
   "patch-marketcap.js",
   "push-to-supabase.mjs",
+  "refresh-master.mjs",
+  "score-analysis-ledger.mjs",
   "score-kosdaq.js",
   "score-kospi-full.js",
   "score-top100.js",
