@@ -89,18 +89,56 @@ export function shouldRunPriceUpdate(argv = process.argv.slice(2)) {
   return !argv.includes('--skip-price') || argv.includes('--refresh-52w');
 }
 
+// Management API 일시 장애(연결 타임아웃·429·5xx)에 재시도할지 판정. 문장은 전부 멱등(UPDATE 값 지정·INSERT ON CONFLICT·IF NOT EXISTS)이라
+// 타임아웃 뒤 재실행해도 안전하다. 2026-10-02 04:00 KST 크론이 450/2610 에서 "connection timeout" 한 번에 죽은 사고 대응.
+export function isRetryableDbFailure({ status, message, thrown } = {}) {
+  if (thrown) return true; // fetch 자체 실패(타임아웃·네트워크)
+  if (status === 429 || (status >= 500 && status <= 599)) return true;
+  return /too many requests|throttl|timeout|timed out|terminated|ECONNRESET|ETIMEDOUT|fetch failed/i.test(String(message ?? ''));
+}
+
+export async function withDbRetry(fn, { tries = 6, baseMs = 3000, sleep = (ms) => new Promise(r => setTimeout(r, ms)) } = {}) {
+  let last;
+  for (let attempt = 0; attempt < tries; attempt++) {
+    try {
+      const r = await fn();
+      if (r.fatal) throw Object.assign(r.fatal, { __fatal: true });
+      if (!r.retry) return r.value;
+      last = r.error;
+    } catch (e) {
+      if (e?.__fatal) throw e; // 문법·권한 오류 등 재시도 무의미
+      last = e;
+    }
+    if (attempt < tries - 1) await sleep(Math.min(60_000, baseMs * 2 ** attempt) + Math.random() * 500);
+  }
+  throw last;
+}
+
 async function dbQuery(sql) {
-  const res = await fetchT(`https://api.supabase.com/v1/projects/${SUPABASE_PROJECT_REF}/database/query`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${SUPABASE_MANAGEMENT_KEY}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ query: sql })
-  }, 60_000);
-  const data = await res.json();
-  if (!Array.isArray(data)) throw new Error(data?.message ?? 'DB 쿼리 오류');
-  return data;
+  return withDbRetry(async () => {
+    let res;
+    try {
+      res = await fetchT(`https://api.supabase.com/v1/projects/${SUPABASE_PROJECT_REF}/database/query`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${SUPABASE_MANAGEMENT_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ query: sql })
+      }, 60_000);
+    } catch (e) {
+      return { retry: true, error: e };
+    }
+    let data;
+    try { data = await res.json(); } catch (e) {
+      const err = new Error(`DB 응답 파싱 실패 (HTTP ${res.status})`);
+      return isRetryableDbFailure({ status: res.status, message: err.message }) ? { retry: true, error: err } : { fatal: err };
+    }
+    if (Array.isArray(data)) return { value: data };
+    const err = new Error(data?.message ?? 'DB 쿼리 오류');
+    if (isRetryableDbFailure({ status: res.status, message: err.message })) return { retry: true, error: err };
+    return { fatal: err };
+  });
 }
 
 async function upsert(table, rows, onConflict) {

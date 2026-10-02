@@ -42,6 +42,7 @@ const VM_ENTRY_POINTS = [
   'validate-hypotheses.mjs', 'refresh-candles-kis.mjs', 'shadow-1m.mjs', 'shadow-eval.mjs',
   'watch-1m.mjs', 'ai-shadow.mjs', 'measure-slippage.mjs', 'account-snapshot.mjs',
   'daily-review.mjs', 'entry-monitor.mjs',
+  'save-prices.mjs', 'daily-ranking.js', // 04:00 KST 크론 (daily-ranking.js && save-prices.mjs --backfill 7)
   // 2026-10-01 패키지 B: 수급 재시도 + 신규 수집기
   'flow-snapshot.mjs', 'collect-kis-extra.mjs', 'collect-global.mjs', 'collect-cbbw.mjs', 'collect-earnings-calendar.mjs',
 ];
